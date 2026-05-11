@@ -1,0 +1,23 @@
+name: queue_overflow
+
+# Stress-tests queue_explosion + escalation_loop: a sustained pile of
+# new cases plus high system load pushes agents toward escalating /
+# rebounding rather than resolving, so the queue grows faster than it
+# drains.
+scripted:
+  - { timestep: 2,  name: BlackFridaySpike }
+  - { timestep: 5,  name: BlackFridaySpike }
+  - { timestep: 8,  name: AngryCustomerSurge }
+  - { timestep: 11, name: BlackFridaySpike }
+  - { timestep: 14, name: InventoryAPIDelay }
+  - { timestep: 17, name: BlackFridaySpike }
+  - { timestep: 20, name: AngryCustomerSurge }
+  - { timestep: 24, name: BlackFridaySpike }
+  - { timestep: 28, name: InventoryAPIDelay }
+  - { timestep: 32, name: AngryCustomerSurge }
+  - { timestep: 36, name: BlackFridaySpike }
+  - { timestep: 42, name: BlackFridaySpike }
+
+stochastic:
+  - { name: BlackFridaySpike,  probability: 0.10 }
+  - { name: InventoryAPIDelay, probability: 0.05 }

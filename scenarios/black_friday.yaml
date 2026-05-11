@@ -1,0 +1,17 @@
+name: black_friday
+
+# Scripted timeline — events fire at exactly these timesteps.
+scripted:
+  - { timestep: 3,  name: BlackFridaySpike }
+  - { timestep: 8,  name: AngryCustomerSurge }
+  - { timestep: 12, name: InventoryAPIDelay }
+  - { timestep: 18, name: BlackFridaySpike }
+  - { timestep: 22, name: RefundPolicyChange }
+  - { timestep: 27, name: AngryCustomerSurge }
+  - { timestep: 33, name: InventoryAPIDelay }
+  - { timestep: 40, name: AngryCustomerSurge }
+
+# Stochastic injection — every step, each entry rolls against its probability.
+stochastic:
+  - { name: AngryCustomerSurge,  probability: 0.05 }
+  - { name: InventoryAPIDelay,   probability: 0.04 }
