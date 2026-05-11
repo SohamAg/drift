@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drift"
+version = "0.1.0"
+description = "Multi-agent stress-test simulator for emergent failures in evolving environments"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40"]
+openai    = ["openai>=1.40"]
+web       = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
+dev       = ["pytest>=7", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+drift = "drift.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

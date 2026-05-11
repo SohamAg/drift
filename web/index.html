@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>drift</title>
+  <link rel="stylesheet" href="/web/styles.css" />
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%236366f1'/><text x='16' y='22' text-anchor='middle' font-family='ui-sans-serif' font-size='18' fill='white' font-weight='600'>d</text></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">d</span>
+      <span class="brand-name">drift</span>
+      <span class="brand-tag">multi-agent stress-test simulator</span>
+    </div>
+    <div class="topbar-actions">
+      <button id="theme-toggle" class="ghost-btn" aria-label="Toggle theme" title="Toggle light/dark">
+        <span class="theme-icon-light">☀</span>
+        <span class="theme-icon-dark">☾</span>
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="new"     role="tab">New Run</button>
+    <button class="tab"        data-tab="runs"    role="tab">Runs <span id="runs-count" class="badge"></span></button>
+    <button class="tab"        data-tab="compare" role="tab">Compare</button>
+    <button class="tab"        data-tab="about"   role="tab">About</button>
+  </nav>
+
+  <main>
+
+    <!-- ===================== NEW RUN ===================== -->
+    <section id="tab-new" class="tab-panel active">
+      <div class="grid two-col">
+        <div class="card">
+          <h2>Configure run</h2>
+          <form id="new-run-form">
+            <div class="field">
+              <label for="topology">Topology</label>
+              <select id="topology" name="topology" required></select>
+              <p class="help" id="topology-help"></p>
+            </div>
+
+            <div class="field">
+              <label for="scenario">Scenario</label>
+              <select id="scenario" name="scenario"></select>
+              <p class="help" id="scenario-help"></p>
+            </div>
+
+            <div class="row two-col">
+              <div class="field">
+                <label for="steps">Steps</label>
+                <input type="number" id="steps" name="steps" value="30" min="1" max="500" />
+              </div>
+              <div class="field">
+                <label for="seed">Seed</label>
+                <input type="number" id="seed" name="seed" value="42" />
+              </div>
+            </div>
+
+            <div class="row two-col">
+              <div class="field">
+                <label for="llm">LLM backend</label>
+                <select id="llm" name="llm">
+                  <option value="mock">mock (free, deterministic)</option>
+                  <option value="openai">openai (real, costs cents)</option>
+                  <option value="anthropic">anthropic (stub)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="model">Model</label>
+                <input type="text" id="model" name="model" placeholder="auto" />
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="prompt-variant">Prompt variant</label>
+              <div class="seg" role="tablist">
+                <input type="radio" name="prompt_variant" id="pv-naive"    value="naive" checked />
+                <label for="pv-naive" class="seg-opt">naive</label>
+                <input type="radio" name="prompt_variant" id="pv-hardened" value="hardened" />
+                <label for="pv-hardened" class="seg-opt">hardened</label>
+              </div>
+              <p class="help">Naive = day-one prompts. Hardened = explicit guardrails against detected failures.</p>
+            </div>
+
+            <div class="field">
+              <label for="run-id">Run name <span class="muted">(optional)</span></label>
+              <input type="text" id="run-id" name="run_id" placeholder="auto-generated if blank" />
+            </div>
+
+            <div class="actions">
+              <button type="submit" class="primary">Start run</button>
+              <button type="button" id="clone-last" class="ghost-btn">Clone last config</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Live status</h2>
+          <div id="live-status" class="empty">No run started yet. Submit the form to begin.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== RUNS ===================== -->
+    <section id="tab-runs" class="tab-panel">
+      <div class="card">
+        <div class="card-head">
+          <h2>Runs</h2>
+          <div class="card-actions">
+            <input type="search" id="runs-search" placeholder="filter by name, topology, llm..." />
+            <button id="runs-refresh" class="ghost-btn">Refresh</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="runs-table">
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Topology</th>
+                <th>Scenario</th>
+                <th>Steps</th>
+                <th>Seed</th>
+                <th>LLM</th>
+                <th>Variant</th>
+                <th class="num">Failures</th>
+                <th>Started</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="runs-tbody"></tbody>
+          </table>
+        </div>
+        <div id="runs-empty" class="empty hidden">No runs yet — start one from the New Run tab.</div>
+      </div>
+    </section>
+
+    <!-- ===================== RUN DETAIL ===================== -->
+    <section id="tab-detail" class="tab-panel">
+      <div class="card detail-head">
+        <button class="ghost-btn back-btn" id="detail-back">← Runs</button>
+        <h2 id="detail-title">Run</h2>
+        <div id="detail-meta" class="kv-grid"></div>
+      </div>
+
+      <div class="grid two-col">
+        <div class="card">
+          <h3>Failures by type</h3>
+          <div id="detail-failure-summary"></div>
+          <div class="failure-list" id="detail-failure-list"></div>
+        </div>
+        <div class="card">
+          <h3>Final world state</h3>
+          <div id="detail-world" class="kv-grid mono"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Event timeline</h3>
+        <div id="detail-events" class="timeline"></div>
+      </div>
+
+      <div class="card">
+        <h3>Agent action mix</h3>
+        <div id="detail-agents" class="agent-bars"></div>
+      </div>
+    </section>
+
+    <!-- ===================== COMPARE ===================== -->
+    <section id="tab-compare" class="tab-panel">
+      <div class="card">
+        <h2>Compare two runs</h2>
+        <div class="row two-col">
+          <div class="field">
+            <label for="cmp-a">Run A</label>
+            <select id="cmp-a"></select>
+          </div>
+          <div class="field">
+            <label for="cmp-b">Run B</label>
+            <select id="cmp-b"></select>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="cmp-go" class="primary">Compare</button>
+        </div>
+      </div>
+
+      <div id="cmp-result" class="hidden">
+        <div class="grid two-col">
+          <div class="card">
+            <h3>Failures by type</h3>
+            <div id="cmp-failures"></div>
+          </div>
+          <div class="card">
+            <h3>Final state</h3>
+            <div id="cmp-world"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Action mix per agent</h3>
+          <div id="cmp-agents"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== ABOUT ===================== -->
+    <section id="tab-about" class="tab-panel">
+      <div class="card">
+        <h2>About drift</h2>
+        <p>
+          Drift is a multi-agent stress-test simulator. It puts a small team of AI agents
+          into a fake environment that changes over time, and watches for failures that only
+          show up when agents work together — contradictions, loops, hallucinated references,
+          coordination failures across timesteps.
+        </p>
+        <p>
+          This UI runs locally against the same Python codebase you'd use from the CLI.
+          Runs are written to <code>runs/</code> as JSONL and can be replayed or compared.
+        </p>
+        <h3>Topologies</h3>
+        <div id="about-topologies"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <div id="toast-host"></div>
+
+  <script src="/web/app.js"></script>
+</body>
+</html>
