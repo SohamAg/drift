@@ -92,6 +92,16 @@ class CompareRequest(BaseModel):
     run_b: str
 
 
+class ForkRunRequest(BaseModel):
+    """Fork an existing run at a chosen step with optional overrides."""
+    branch_at_step: int = Field(ge=0)
+    seed: int | None = None
+    prompt_variants: dict[str, str] = Field(default_factory=dict)  # role -> 'naive'|'hardened'
+    disabled_agents: list[str] = Field(default_factory=list)
+    extend_by: int | None = None
+    new_run_id: str | None = None
+
+
 # ---- helpers --------------------------------------------------------------
 
 def _build_llm(req: StartRunRequest, topology: Topology) -> LLMClient:
@@ -137,10 +147,39 @@ def _summarize_run_dir(run_dir: Path) -> dict[str, Any]:
         "prompt_variant": meta.get("prompt_variant"),
         "started_at": meta.get("started_at"),
         "steps_requested": meta.get("steps"),
+        # Lineage — present when this run is a fork.
+        "parent_run_id": meta.get("parent_run_id"),
+        "branch_at_step": meta.get("branch_at_step"),
+        "fork_overrides": meta.get("fork_overrides"),
     }
 
 
 # ---- background task ------------------------------------------------------
+
+def _wire_progress(state: _RunState, runner: SimulationRunner) -> None:
+    """Hook runner._tick so every step updates the polled `_RunState`.
+    Shared between fresh runs and forks."""
+    original_tick = runner._tick
+
+    async def progress_tick(t: int) -> None:
+        prev_events = len(runner.events)
+        prev_failures = len(runner.failures)
+        await original_tick(t)
+        with _RUNS_LOCK:
+            state.completed_steps = t
+            state.failure_count = len(runner.failures)
+            state.world_state = runner.world.state.model_dump(mode="json")
+            ftype: dict[str, int] = {}
+            for f in runner.failures:
+                ftype[f.failure_type] = ftype.get(f.failure_type, 0) + 1
+            state.failures_by_type = ftype
+            state.recent_events = [e.model_dump(mode="json") for e in runner.events[-12:]]
+            state.recent_failures = [f.model_dump(mode="json") for f in runner.failures[-8:]]
+            state.recent_actions = [a.model_dump(mode="json") for a in runner.actions[-4:]]
+            state.last_step_event_count = len(runner.events) - prev_events
+            state.last_step_failure_count = len(runner.failures) - prev_failures
+    runner._tick = progress_tick  # type: ignore[assignment]
+
 
 async def _execute_run(state: _RunState, req: StartRunRequest) -> None:
     """Runs the simulation. Updates `state` so the UI can poll progress."""
@@ -167,7 +206,6 @@ async def _execute_run(state: _RunState, req: StartRunRequest) -> None:
         run_dir = RUNS_DIR / state.run_id
         logger = RunLogger(base_dir=RUNS_DIR, run_id=state.run_id)
 
-        # Persist the run config alongside the logs so the UI can show it later.
         meta = {
             "topology": req.topology,
             "scenario": req.scenario,
@@ -188,35 +226,46 @@ async def _execute_run(state: _RunState, req: StartRunRequest) -> None:
             logger=logger,
             initial_world=topology.initial_world(),
         )
-
-        # Wrap _tick so we can update progress as the simulation advances.
-        original_tick = runner._tick
-
-        async def progress_tick(t: int) -> None:
-            prev_events = len(runner.events)
-            prev_failures = len(runner.failures)
-            await original_tick(t)
-            with _RUNS_LOCK:
-                state.completed_steps = t
-                state.failure_count = len(runner.failures)
-                state.world_state = runner.world.state.model_dump(mode="json")
-                # Tally for the live ticker.
-                ftype: dict[str, int] = {}
-                for f in runner.failures:
-                    ftype[f.failure_type] = ftype.get(f.failure_type, 0) + 1
-                state.failures_by_type = ftype
-                # Latest 12 events / 8 failures / 4 actions, newest last.
-                state.recent_events = [e.model_dump(mode="json") for e in runner.events[-12:]]
-                state.recent_failures = [f.model_dump(mode="json") for f in runner.failures[-8:]]
-                state.recent_actions = [a.model_dump(mode="json") for a in runner.actions[-4:]]
-                state.last_step_event_count = len(runner.events) - prev_events
-                state.last_step_failure_count = len(runner.failures) - prev_failures
-        runner._tick = progress_tick  # type: ignore[assignment]
-
+        _wire_progress(state, runner)
         try:
             await runner.run()
         finally:
             logger.close()
+
+        state.status = "done"
+        state.finished_at = dt.datetime.now().isoformat(timespec="seconds")
+    except Exception as e:
+        state.status = "failed"
+        state.error = f"{type(e).__name__}: {e}"
+        state.finished_at = dt.datetime.now().isoformat(timespec="seconds")
+        traceback.print_exc()
+
+
+async def _execute_fork(state: _RunState, parent_run_id: str, req: ForkRunRequest) -> None:
+    """Runs a fork via drift.fork.build_fork. Updates `state` for polling."""
+    from drift.fork import ForkConfig, ForkOverrides, build_fork
+    try:
+        state.status = "running"
+        reset_all_counters()
+        overrides = ForkOverrides(
+            seed=req.seed,
+            prompt_variants=dict(req.prompt_variants or {}),
+            disabled_agents=set(req.disabled_agents or []),
+        )
+        cfg = ForkConfig(
+            parent_run_id=parent_run_id,
+            branch_at_step=req.branch_at_step,
+            overrides=overrides,
+            new_run_id=state.run_id,
+            extend_by=req.extend_by,
+        )
+        runner, _meta = build_fork(cfg, runs_dir=RUNS_DIR)
+        _wire_progress(state, runner)
+        try:
+            await runner.run()
+        finally:
+            if runner.logger:
+                runner.logger.close()
 
         state.status = "done"
         state.finished_at = dt.datetime.now().isoformat(timespec="seconds")
@@ -308,6 +357,49 @@ def create_app() -> FastAPI:
         # Schedule the simulation as a background task on the running event loop.
         asyncio.create_task(_execute_run(state, req))
         return {"run_id": run_id, "status": state.status}
+
+    @app.post("/api/runs/{parent_run_id}/fork")
+    async def fork_run(parent_run_id: str, req: ForkRunRequest) -> dict[str, Any]:
+        parent_dir = RUNS_DIR / parent_run_id
+        if not parent_dir.is_dir():
+            raise HTTPException(404, f"parent run not found: {parent_run_id}")
+        # Default new_run_id mirrors the fork.py convention.
+        new_run_id = req.new_run_id or f"{parent_run_id}__fork_at_{req.branch_at_step}"
+        if (RUNS_DIR / new_run_id).exists():
+            raise HTTPException(409, f"run_id {new_run_id!r} already exists")
+
+        # Approximate total steps for the live progress bar. The actual step
+        # count is determined inside build_fork (parent total - branch_at_step
+        # by default, or req.extend_by if given).
+        try:
+            parent_meta_path = parent_dir / "run_meta.json"
+            parent_meta = json.loads(parent_meta_path.read_text(encoding="utf-8"))
+            parent_total = int(parent_meta.get("steps", 0))
+        except Exception:
+            parent_total = 0
+        approx_steps = req.extend_by if req.extend_by is not None \
+            else max(1, parent_total - req.branch_at_step)
+
+        state = _RunState(
+            run_id=new_run_id,
+            total_steps=approx_steps,
+            request={
+                "parent_run_id": parent_run_id,
+                "branch_at_step": req.branch_at_step,
+                "topology": parent_meta.get("topology") if "parent_meta" in dir() else None,
+                **req.model_dump(),
+            },
+        )
+        # Decorate the request dict with topology if we can read it from parent meta.
+        try:
+            state.request["topology"] = parent_meta.get("topology")
+        except Exception:
+            pass
+        with _RUNS_LOCK:
+            _RUNS[new_run_id] = state
+
+        asyncio.create_task(_execute_fork(state, parent_run_id, req))
+        return {"run_id": new_run_id, "status": state.status, "parent_run_id": parent_run_id}
 
     @app.get("/api/runs/{run_id}/status")
     def run_status(run_id: str) -> dict[str, Any]:

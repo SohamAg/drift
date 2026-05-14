@@ -37,9 +37,12 @@ class Topology:
     initial_world: Callable[[], World]
 
 
-# Populated by importing each topology module below. Done lazily inside
-# `get_topology()` so failures in one topology module don't break the others.
+# Populated by importing each topology module below. We track loaded-state
+# with a separate flag rather than the dict's emptiness, because side-effect
+# imports elsewhere (e.g. reset_all_counters touching code_review.agents)
+# can register a subset and trick the "if not _TOPOLOGIES" guard.
 _TOPOLOGIES: dict[str, Topology] = {}
+_LOADED: bool = False
 
 
 def register(topology: Topology) -> None:
@@ -47,7 +50,7 @@ def register(topology: Topology) -> None:
 
 
 def get_topology(name: str) -> Topology:
-    if not _TOPOLOGIES:
+    if not _LOADED:
         _load_all()
     if name not in _TOPOLOGIES:
         raise KeyError(
@@ -57,13 +60,15 @@ def get_topology(name: str) -> Topology:
 
 
 def list_topologies() -> list[str]:
-    if not _TOPOLOGIES:
+    if not _LOADED:
         _load_all()
     return sorted(_TOPOLOGIES.keys())
 
 
 def _load_all() -> None:
-    # Import each topology so it self-registers.
+    """Import every topology module so it self-registers. Idempotent."""
+    global _LOADED
     from drift.topologies import support  # noqa: F401
     from drift.topologies import code_review  # noqa: F401
     from drift.topologies import ops  # noqa: F401
+    _LOADED = True

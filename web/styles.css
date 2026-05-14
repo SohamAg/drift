@@ -279,6 +279,22 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 4px var(--accent-soft);
 }
 
+/* Native <select> dropdown popup. The closed control inherits our styling
+   from the rule above, but the OPEN dropdown list is rendered by the OS
+   and ignores our select styles — we have to target `option` directly.
+   In dark mode this turns the OS-default white-on-white into readable
+   contrast. Chrome/Edge respect this; older Firefox/Safari are weaker. */
+select option,
+select optgroup {
+  background: var(--bg-input);
+  color: var(--fg);
+}
+select option:checked,
+select option:hover {
+  background: var(--accent-soft);
+  color: var(--fg-strong);
+}
+
 .seg {
   display: inline-grid;
   grid-template-columns: 1fr 1fr;
@@ -796,6 +812,153 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .topo-card p { margin: 0 0 10px; font-size: 12.5px; color: var(--fg-muted); line-height: 1.5; }
 .topo-card .pill { margin: 2px 4px 2px 0; }
+
+/* ----------------------------------------------------------------- modal */
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(2, 6, 23, .55);
+  backdrop-filter: blur(4px) saturate(140%);
+  -webkit-backdrop-filter: blur(4px) saturate(140%);
+  z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  animation: fade-in .15s ease;
+}
+.modal {
+  width: 100%;
+  max-width: 540px;
+  max-height: 92vh;
+  overflow: hidden;
+  background: var(--bg-elev);
+  background-image: var(--card-grad);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column;
+  animation: modal-in .2s cubic-bezier(.2,.7,.2,1);
+}
+@keyframes modal-in {
+  from { transform: translateY(8px) scale(.98); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+.modal-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.modal-close {
+  font-size: 22px; line-height: 1; padding: 4px 10px;
+}
+.modal-body {
+  padding: 18px 22px;
+  overflow-y: auto;
+}
+.modal-foot {
+  display: flex; justify-content: flex-end; gap: 10px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev-2);
+}
+.fork-variants, .fork-disable {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 4px;
+}
+.fork-variant-row, .fork-disable-row {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 12.5px;
+}
+.fork-variant-row label, .fork-disable-row label {
+  margin: 0; padding: 0; font-weight: 500; flex: 1; cursor: pointer;
+}
+.fork-variant-row select {
+  width: auto; min-width: 110px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.fork-disable-row input[type="checkbox"] {
+  width: 14px; height: 14px; accent-color: var(--accent);
+}
+
+/* lineage badge under the detail title */
+.detail-title-row {
+  display: flex; justify-content: space-between; align-items: flex-end;
+  gap: 12px; flex-wrap: wrap;
+}
+.detail-actions { display: flex; gap: 8px; }
+.lineage-badge {
+  display: inline-flex; align-items: center; gap: 10px;
+  margin: 8px 0 12px;
+  padding: 8px 12px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--fg);
+}
+.lineage-badge .lineage-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px;
+  background: var(--accent-strong); color: white;
+  border-radius: 5px;
+  font-weight: 700; font-size: 11px;
+}
+.lineage-badge .mono {
+  background: var(--bg-input);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+/* fork indicator in runs table */
+.fork-indicator {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--fg-subtle);
+  margin-left: 6px;
+}
+.fork-indicator .branch-glyph {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* range slider visual */
+input[type="range"] {
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  padding: 8px 0;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px; background: var(--bg-elev-2); border-radius: 2px;
+  border: 1px solid var(--border);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent-strong);
+  border: 2px solid var(--bg-elev);
+  margin-top: -7px;
+  box-shadow: 0 0 0 1px var(--border-strong), 0 4px 8px var(--accent-glow);
+  cursor: pointer;
+}
+input[type="range"]::-moz-range-track {
+  height: 4px; background: var(--bg-elev-2); border-radius: 2px; border: 1px solid var(--border);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent-strong);
+  border: 2px solid var(--bg-elev);
+  cursor: pointer;
+}
 
 /* --------------------------------------------------------------- toast */
 #toast-host {

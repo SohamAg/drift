@@ -49,6 +49,8 @@ class SimulationRunner:
         detectors: Iterable[Detector] | None = None,
         logger: RunLogger | None = None,
         initial_world: World | None = None,
+        start_step: int = 0,
+        disabled_agents: Iterable[str] | None = None,
     ) -> None:
         self.agents = agents
         self.scheduler = scheduler
@@ -61,9 +63,16 @@ class SimulationRunner:
         self.actions: list[Action] = []
         self.failures: list[FailureRecord] = []
         self._reported: set[str] = set()
+        # Fork support: loop runs (start_step, start_step + steps]. The world's
+        # timestep is reset on each begin_step so an injected initial world
+        # gets advanced properly.
+        self.start_step = start_step
+        self.disabled_agents: set[str] = set(disabled_agents or ())
 
     async def run(self) -> RunResult:
-        for t in range(1, self.steps + 1):
+        start = self.start_step + 1
+        end = self.start_step + self.steps + 1
+        for t in range(start, end):
             await self._tick(t)
 
         return RunResult(
@@ -86,11 +95,13 @@ class SimulationRunner:
             if self.logger:
                 self.logger.log_event(record)
 
-        # 2. agents observe + decide concurrently (snapshot-of-world view)
-        actions: list[Action] = await asyncio.gather(*(a.step(self.world) for a in self.agents))
+        # 2. agents observe + decide concurrently (snapshot-of-world view).
+        # Disabled agents are skipped entirely — they don't observe, decide, or act.
+        active = [a for a in self.agents if a.name not in self.disabled_agents]
+        actions: list[Action] = await asyncio.gather(*(a.step(self.world) for a in active))
 
         # 3. apply actions sequentially in agent-name order so runs stay deterministic
-        for action, agent in sorted(zip(actions, self.agents), key=lambda pair: pair[0].agent_name):
+        for action, agent in sorted(zip(actions, active), key=lambda pair: pair[0].agent_name):
             agent.apply(action, self.world)
             self.actions.append(action)
             self.metrics.record_action(action)
