@@ -533,6 +533,36 @@
 
   $('#detail-back').addEventListener('click', () => activateTab('runs'));
 
+  // Fork button + modal wiring is set up once. The modal pulls context from
+  // the currently-open run detail when it opens.
+  let CURRENT_DETAIL = null;  // last loaded run-detail data
+  $('#detail-fork-btn').addEventListener('click', () => {
+    if (!CURRENT_DETAIL) { toast('Open a run first', 'error'); return; }
+    openForkModal(CURRENT_DETAIL);
+  });
+  $('#detail-compare-parent-btn').addEventListener('click', () => {
+    const parent = CURRENT_DETAIL?.summary?.parent_run_id;
+    const self = CURRENT_DETAIL?.summary?.run_id;
+    if (!parent || !self) return;
+    activateTab('compare');
+    setTimeout(() => {
+      $('#cmp-a').value = parent;
+      $('#cmp-b').value = self;
+      $('#cmp-go').click();
+    }, 50);
+  });
+  $$('#fork-modal .modal-close').forEach(b => b.addEventListener('click', closeForkModal));
+  $('#fork-modal').addEventListener('click', (ev) => {
+    if (ev.target.id === 'fork-modal') closeForkModal();
+  });
+  $('#fork-at-slider').addEventListener('input', (ev) => {
+    $('#fork-at').value = ev.target.value;
+  });
+  $('#fork-at').addEventListener('input', (ev) => {
+    $('#fork-at-slider').value = ev.target.value;
+  });
+  $('#fork-submit').addEventListener('click', submitFork);
+
   async function openRunDetail(runId) {
     showDetail();
     $('#detail-title').textContent = runId;

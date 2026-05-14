@@ -165,6 +165,22 @@ def print_report(result: RunResult) -> None:
 
 def cmd_run(args: argparse.Namespace) -> int:
     runner = build_runner(args)
+    # Persist run metadata so this run is forkable / comparable later.
+    if runner.logger:
+        import datetime as _dt
+        meta = {
+            "topology": args.topology,
+            "scenario": args.scenario.name if args.scenario else None,
+            "seed": args.seed,
+            "llm": args.llm,
+            "model": args.model,
+            "prompt_variant": args.prompt_variant,
+            "steps": args.steps,
+            "started_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        }
+        (runner.logger.run_dir / "run_meta.json").write_text(
+            json.dumps(meta, indent=2), encoding="utf-8"
+        )
     try:
         result = asyncio.run(runner.run())
     finally:
@@ -282,6 +298,53 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-log", action="store_true")
 
 
+def _parse_kv_pairs(items: list[str] | None) -> dict[str, str]:
+    """Parse --variant role=value occurrences into a dict. Empty list → {}."""
+    out: dict[str, str] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise SystemExit(f"--variant must be role=value, got {item!r}")
+        role, _, value = item.partition("=")
+        out[role.strip()] = value.strip()
+    return out
+
+
+def cmd_fork(args: argparse.Namespace) -> int:
+    from drift.fork import ForkConfig, ForkOverrides, build_fork
+    overrides = ForkOverrides(
+        seed=args.seed,
+        prompt_variants=_parse_kv_pairs(args.variant),
+        disabled_agents=set(args.disable or []),
+    )
+    cfg = ForkConfig(
+        parent_run_id=args.parent,
+        branch_at_step=args.at,
+        overrides=overrides,
+        new_run_id=args.run_id,
+        extend_by=args.extend,
+    )
+    try:
+        from drift.testing import reset_all_counters
+        reset_all_counters()
+        runner, meta = build_fork(cfg, runs_dir=args.runs_dir)
+    except (FileNotFoundError, FileExistsError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    try:
+        result = asyncio.run(runner.run())
+    finally:
+        if runner.logger:
+            runner.logger.close()
+    print(f"forked {cfg.parent_run_id} at t={cfg.branch_at_step}")
+    print(f"new run: {runner.logger.run_dir.name if runner.logger else '(unlogged)'}")
+    if overrides.seed is not None:           print(f"  seed override            : {overrides.seed}")
+    if overrides.prompt_variants:            print(f"  prompt variant overrides : {overrides.prompt_variants}")
+    if overrides.disabled_agents:            print(f"  disabled agents          : {sorted(overrides.disabled_agents)}")
+    print()
+    print_report(result)
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     try:
         from drift.server import serve
@@ -311,11 +374,26 @@ def main(argv: list[str] | None = None) -> int:
     srv_p.add_argument("--port", type=int, default=8765)
     srv_p.add_argument("--reload", action="store_true", help="auto-reload on code changes (dev)")
 
+    fork_p = sub.add_parser("fork", help="counterfactual replay: re-run a parent run from a chosen step with overrides")
+    fork_p.add_argument("--parent", required=True, help="parent run_id to fork from")
+    fork_p.add_argument("--at", type=int, required=True, help="branch at this timestep (0 = from start)")
+    fork_p.add_argument("--seed", type=int, default=None, help="override RNG seed (defaults to parent's seed)")
+    fork_p.add_argument("--variant", action="append", default=None,
+                        help="prompt-variant override: role=naive|hardened (repeatable)")
+    fork_p.add_argument("--disable", action="append", default=None,
+                        help="disable an agent by name (repeatable)")
+    fork_p.add_argument("--extend", type=int, default=None,
+                        help="extra steps to run from the branch point (defaults to parent's total - at)")
+    fork_p.add_argument("--run-id", default=None, help="explicit run dir name for the fork")
+    fork_p.add_argument("--runs-dir", type=Path, default=Path("runs"))
+
     args = parser.parse_args(argv)
     if args.cmd == "compare":
         return cmd_compare(args)
     if args.cmd == "serve":
         return cmd_serve(args)
+    if args.cmd == "fork":
+        return cmd_fork(args)
     return cmd_run(args)
 
 

@@ -142,7 +142,14 @@
     <section id="tab-detail" class="tab-panel">
       <div class="card detail-head">
         <button class="ghost-btn back-btn" id="detail-back">← Runs</button>
-        <h2 id="detail-title">Run</h2>
+        <div class="detail-title-row">
+          <h2 id="detail-title">Run</h2>
+          <div class="detail-actions">
+            <button id="detail-fork-btn" class="primary">Fork from…</button>
+            <button id="detail-compare-parent-btn" class="ghost-btn hidden">Compare with parent</button>
+          </div>
+        </div>
+        <div id="detail-lineage" class="lineage-badge hidden"></div>
         <div id="detail-meta" class="kv-grid"></div>
       </div>
 
@@ -229,6 +236,55 @@
   </main>
 
   <div id="toast-host"></div>
+
+  <!-- Fork modal — hidden until the Fork button is clicked from Run Detail. -->
+  <div id="fork-modal" class="modal-backdrop hidden" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="fork-modal-title">
+      <div class="modal-head">
+        <h2 id="fork-modal-title">Fork run</h2>
+        <button class="ghost-btn modal-close" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted" id="fork-modal-context"></p>
+
+        <div class="field">
+          <label for="fork-at">Branch at timestep</label>
+          <div class="row two-col">
+            <input type="range" id="fork-at-slider" min="0" max="0" step="1" value="0" />
+            <input type="number" id="fork-at" min="0" value="0" />
+          </div>
+          <p class="help" id="fork-at-help">0 = re-run from the beginning. Higher = branch later.</p>
+        </div>
+
+        <div class="field">
+          <label for="fork-seed">Override seed <span class="muted">(optional)</span></label>
+          <input type="number" id="fork-seed" placeholder="inherit from parent" />
+          <p class="help">Leave blank to keep the parent's RNG aligned past the branch point. Override to roll different dice.</p>
+        </div>
+
+        <div class="field">
+          <label>Prompt variant per agent</label>
+          <div id="fork-variants" class="fork-variants"></div>
+          <p class="help">Default inherits the parent's variant. Choose 'hardened' on any role to test rules that target a detector class.</p>
+        </div>
+
+        <div class="field">
+          <label>Disable agents in the branch</label>
+          <div id="fork-disable" class="fork-disable"></div>
+          <p class="help">Disabled agents are skipped from the branch onwards — useful for ablation studies.</p>
+        </div>
+
+        <div class="field">
+          <label for="fork-run-id">New run name <span class="muted">(optional)</span></label>
+          <input type="text" id="fork-run-id" placeholder="auto-generated from parent + branch step" />
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn modal-close">Cancel</button>
+        <button type="button" id="fork-submit" class="primary">Launch fork</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/web/app.js"></script>
 </body>
