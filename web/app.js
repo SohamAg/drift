@@ -508,7 +508,14 @@
         r.n_failures < 10 ? 'info' :
         r.n_failures < 50 ? 'warning' : 'critical';
       const tr = el('tr', { class: 'table-row-link', onclick: () => openRunDetail(r.run_id) }, [
-        el('td', { class: 'mono nowrap', text: r.run_id }),
+        el('td', { class: 'mono nowrap' }, [
+          r.parent_run_id
+            ? el('span', { class: 'fork-indicator', title: `forked from ${r.parent_run_id} at t=${r.branch_at_step}` }, [
+                el('span', { class: 'branch-glyph', text: '⑂' }),
+              ])
+            : null,
+          r.run_id,
+        ]),
         el('td', {}, r.topology
           ? el('span', { class: `pill topo-${r.topology}` }, [topoDot(r.topology), r.topology])
           : '—'),
@@ -567,6 +574,8 @@
     showDetail();
     $('#detail-title').textContent = runId;
     $('#detail-meta').innerHTML = '';
+    $('#detail-lineage').classList.add('hidden');
+    $('#detail-compare-parent-btn').classList.add('hidden');
     $('#detail-failure-summary').innerHTML = '<div class="empty">Loading…</div>';
     $('#detail-failure-list').innerHTML = '';
     $('#detail-events').innerHTML = '';
@@ -582,11 +591,50 @@
       return;
     }
 
+    CURRENT_DETAIL = data;
     paintDetailMeta(data.summary);
+    paintLineage(data.summary);
     paintFailures(data.failures);
     paintTimeline(data.events);
     paintAgents(data.actions);
     paintWorld(data.snapshots);
+  }
+
+  function paintLineage(s) {
+    const badge = $('#detail-lineage');
+    const cmpBtn = $('#detail-compare-parent-btn');
+    if (!s.parent_run_id) {
+      badge.classList.add('hidden');
+      cmpBtn.classList.add('hidden');
+      return;
+    }
+    badge.innerHTML = '';
+    badge.appendChild(el('span', { class: 'lineage-icon', text: '⑂' }));
+    badge.appendChild(el('span', {}, [
+      'Forked from ',
+      el('a', {
+        href: '#', class: 'mono',
+        text: s.parent_run_id,
+        onclick: (ev) => { ev.preventDefault(); openRunDetail(s.parent_run_id); },
+      }),
+      ' at ',
+      el('span', { class: 'mono', text: `t=${s.branch_at_step}` }),
+    ]));
+    // Summarize the override knobs that were used.
+    const o = s.fork_overrides || {};
+    const overrideBits = [];
+    if (o.seed != null) overrideBits.push(`seed=${o.seed}`);
+    if (o.prompt_variants && Object.keys(o.prompt_variants).length) {
+      overrideBits.push(Object.entries(o.prompt_variants).map(([r, v]) => `${r}:${v}`).join(', '));
+    }
+    if (o.disabled_agents && o.disabled_agents.length) {
+      overrideBits.push('disabled ' + o.disabled_agents.join(','));
+    }
+    if (overrideBits.length) {
+      badge.appendChild(el('span', { class: 'muted', text: ' · ' + overrideBits.join(' · ') }));
+    }
+    badge.classList.remove('hidden');
+    cmpBtn.classList.remove('hidden');
   }
 
   function paintDetailMeta(s) {
@@ -845,6 +893,131 @@
         ]),
       ]));
     });
+  }
+
+  // ---------- fork modal -------------------------------------------------
+
+  function openForkModal(detail) {
+    const summary = detail.summary;
+    const topoName = summary.topology;
+    if (!topoName) { toast('This run has no topology metadata; cannot fork', 'error'); return; }
+    const topology = TOPOLOGIES.find(t => t.name === topoName);
+    if (!topology) { toast('Unknown topology in this run', 'error'); return; }
+
+    const finalStep = summary.final_step || (detail.snapshots?.length ?? 0);
+    const ctx = $('#fork-modal-context');
+    ctx.innerHTML = '';
+    ctx.appendChild(el('span', { text: 'Forking from ' }));
+    ctx.appendChild(el('span', { class: 'mono', text: summary.run_id }));
+    ctx.appendChild(el('span', { text: ` · ${finalStep} steps completed · topology ` }));
+    ctx.appendChild(el('span', { class: `pill topo-${topoName}` }, [topoDot(topoName), topoName]));
+
+    // Branch-at-step controls
+    const at = Math.max(0, Math.floor(finalStep / 2));  // default to halfway
+    $('#fork-at-slider').min = 0;
+    $('#fork-at-slider').max = finalStep;
+    $('#fork-at-slider').value = at;
+    $('#fork-at').min = 0;
+    $('#fork-at').max = finalStep;
+    $('#fork-at').value = at;
+    $('#fork-at-help').textContent = `0 = re-run from the beginning. Higher = branch later. Max ${finalStep}.`;
+
+    $('#fork-seed').value = '';
+    $('#fork-run-id').value = '';
+
+    // Prompt-variant rows per role.
+    const variantHost = $('#fork-variants');
+    variantHost.innerHTML = '';
+    const parentVariant = summary.prompt_variant || 'naive';
+    topology.roles.forEach(role => {
+      const row = el('div', { class: 'fork-variant-row' }, [
+        el('label', {}, [topoDot(topoName), role]),
+        el('select', { 'data-role': role }, [
+          el('option', { value: '', text: `inherit (${parentVariant})` }),
+          el('option', { value: 'naive', text: 'naive' }),
+          el('option', { value: 'hardened', text: 'hardened' }),
+        ]),
+      ]);
+      variantHost.appendChild(row);
+    });
+
+    // Disable-agent checkboxes per role.
+    const disableHost = $('#fork-disable');
+    disableHost.innerHTML = '';
+    topology.roles.forEach(role => {
+      const id = `fork-dis-${role}`;
+      const row = el('div', { class: 'fork-disable-row' }, [
+        el('label', { for: id, text: role }),
+        el('input', { type: 'checkbox', id, 'data-role': role }),
+      ]);
+      disableHost.appendChild(row);
+    });
+
+    const modal = $('#fork-modal');
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+    // Focus the timestep input for quick keyboard editing.
+    setTimeout(() => $('#fork-at').focus(), 50);
+  }
+
+  function closeForkModal() {
+    const modal = $('#fork-modal');
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+  }
+
+  async function submitFork() {
+    if (!CURRENT_DETAIL) return;
+    const parentId = CURRENT_DETAIL.summary.run_id;
+
+    const branchAt = parseInt($('#fork-at').value, 10);
+    if (Number.isNaN(branchAt) || branchAt < 0) {
+      toast('Branch step must be a non-negative integer', 'error');
+      return;
+    }
+    const seedRaw = $('#fork-seed').value;
+    const seed = seedRaw === '' ? null : parseInt(seedRaw, 10);
+
+    // Collect variant overrides — only include roles where the user picked something.
+    const variants = {};
+    $$('#fork-variants select').forEach(sel => {
+      if (sel.value) variants[sel.dataset.role] = sel.value;
+    });
+
+    // Collect disabled agents.
+    const disabled = [];
+    $$('#fork-disable input[type=checkbox]').forEach(cb => {
+      if (cb.checked) disabled.push(cb.dataset.role);
+    });
+
+    const runIdRaw = $('#fork-run-id').value.trim();
+    const body = {
+      branch_at_step: branchAt,
+      seed,
+      prompt_variants: variants,
+      disabled_agents: disabled,
+      new_run_id: runIdRaw || null,
+    };
+
+    const submitBtn = $('#fork-submit');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Launching…';
+    try {
+      const res = await api(`/api/runs/${encodeURIComponent(parentId)}/fork`, {
+        method: 'POST', body,
+      });
+      closeForkModal();
+      toast(`Fork started: ${res.run_id}`, 'success');
+      // Switch to the New Run tab so the live status panel is visible.
+      activateTab('new');
+      pollRunStatus(res.run_id);
+      refreshRuns();  // updates the table in the background
+    } catch (e) {
+      toast('Fork failed: ' + e.message, 'error');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Launch fork';
+    }
   }
 
   function paintCompareAgents(data) {
