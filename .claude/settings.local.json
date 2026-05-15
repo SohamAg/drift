@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.google.com)",
+      "WebFetch(domain:hn.algolia.com)",
+      "Bash(python -m drift analyze examples/traces/support_sample.jsonl --topology support)",
+      "Bash(PYTHONPATH=src python -m drift analyze examples/traces/support_sample.jsonl --topology support)"
+    ]
+  }
+}
