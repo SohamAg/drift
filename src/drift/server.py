@@ -90,6 +90,7 @@ class StartRunRequest(BaseModel):
 class CompareRequest(BaseModel):
     run_a: str
     run_b: str
+    mode: str = "auto"   # "total" | "post_branch" | "auto" — auto picks post_branch when a relationship exists
 
 
 class ForkRunRequest(BaseModel):
@@ -120,6 +121,55 @@ def _load_jsonl(p: Path) -> list[dict]:
     if not p.exists():
         return []
     return [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _build_timeline(
+    a_failures: list[dict],
+    b_failures: list[dict],
+    *,
+    a_events: list[dict],
+    b_events: list[dict],
+    a_snap: list[dict],
+    b_snap: list[dict],
+    divergence_step: int | None,
+) -> dict[str, Any]:
+    """Per-timestep rollup for the divergence visualization.
+
+    For each step that appears in either run, return what happened in A and
+    what happened in B: event names that fired, failure types that triggered,
+    and the snapshot's sentiment + open-cases count for quick visual context.
+    """
+    def per_step_rollup(failures, events, snaps):
+        steps: dict[int, dict[str, Any]] = {}
+        for e in events:
+            t = int(e["timestep"])
+            steps.setdefault(t, {"events": [], "failures": [], "sentiment": None, "open": None})
+            steps[t]["events"].append(e["name"])
+        for f in failures:
+            t = int(f["timestep"])
+            steps.setdefault(t, {"events": [], "failures": [], "sentiment": None, "open": None})
+            steps[t]["failures"].append(f["failure_type"])
+        for s in snaps:
+            t = int(s["timestep"])
+            steps.setdefault(t, {"events": [], "failures": [], "sentiment": None, "open": None})
+            steps[t]["sentiment"] = s.get("customer_sentiment")
+            steps[t]["open"] = len(s.get("open_cases", {}))
+        return steps
+
+    a_steps = per_step_rollup(a_failures, a_events, a_snap)
+    b_steps = per_step_rollup(b_failures, b_events, b_snap)
+    all_steps = sorted(set(a_steps.keys()) | set(b_steps.keys()))
+    return {
+        "divergence_step": divergence_step,
+        "steps": [
+            {
+                "t": t,
+                "a": a_steps.get(t),
+                "b": b_steps.get(t),
+            }
+            for t in all_steps
+        ],
+    }
 
 
 def _summarize_run_dir(run_dir: Path) -> dict[str, Any]:
@@ -436,8 +486,8 @@ def create_app() -> FastAPI:
         b_dir = RUNS_DIR / req.run_b
         if not a_dir.is_dir() or not b_dir.is_dir():
             raise HTTPException(404, "both runs must exist")
-        a = _summarize_run_dir(a_dir)
-        b = _summarize_run_dir(b_dir)
+        a_summary = _summarize_run_dir(a_dir)
+        b_summary = _summarize_run_dir(b_dir)
         a_failures = _load_jsonl(a_dir / "failures.jsonl")
         b_failures = _load_jsonl(b_dir / "failures.jsonl")
         a_actions = _load_jsonl(a_dir / "actions.jsonl")
@@ -445,24 +495,87 @@ def create_app() -> FastAPI:
         a_snap = _load_jsonl(a_dir / "snapshots.jsonl")
         b_snap = _load_jsonl(b_dir / "snapshots.jsonl")
 
-        def by_type(failures):
-            out = {}
+        # ----- relationship detection ---------------------------------
+        # Cases:
+        #   parent_child: one run is the parent of the other (branch_at = child's branch_at_step)
+        #   siblings: both runs share the same parent AND branch_at_step
+        #   unrelated: no shared lineage
+        a_pid = a_summary.get("parent_run_id")
+        b_pid = b_summary.get("parent_run_id")
+        a_bat = a_summary.get("branch_at_step")
+        b_bat = b_summary.get("branch_at_step")
+        relationship = "unrelated"
+        divergence_step: int | None = None
+        if b_pid == a_summary["run_id"] and b_bat is not None:
+            relationship = "parent_child"
+            divergence_step = int(b_bat)
+        elif a_pid == b_summary["run_id"] and a_bat is not None:
+            relationship = "parent_child"
+            divergence_step = int(a_bat)
+        elif a_pid and b_pid and a_pid == b_pid and a_bat == b_bat and a_bat is not None:
+            relationship = "siblings"
+            divergence_step = int(a_bat)
+
+        # ----- mode resolution ---------------------------------------
+        mode = req.mode
+        if mode == "auto":
+            mode = "post_branch" if (relationship != "unrelated") else "total"
+        if mode == "post_branch" and divergence_step is None:
+            mode = "total"
+
+        # ----- aggregation helpers (optionally filtered by step) -----
+        def by_type(failures, after_step: int | None):
+            out: dict[str, int] = {}
             for f in failures:
+                if after_step is not None and f.get("timestep", 0) <= after_step:
+                    continue
                 out[f["failure_type"]] = out.get(f["failure_type"], 0) + 1
             return out
 
-        def by_agent_kind(actions):
-            out = {}
+        def by_agent_kind(actions, after_step: int | None):
+            out: dict[str, dict[str, int]] = {}
             for x in actions:
+                if after_step is not None and x.get("timestep", 0) <= after_step:
+                    continue
                 out.setdefault(x["agent_name"], {})
                 out[x["agent_name"]][x["kind"]] = out[x["agent_name"]].get(x["kind"], 0) + 1
             return out
 
+        # In post_branch mode, count only what happened strictly after the branch step.
+        cutoff = divergence_step if mode == "post_branch" else None
+
+        # Action and failure totals filtered to the active mode.
+        a_filt_failures = [f for f in a_failures if cutoff is None or f.get("timestep", 0) > cutoff]
+        b_filt_failures = [f for f in b_failures if cutoff is None or f.get("timestep", 0) > cutoff]
+        a_filt_actions  = [x for x in a_actions  if cutoff is None or x.get("timestep", 0) > cutoff]
+        b_filt_actions  = [x for x in b_actions  if cutoff is None or x.get("timestep", 0) > cutoff]
+
         return {
-            "a": {**a, "failures_by_type": by_type(a_failures), "actions_by_agent_kind": by_agent_kind(a_actions),
-                  "final": a_snap[-1] if a_snap else {}},
-            "b": {**b, "failures_by_type": by_type(b_failures), "actions_by_agent_kind": by_agent_kind(b_actions),
-                  "final": b_snap[-1] if b_snap else {}},
+            "relationship": relationship,
+            "divergence_step": divergence_step,
+            "mode": mode,
+            "a": {
+                **a_summary,
+                "failures_by_type": by_type(a_failures, cutoff),
+                "actions_by_agent_kind": by_agent_kind(a_actions, cutoff),
+                "final": a_snap[-1] if a_snap else {},
+                "n_failures_in_mode": len(a_filt_failures),
+                "n_actions_in_mode": len(a_filt_actions),
+            },
+            "b": {
+                **b_summary,
+                "failures_by_type": by_type(b_failures, cutoff),
+                "actions_by_agent_kind": by_agent_kind(b_actions, cutoff),
+                "final": b_snap[-1] if b_snap else {},
+                "n_failures_in_mode": len(b_filt_failures),
+                "n_actions_in_mode": len(b_filt_actions),
+            },
+            # Per-step rollups for the divergence timeline. Keys = timesteps.
+            "timeline": _build_timeline(a_failures, b_failures,
+                                        a_events=_load_jsonl(a_dir / "events.jsonl"),
+                                        b_events=_load_jsonl(b_dir / "events.jsonl"),
+                                        a_snap=a_snap, b_snap=b_snap,
+                                        divergence_step=divergence_step),
         }
 
     # Static frontend.

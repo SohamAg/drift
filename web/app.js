@@ -502,12 +502,42 @@
       [r.run_id, r.topology, r.scenario, r.llm, r.prompt_variant].some(x =>
         (x || '').toString().toLowerCase().includes(q)));
     $('#runs-empty').classList.toggle('hidden', filtered.length > 0);
+
+    // Re-order so each child appears immediately after its parent. Children
+    // whose parent isn't in the visible filtered set stay where they were.
+    const byId = new Map(filtered.map(r => [r.run_id, r]));
+    const placed = new Set();
+    const ordered = [];
     filtered.forEach(r => {
+      if (placed.has(r.run_id)) return;
+      // Walk up to the top-most visible parent so we anchor the whole chain.
+      let root = r;
+      while (root.parent_run_id && byId.has(root.parent_run_id)) {
+        root = byId.get(root.parent_run_id);
+      }
+      // Emit root + a DFS over its descendants.
+      const stack = [root];
+      while (stack.length) {
+        const n = stack.shift();
+        if (placed.has(n.run_id)) continue;
+        ordered.push(n);
+        placed.add(n.run_id);
+        const children = filtered.filter(x => x.parent_run_id === n.run_id);
+        // Process children right after this node, preserving their listing order.
+        stack.unshift(...children);
+      }
+    });
+
+    ordered.forEach(r => {
       const failPillClass =
         r.n_failures === 0 ? 'success' :
         r.n_failures < 10 ? 'info' :
         r.n_failures < 50 ? 'warning' : 'critical';
-      const tr = el('tr', { class: 'table-row-link', onclick: () => openRunDetail(r.run_id) }, [
+      const isChild = !!r.parent_run_id && byId.has(r.parent_run_id);
+      const tr = el('tr', {
+        class: 'table-row-link' + (isChild ? ' is-child' : ''),
+        onclick: () => openRunDetail(r.run_id),
+      }, [
         el('td', { class: 'mono nowrap' }, [
           r.parent_run_id
             ? el('span', { class: 'fork-indicator', title: `forked from ${r.parent_run_id} at t=${r.branch_at_step}` }, [
@@ -815,26 +845,144 @@
     });
   }
 
-  $('#cmp-go').addEventListener('click', async () => {
+  // Compare state — remembers the current pair and mode for the toggle.
+  let CMP_STATE = { a: null, b: null, mode: 'auto', data: null };
+
+  async function doCompare(mode) {
     const a = $('#cmp-a').value, b = $('#cmp-b').value;
     if (!a || !b) { toast('Pick two runs', 'error'); return; }
     if (a === b) { toast('Pick two different runs', 'error'); return; }
     let data;
     try {
-      data = await api('/api/compare', { method: 'POST', body: { run_a: a, run_b: b } });
+      data = await api('/api/compare', { method: 'POST', body: { run_a: a, run_b: b, mode } });
     } catch (e) {
       toast('Compare failed: ' + e.message, 'error');
       return;
     }
+    CMP_STATE = { a, b, mode, data };
     paintCompare(data);
-  });
+  }
+
+  $('#cmp-go').addEventListener('click', () => doCompare('auto'));
 
   function paintCompare(data) {
     $('#cmp-result').classList.remove('hidden');
+    paintCompareRelationship(data);
     paintCompareFailures(data);
     paintCompareWorld(data);
+    paintCompareTimeline(data);
     paintCompareAgents(data);
   }
+
+  function paintCompareRelationship(data) {
+    const host = $('#cmp-relationship');
+    host.innerHTML = '';
+    host.classList.remove('hidden');
+    host.classList.add('relationship-card');
+
+    let labelHtml;
+    if (data.relationship === 'parent_child') {
+      labelHtml = el('span', { class: 'label', html:
+        `<strong>Parent–child relationship detected.</strong> ` +
+        `Runs diverge at <code>t=${data.divergence_step}</code>. ` +
+        `Comparing <em>only the divergent steps</em> by default — toggle to see whole-run totals.` });
+    } else if (data.relationship === 'siblings') {
+      labelHtml = el('span', { class: 'label', html:
+        `<strong>Sibling forks detected.</strong> ` +
+        `Both runs forked from the same parent at <code>t=${data.divergence_step}</code>. ` +
+        `Comparing the divergent steps only.` });
+    } else {
+      labelHtml = el('span', { class: 'label', html:
+        `<strong>Unrelated runs.</strong> No shared lineage; comparing totals across the whole runs.` });
+    }
+
+    const leftBlock = el('div', { class: 'left' }, [
+      el('span', { class: 'icon', text: data.relationship === 'unrelated' ? '·' : '⑂' }),
+      labelHtml,
+    ]);
+
+    const toggle = el('div', { class: 'mode-toggle' }, [
+      el('div', {
+        class: 'mode-opt' + (data.mode === 'post_branch' ? ' active' : ''),
+        text: 'Post-branch only',
+        onclick: () => { if (data.relationship !== 'unrelated') doCompare('post_branch'); },
+      }),
+      el('div', {
+        class: 'mode-opt' + (data.mode === 'total' ? ' active' : ''),
+        text: 'Whole runs',
+        onclick: () => doCompare('total'),
+      }),
+    ]);
+
+    host.appendChild(leftBlock);
+    if (data.relationship !== 'unrelated') host.appendChild(toggle);
+  }
+
+  function paintCompareTimeline(data) {
+    const host = $('#cmp-timeline');
+    host.innerHTML = '';
+    const tl = data.timeline;
+    if (!tl || !tl.steps || !tl.steps.length) {
+      host.appendChild(el('div', { class: 'empty', text: 'No timeline data.' }));
+      return;
+    }
+
+    // Header
+    host.appendChild(el('div', { class: 'dt-head' }, [
+      el('div', { text: 't' }),
+      el('div', { class: 'dt-side-a', text: `A · ${truncate(CMP_STATE.a, 28)}` }),
+      el('div', { class: 'dt-side-b', text: `B · ${truncate(CMP_STATE.b, 28)}` }),
+    ]));
+
+    const div = tl.divergence_step;
+    let markerInserted = false;
+
+    tl.steps.forEach(step => {
+      // Insert branch marker right before the first post-divergence row.
+      if (div != null && !markerInserted && step.t > div) {
+        host.appendChild(el('div', { class: 'dt-row branch-marker',
+          text: `↓ DIVERGED FROM t=${div} ↓` }));
+        markerInserted = true;
+      }
+      const isShared = (div != null && step.t <= div);
+      host.appendChild(el('div', { class: 'dt-row ' + (isShared ? 'shared' : 'diverged') }, [
+        el('div', { class: 'dt-step', text: `t=${step.t}` }),
+        renderSide(step.a),
+        renderSide(step.b),
+      ]));
+    });
+
+    function renderSide(side) {
+      const wrap = el('div', { class: 'dt-side' });
+      if (!side) {
+        wrap.appendChild(el('span', { class: 'dt-empty', text: '— no record —' }));
+        return wrap;
+      }
+      const evRow = el('div', {});
+      (side.events || []).forEach(name => {
+        evRow.appendChild(el('span', { class: 'ev-pill', text: name }));
+      });
+      const fRow = el('div', {});
+      (side.failures || []).forEach(ft => {
+        fRow.appendChild(el('span', { class: `fail-pill sev-${sev(ft)}`, text: ft }));
+      });
+      if (!(side.events || []).length && !(side.failures || []).length) {
+        wrap.appendChild(el('span', { class: 'dt-empty', text: '(quiet)' }));
+      } else {
+        if ((side.events || []).length) wrap.appendChild(evRow);
+        if ((side.failures || []).length) wrap.appendChild(fRow);
+      }
+      if (side.sentiment != null || side.open != null) {
+        const meta = [];
+        if (side.sentiment != null) meta.push(`s=${side.sentiment.toFixed(2)}`);
+        if (side.open != null) meta.push(`open=${side.open}`);
+        wrap.appendChild(el('div', { class: 'dt-meta', text: meta.join(' · ') }));
+      }
+      return wrap;
+    }
+  }
+
+  function truncate(s, n) { return (s && s.length > n) ? s.slice(0, n - 1) + '…' : (s || ''); }
 
   function paintCompareFailures(data) {
     const host = $('#cmp-failures');
