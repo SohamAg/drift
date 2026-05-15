@@ -93,6 +93,12 @@ class CompareRequest(BaseModel):
     mode: str = "auto"   # "total" | "post_branch" | "auto" — auto picks post_branch when a relationship exists
 
 
+class AnalyzeRequest(BaseModel):
+    """Analyze a trace pasted/uploaded by the user. Backs the Analyze tab."""
+    topology: str
+    trace: str   # raw JSONL text — one record per line, each with a "type" field
+
+
 class ForkRunRequest(BaseModel):
     """Fork an existing run at a chosen step with optional overrides."""
     branch_at_step: int = Field(ge=0)
@@ -577,6 +583,55 @@ def create_app() -> FastAPI:
                                         a_snap=a_snap, b_snap=b_snap,
                                         divergence_step=divergence_step),
         }
+
+    @app.post("/api/analyze")
+    def analyze(req: AnalyzeRequest) -> dict[str, Any]:
+        """Run drift's detectors against a user-supplied trace.
+
+        The trace is raw JSONL text where each line carries a "type" field of
+        "snapshot" | "action" | "event". See TRACE_SCHEMA.md for the contract.
+        Returns the same shape the CLI's analyze command produces.
+        """
+        from drift.analyze import analyze_records, _split_by_type
+
+        if req.topology not in list_topologies():
+            raise HTTPException(400, f"unknown topology: {req.topology}")
+
+        # Parse each line. Surface line-level errors with a useful index so
+        # the user can fix their paste without guessing.
+        records: list[dict] = []
+        for i, line in enumerate(req.trace.splitlines(), start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                raise HTTPException(400, f"line {i}: invalid JSON ({e.msg})")
+
+        try:
+            snap_raw, act_raw, evt_raw = _split_by_type(records)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+        try:
+            failures, summary = analyze_records(snap_raw, act_raw, evt_raw, req.topology)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+        return {
+            "summary": summary,
+            "failures": [f.model_dump(mode="json") for f in failures],
+        }
+
+    @app.get("/api/sample-trace")
+    def sample_trace() -> dict[str, Any]:
+        """Return the bundled support_sample.jsonl content so the UI's
+        'Load sample' button has a single source of truth."""
+        path = PROJECT_ROOT / "examples" / "traces" / "support_sample.jsonl"
+        if not path.exists():
+            raise HTTPException(404, "sample trace not bundled")
+        return {"topology": "support", "trace": path.read_text(encoding="utf-8")}
 
     # Static frontend.
     if WEB_DIR.exists():
