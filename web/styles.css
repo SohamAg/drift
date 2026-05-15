@@ -1144,3 +1144,15 @@ input[type="range"]::-moz-range-thumb {
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); background-clip: padding-box; }
+
+/* Analyze tab — trace input textarea */
+.trace-input {
+  min-height: 240px;
+  resize: vertical;
+  white-space: pre;
+  overflow: auto;
+  line-height: 1.55;
+  tab-size: 2;
+}
+#analyze-result { margin-top: 16px; }
+#analyze-result .card + .card { margin-top: 16px; }

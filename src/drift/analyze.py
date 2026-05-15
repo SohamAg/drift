@@ -93,6 +93,19 @@ def load_trace(path: Path) -> tuple[list[dict], list[dict], list[dict]]:
 
 # --------------------------------------------------------------- replay --
 
+def analyze_records(
+    snapshots_raw: list[dict],
+    actions_raw: list[dict],
+    events_raw: list[dict],
+    topology_name: str,
+) -> tuple[list[FailureRecord], dict]:
+    """Replay in-memory trace records through detectors. Same semantics as
+    analyze_trace, but accepts already-parsed dict lists (no file I/O).
+    Useful for the web UI, tests, and any other in-memory caller.
+    """
+    return _analyze(snapshots_raw, actions_raw, events_raw, topology_name)
+
+
 def analyze_trace(
     trace_path: Path,
     topology_name: str,
@@ -103,12 +116,25 @@ def analyze_trace(
     set of actions and events up to and including that step — matching what
     drift's SimulationRunner does live. `already_reported` dedupes across steps.
     """
-    topology: Topology = get_topology(topology_name)
-
     snap_raw, act_raw, evt_raw = load_trace(Path(trace_path))
     if not snap_raw:
         raise ValueError(
             f"trace at {trace_path} has no snapshots; cannot run detectors. "
+            "At minimum, provide one snapshot record per timestep."
+        )
+    return _analyze(snap_raw, act_raw, evt_raw, topology_name)
+
+
+def _analyze(
+    snap_raw: list[dict],
+    act_raw: list[dict],
+    evt_raw: list[dict],
+    topology_name: str,
+) -> tuple[list[FailureRecord], dict]:
+    topology: Topology = get_topology(topology_name)
+    if not snap_raw:
+        raise ValueError(
+            "trace has no snapshots; cannot run detectors. "
             "At minimum, provide one snapshot record per timestep."
         )
 
