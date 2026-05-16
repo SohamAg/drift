@@ -44,22 +44,52 @@ SCENARIOS_DIR: Path = PROJECT_ROOT / "scenarios"
 WEB_DIR: Path = PROJECT_ROOT / "web"
 
 
-# Starter snippet for the Custom (BYOA) tab. Designed to fire two detectors
-# out of the box (contradictory_review + hallucinated_reference) so the user
-# sees immediate signal.
+# Starter snippet for the Custom (BYOA) tab. Demonstrates the full
+# bring-your-own pattern: custom WorldState subclass with extra domain
+# fields, custom chaos Event subclass that mutates state, initial_state()
+# and events() callables, plus four decorated agents. Designed to trigger
+# multiple detectors (contradictory_review, hallucinated_reference,
+# security_bypass) so the user sees immediate signal across families.
 _BYOA_EXAMPLE_CODE = '''\
-# Define your agents below. Each @drift.agent function is async and takes
-# (state, memory). Return a drift.Action — drift records it in the action log
-# and runs the detectors against the resulting trace.
-#
-# Replace the bodies with your own LLM / tool / framework calls.
-
+# ──────────────────────────────────────────────────────────────────────
+# 1. Define your environment.  Subclass drift.WorldState to add the fields
+# your domain needs. drift's general detectors read `open_cases`; the
+# code-review topology adds attention to `security_status`.
+# ──────────────────────────────────────────────────────────────────────
 from drift.world import Case
 
 
+class CodeReviewState(drift.WorldState):
+    repository: str = "demo/repo"
+    security_status: dict = {}   # PR id -> "blocked" | "clear"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 2. Define chaos events.  Each Event subclass has an apply(world) method
+# that mutates the world state. Drift calls apply() at the scheduled step.
+# ──────────────────────────────────────────────────────────────────────
+class SecurityFinding(drift.Event):
+    name = "SecurityFinding"
+
+    def __init__(self, pr_id):
+        super().__init__()
+        self.pr_id = pr_id
+
+    def apply(self, world):
+        world.state.security_status[self.pr_id] = "blocked"
+        return drift.EventRecord(
+            event_id=self.event_id,
+            timestep=world.state.timestep,
+            name=self.name,
+            summary=f"security blocked {self.pr_id}",
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 3. Pre-populate the world and schedule events.
+# ──────────────────────────────────────────────────────────────────────
 def initial_state():
-    """Optional. Pre-populates the world with the work items agents will act on."""
-    return drift.WorldState(
+    return CodeReviewState(
         open_cases={
             "PR-1": Case(case_id="PR-1", customer_id="alice",
                          issue="add dark mode toggle", opened_at_step=0),
@@ -67,6 +97,17 @@ def initial_state():
     )
 
 
+def events():
+    """Return [(timestep, event_instance), ...] — drift fires each at its step."""
+    return [
+        (3, SecurityFinding("PR-1")),
+    ]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 4. Define your agents.  Replace the bodies with your own LLM / RAG /
+# tool / framework calls — drift only needs the structured Action back.
+# ──────────────────────────────────────────────────────────────────────
 @drift.agent(role="reviewer", name="reviewer_a")
 async def reviewer_a(state, memory):
     if state.open_cases:
@@ -74,15 +115,15 @@ async def reviewer_a(state, memory):
         return drift.Action(
             kind="approve_review",
             target_case_id=target,
-            rationale=f"reviewer_a thinks {target} looks fine",
+            rationale=f"reviewer_a approves {target}",
         )
     return drift.Action(kind="no_op")
 
 
 @drift.agent(role="reviewer", name="reviewer_b")
 async def reviewer_b(state, memory):
-    # At t=4, deliberately reference a PR that doesn't exist — fires the
-    # hallucinated_reference detector.
+    # At t=4, deliberately reference a PR that doesn't exist — triggers
+    # hallucinated_reference.
     if state.timestep == 4:
         return drift.Action(
             kind="reject_review",
@@ -99,9 +140,28 @@ async def reviewer_b(state, memory):
     return drift.Action(kind="no_op")
 
 
+@drift.agent(role="security")
+async def security(state, memory):
+    # Reads state.security_status — the SecurityFinding event sets it at t=3.
+    for pr_id, status in state.security_status.items():
+        if status == "blocked":
+            return drift.Action(
+                kind="security_block",
+                target_case_id=pr_id,
+                rationale=f"security has findings on {pr_id}",
+            )
+    return drift.Action(kind="no_op")
+
+
 @drift.agent(role="merger")
 async def merger(state, memory):
-    return drift.Action(kind="no_op")
+    # A simple merger that always tries to merge PR-1. Once security has
+    # blocked it (from t=3 onward) this should trigger security_bypass.
+    return drift.Action(
+        kind="merge",
+        target_case_id="PR-1",
+        rationale="merger always merges",
+    )
 '''
 
 

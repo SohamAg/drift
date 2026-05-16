@@ -276,13 +276,18 @@
     <!-- ===================== CUSTOM (BYOA) ===================== -->
     <section id="tab-custom" class="tab-panel">
       <div class="card">
-        <h2>Bring your own agents</h2>
+        <h2>Bring your own agents + environment</h2>
         <p class="help">
-          Define one or more <code>@drift.agent</code> async functions below. Each one
-          returns a <code>drift.Action</code> per timestep. Drift drives your agents through
-          the chosen number of steps and runs its coordination-failure detectors on the
-          resulting action log. Optionally define <code>initial_state()</code> to
-          pre-populate the world and <code>events()</code> to schedule chaos events.
+          Define your multi-agent system in the editor below. Four optional pieces drift looks for:
+        </p>
+        <ul class="help compact-list">
+          <li><strong>Environment</strong> — subclass <code>drift.WorldState</code> with your own fields (orders, inventory, security status, whatever your domain needs)</li>
+          <li><strong>Events</strong> — subclass <code>drift.Event</code> with an <code>apply(world)</code> method that mutates state during a run (chaos injection)</li>
+          <li><strong><code>initial_state()</code></strong> — function returning a populated state instance (drift uses an empty <code>WorldState</code> if absent)</li>
+          <li><strong><code>events()</code></strong> — function returning <code>[(timestep, event_instance), …]</code> for scheduled chaos</li>
+        </ul>
+        <p class="help">
+          Then define one or more <code>@drift.agent</code> async functions that take <code>(state, memory)</code> and return a <code>drift.Action</code>. Replace the function bodies with your real LLM/tool/framework calls — drift only needs the structured Action back so the detectors can read it.
         </p>
         <p class="help warn-text">
           <strong>Note:</strong> this executes Python in the local server process. Safe for
