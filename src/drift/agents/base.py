@@ -36,8 +36,12 @@ def reset_action_counter() -> None:
 
 class Action(BaseModel):
     action_id: str = Field(default_factory=lambda: f"a{next(_action_counter):06d}")
-    timestep: int
-    agent_name: str
+    # timestep and agent_name default so BYOA users can construct an Action
+    # without knowing them — drift's runtime fills them in via model_copy
+    # in _BYOAgent._coerce_to_action. The shipped Agent subclasses still pass
+    # both explicitly.
+    timestep: int = -1
+    agent_name: str = ""
     kind: ActionKind
     target_case_id: str | None = None
     rationale: str = ""
