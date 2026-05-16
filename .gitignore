@@ -12,3 +12,4 @@ venv/
 runs/
 *.log
 .DS_Store
+data/
