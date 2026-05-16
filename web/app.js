@@ -117,6 +117,7 @@
     if (name === 'runs') refreshRuns();
     if (name === 'compare') populateComparePickers();
     if (name === 'analyze') initAnalyze();
+    if (name === 'custom') initCustom();
   }
   $$('.tab').forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
 
@@ -1271,6 +1272,141 @@
     const failures = data.failures || [];
     if (!failures.length) {
       summaryHost.appendChild(el('div', { class: 'empty', text: 'No failures detected in this trace.' }));
+      return;
+    }
+
+    const byType = {};
+    failures.forEach(f => { byType[f.failure_type] = (byType[f.failure_type] || 0) + 1; });
+    const sumGrid = el('div', { class: 'failure-summary' });
+    Object.entries(byType).sort((a, b) => b[1] - a[1]).forEach(([type, count]) => {
+      sumGrid.appendChild(el('div', { class: `failure-cell sev-${sev(type)}` }, [
+        el('div', { class: 'ftype', text: type }),
+        el('div', { class: 'fcount', text: fmt.num(count) }),
+      ]));
+    });
+    summaryHost.appendChild(sumGrid);
+
+    failures.slice(0, 200).forEach(f => {
+      listHost.appendChild(el('div', { class: 'failure-row' }, [
+        el('div', { class: 'step', text: `t=${f.timestep}` }),
+        el('div', {}, [
+          el('div', {}, [
+            el('span', { class: `pill ${sev(f.failure_type) === 'critical' ? 'critical' : sev(f.failure_type)}`, text: f.failure_type }),
+            ' ',
+            el('span', { class: 'muted', text: (f.agents_involved || []).join(', ') || '—' }),
+          ]),
+          el('div', { class: 'mono muted', html: escapeHtml(f.summary || '') }),
+        ]),
+      ]));
+    });
+    if (failures.length > 200) {
+      listHost.appendChild(el('div', { class: 'muted', text: `… and ${failures.length - 200} more.` }));
+    }
+  }
+
+  // ---------- custom / BYOA -----------------------------------------------
+
+  let CUSTOM_INITED = false;
+
+  function initCustom() {
+    if (CUSTOM_INITED) return;
+    if (!TOPOLOGIES.length) return;  // bootstrap hasn't loaded yet; re-call will happen
+    const sel = $('#byoa-topology');
+    sel.innerHTML = '';
+    TOPOLOGIES.forEach(t => sel.appendChild(el('option', { value: t.name, text: t.name })));
+    sel.addEventListener('change', onCustomTopologyChange);
+    onCustomTopologyChange();
+
+    $('#byoa-load-example').addEventListener('click', loadCustomExample);
+    $('#byoa-clear').addEventListener('click', clearCustom);
+    $('#byoa-submit').addEventListener('click', submitCustom);
+    CUSTOM_INITED = true;
+  }
+
+  function onCustomTopologyChange() {
+    const t = TOPOLOGIES.find(x => x.name === $('#byoa-topology').value);
+    if (!t) return;
+    const det = (t.detectors || []).join(', ');
+    $('#byoa-topology-help').textContent =
+      `Layers ${t.name}-specific detectors on top of the cross-topology ones${det ? '  •  ' + det : ''}`;
+  }
+
+  async function loadCustomExample() {
+    try {
+      const ex = await api('/api/byoa-example');
+      $('#byoa-code').value = ex.code;
+      if (ex.detector_topology) {
+        $('#byoa-topology').value = ex.detector_topology;
+        onCustomTopologyChange();
+      }
+      toast('Example loaded — hit Run on my agents.', 'info');
+    } catch (e) {
+      toast('Could not load example: ' + e.message, 'error');
+    }
+  }
+
+  function clearCustom() {
+    $('#byoa-code').value = '';
+    $('#byoa-result').classList.add('hidden');
+    $('#byoa-summary').innerHTML = '';
+    $('#byoa-failure-summary').innerHTML = '';
+    $('#byoa-failure-list').innerHTML = '';
+  }
+
+  async function submitCustom() {
+    const code = $('#byoa-code').value;
+    if (!code.trim()) {
+      toast('Paste agent code first (or click "Load example").', 'error');
+      return;
+    }
+    const body = {
+      code,
+      detector_topology: $('#byoa-topology').value,
+      steps: parseInt($('#byoa-steps').value, 10) || 10,
+      seed: parseInt($('#byoa-seed').value, 10) || 0,
+    };
+    const btn = $('#byoa-submit');
+    btn.disabled = true;
+    btn.textContent = 'Running…';
+    try {
+      const data = await api('/api/byoa', { method: 'POST', body });
+      renderCustomResult(data);
+      $('#byoa-result').classList.remove('hidden');
+      $('#byoa-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (e) {
+      toast('Run failed: ' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Run on my agents';
+    }
+  }
+
+  function renderCustomResult(data) {
+    const summary = data.summary || {};
+    const meta = $('#byoa-summary');
+    meta.innerHTML = '';
+    const agentList = (summary.agents || []).map(a => `${a.name} (${a.role})`).join(', ') || '—';
+    const kvs = [
+      ['Detectors',      summary.detector_topology],
+      ['Agents',         agentList],
+      ['Steps completed', `${summary.steps_completed} / ${summary.steps_requested}`],
+      ['Actions',        summary.n_actions],
+      ['Events',         summary.n_events],
+      ['Failures',       summary.n_failures],
+    ];
+    kvs.forEach(([k, v]) => {
+      meta.appendChild(el('span', { class: 'k', text: k }));
+      meta.appendChild(el('span', { class: 'v', text: v == null || v === '' ? '—' : String(v) }));
+    });
+
+    const summaryHost = $('#byoa-failure-summary');
+    const listHost = $('#byoa-failure-list');
+    summaryHost.innerHTML = '';
+    listHost.innerHTML = '';
+
+    const failures = data.failures || [];
+    if (!failures.length) {
+      summaryHost.appendChild(el('div', { class: 'empty', text: 'No failures detected — clean run.' }));
       return;
     }
 

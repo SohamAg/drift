@@ -44,6 +44,67 @@ SCENARIOS_DIR: Path = PROJECT_ROOT / "scenarios"
 WEB_DIR: Path = PROJECT_ROOT / "web"
 
 
+# Starter snippet for the Custom (BYOA) tab. Designed to fire two detectors
+# out of the box (contradictory_review + hallucinated_reference) so the user
+# sees immediate signal.
+_BYOA_EXAMPLE_CODE = '''\
+# Define your agents below. Each @drift.agent function is async and takes
+# (state, memory). Return a drift.Action — drift records it in the action log
+# and runs the detectors against the resulting trace.
+#
+# Replace the bodies with your own LLM / tool / framework calls.
+
+from drift.world import Case
+
+
+def initial_state():
+    """Optional. Pre-populates the world with the work items agents will act on."""
+    return drift.WorldState(
+        open_cases={
+            "PR-1": Case(case_id="PR-1", customer_id="alice",
+                         issue="add dark mode toggle", opened_at_step=0),
+        },
+    )
+
+
+@drift.agent(role="reviewer", name="reviewer_a")
+async def reviewer_a(state, memory):
+    if state.open_cases:
+        target = sorted(state.open_cases)[0]
+        return drift.Action(
+            kind="approve_review",
+            target_case_id=target,
+            rationale=f"reviewer_a thinks {target} looks fine",
+        )
+    return drift.Action(kind="no_op")
+
+
+@drift.agent(role="reviewer", name="reviewer_b")
+async def reviewer_b(state, memory):
+    # At t=4, deliberately reference a PR that doesn't exist — fires the
+    # hallucinated_reference detector.
+    if state.timestep == 4:
+        return drift.Action(
+            kind="reject_review",
+            target_case_id="PR-PHANTOM",
+            rationale="reviewer_b rejects a PR that doesn't exist",
+        )
+    if state.open_cases:
+        target = sorted(state.open_cases)[0]
+        return drift.Action(
+            kind="reject_review",
+            target_case_id=target,
+            rationale=f"reviewer_b disagrees about {target}",
+        )
+    return drift.Action(kind="no_op")
+
+
+@drift.agent(role="merger")
+async def merger(state, memory):
+    return drift.Action(kind="no_op")
+'''
+
+
 # ---- in-memory tracker for in-flight runs --------------------------------
 
 class _RunState:
@@ -97,6 +158,24 @@ class AnalyzeRequest(BaseModel):
     """Analyze a trace pasted/uploaded by the user. Backs the Analyze tab."""
     topology: str
     trace: str   # raw JSONL text — one record per line, each with a "type" field
+
+
+class BYOARequest(BaseModel):
+    """Run drift on user-supplied agent code. Backs the Custom (BYOA) tab.
+
+    The code is executed as Python in the server process. Drift is pre-
+    imported into the namespace. The user defines @drift.agent-decorated
+    async functions; optionally an `initial_state()` callable returning a
+    WorldState; optionally an `events()` callable returning a list of
+    (timestep, Event) pairs.
+
+    Note: this is `exec()` over arbitrary user code. Safe for local
+    development; would need sandboxing for a hosted deployment.
+    """
+    code: str
+    detector_topology: str = "support"   # which topology's detectors to layer on top of the general ones
+    steps: int = Field(default=20, ge=1, le=200)
+    seed: int = 42
 
 
 class ForkRunRequest(BaseModel):
@@ -622,6 +701,113 @@ def create_app() -> FastAPI:
         return {
             "summary": summary,
             "failures": [f.model_dump(mode="json") for f in failures],
+        }
+
+    @app.post("/api/byoa")
+    async def byoa(req: BYOARequest) -> dict[str, Any]:
+        """Execute user-supplied agent code and run drift over it.
+
+        Looks for in the user's code namespace:
+          - any number of @drift.agent-decorated functions (collected as agents)
+          - optional `initial_state()` returning a WorldState
+          - optional `events()` returning a list of (timestep, Event) tuples
+
+        Then runs drift.run_async with the detector list layered with the
+        requested topology's domain-specific detectors.
+        """
+        import drift
+        from drift.sdk import _BYOAgent, run_async
+        from drift.topologies import get_topology
+
+        if req.detector_topology not in list_topologies():
+            raise HTTPException(400, f"unknown topology: {req.detector_topology}")
+
+        # Build the execution namespace. We expose `drift` and a few core
+        # symbols so users don't have to remember to import them. asyncio
+        # is also available because users may write async helpers.
+        namespace: dict[str, Any] = {
+            "__name__": "__byoa__",
+            "__builtins__": __builtins__,
+            "drift": drift,
+            "asyncio": asyncio,
+        }
+
+        # Reset action/failure counters so each BYOA run starts clean.
+        from drift.testing import reset_all_counters
+        reset_all_counters()
+
+        try:
+            exec(req.code, namespace)
+        except SyntaxError as e:
+            raise HTTPException(400, f"syntax error: {e.msg} (line {e.lineno})")
+        except Exception as e:
+            raise HTTPException(400, f"error executing user code: {type(e).__name__}: {e}")
+
+        # Collect every _BYOAgent instance the user code produced.
+        agents = [v for v in namespace.values() if isinstance(v, _BYOAgent)]
+        if not agents:
+            raise HTTPException(
+                400,
+                "no @drift.agent-decorated functions found. Define at least one "
+                "function decorated with @drift.agent(role=...) at module level."
+            )
+
+        # Optional initial state.
+        state = None
+        init_fn = namespace.get("initial_state")
+        if callable(init_fn):
+            try:
+                state = init_fn()
+            except Exception as e:
+                raise HTTPException(400, f"initial_state() raised: {type(e).__name__}: {e}")
+
+        # Optional events list.
+        events = None
+        events_fn = namespace.get("events")
+        if callable(events_fn):
+            try:
+                events = events_fn()
+            except Exception as e:
+                raise HTTPException(400, f"events() raised: {type(e).__name__}: {e}")
+
+        # Detector list: GENERAL + the requested topology's specific bundle.
+        topology = get_topology(req.detector_topology)
+        detectors = topology.detectors
+
+        try:
+            result = await run_async(
+                agents=agents,
+                state=state,
+                events=events,
+                steps=req.steps,
+                seed=req.seed,
+                detectors=detectors,
+            )
+        except Exception as e:
+            raise HTTPException(500, f"run failed: {type(e).__name__}: {e}")
+
+        return {
+            "summary": {
+                "agents": [{"name": a.name, "role": a.role} for a in agents],
+                "steps_requested": req.steps,
+                "steps_completed": result.final_state.timestep,
+                "n_actions": len(result.actions),
+                "n_events": len(result.events),
+                "n_failures": len(result.failures),
+                "detector_topology": req.detector_topology,
+            },
+            "failures": [f.model_dump(mode="json") for f in result.failures],
+            "actions": [a.model_dump(mode="json") for a in result.actions],
+            "events": [e.model_dump(mode="json") for e in result.events],
+            "final_state": result.final_state.model_dump(mode="json"),
+        }
+
+    @app.get("/api/byoa-example")
+    def byoa_example() -> dict[str, Any]:
+        """Return a starter snippet the Custom tab can pre-populate."""
+        return {
+            "detector_topology": "code_review",
+            "code": _BYOA_EXAMPLE_CODE,
         }
 
     @app.get("/api/sample-trace")

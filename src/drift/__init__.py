@@ -25,6 +25,7 @@ from drift.sdk import (
     WorldState,
     agent,
     run,
+    run_async,
 )
 
 __all__ = [
@@ -36,5 +37,6 @@ __all__ = [
     "WorldState",
     "agent",
     "run",
+    "run_async",
     "__version__",
 ]

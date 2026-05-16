@@ -27,6 +27,7 @@
     <button class="tab"        data-tab="runs"    role="tab">Runs <span id="runs-count" class="badge"></span></button>
     <button class="tab"        data-tab="compare" role="tab">Compare</button>
     <button class="tab"        data-tab="analyze" role="tab">Analyze</button>
+    <button class="tab"        data-tab="custom"  role="tab">Custom</button>
     <button class="tab"        data-tab="about"   role="tab">About</button>
   </nav>
 
@@ -268,6 +269,67 @@
           <h3>Detected failures</h3>
           <div id="analyze-failure-summary"></div>
           <div class="failure-list" id="analyze-failure-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== CUSTOM (BYOA) ===================== -->
+    <section id="tab-custom" class="tab-panel">
+      <div class="card">
+        <h2>Bring your own agents</h2>
+        <p class="help">
+          Define one or more <code>@drift.agent</code> async functions below. Each one
+          returns a <code>drift.Action</code> per timestep. Drift drives your agents through
+          the chosen number of steps and runs its coordination-failure detectors on the
+          resulting action log. Optionally define <code>initial_state()</code> to
+          pre-populate the world and <code>events()</code> to schedule chaos events.
+        </p>
+        <p class="help warn-text">
+          <strong>Note:</strong> this executes Python in the local server process. Safe for
+          local development; do not expose this server to untrusted users.
+        </p>
+
+        <div class="row two-col">
+          <div class="field">
+            <label for="byoa-topology">Detectors</label>
+            <select id="byoa-topology"></select>
+            <p class="help" id="byoa-topology-help"></p>
+          </div>
+          <div class="row two-col">
+            <div class="field">
+              <label for="byoa-steps">Steps</label>
+              <input type="number" id="byoa-steps" value="10" min="1" max="200" />
+            </div>
+            <div class="field">
+              <label for="byoa-seed">Seed</label>
+              <input type="number" id="byoa-seed" value="42" />
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="byoa-code">Agent code</label>
+          <textarea id="byoa-code" class="mono code-input"
+                    spellcheck="false"
+                    placeholder="@drift.agent(role='reviewer')&#10;async def reviewer(state, memory):&#10;    return drift.Action(kind='approve_review', target_case_id='PR-1')"></textarea>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="byoa-load-example" class="ghost-btn">Load example</button>
+          <button type="button" id="byoa-clear" class="ghost-btn">Clear</button>
+          <button type="button" id="byoa-submit" class="primary">Run on my agents</button>
+        </div>
+      </div>
+
+      <div id="byoa-result" class="hidden">
+        <div class="card">
+          <h3>Run summary</h3>
+          <div id="byoa-summary" class="kv-grid"></div>
+        </div>
+        <div class="card">
+          <h3>Detected failures</h3>
+          <div id="byoa-failure-summary"></div>
+          <div class="failure-list" id="byoa-failure-list"></div>
         </div>
       </div>
     </section>

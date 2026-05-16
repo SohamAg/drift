@@ -167,6 +167,52 @@ class _InlineScheduler(EventScheduler):
         return list(self._events_by_step.get(timestep, []))
 
 
+def _build_runner(
+    agents: Iterable[_BYOAgent | Agent],
+    state: WorldState | None,
+    events: Iterable[tuple[int, Event]] | None,
+    steps: int,
+    seed: int,
+    detectors: Iterable | None,
+) -> SimulationRunner:
+    agent_list = list(agents)
+    if not agent_list:
+        raise ValueError("drift.run requires at least one agent")
+
+    initial_world = World(initial=state if state is not None else WorldState())
+
+    events_by_step: dict[int, list[Event]] = {}
+    for t, ev in (events or []):
+        events_by_step.setdefault(int(t), []).append(ev)
+    scheduler = _InlineScheduler(events_by_step=events_by_step, seed=seed)
+
+    detector_list = list(detectors) if detectors is not None else list(GENERAL_DETECTORS)
+
+    return SimulationRunner(
+        agents=agent_list,
+        scheduler=scheduler,
+        steps=steps,
+        detectors=detector_list,
+        logger=None,
+        initial_world=initial_world,
+    )
+
+
+async def run_async(
+    *,
+    agents: Iterable[_BYOAgent | Agent],
+    state: WorldState | None = None,
+    events: Iterable[tuple[int, Event]] | None = None,
+    steps: int = 30,
+    seed: int = 42,
+    detectors: Iterable | None = None,
+) -> RunResult:
+    """Async version of drift.run(). Use this when calling from inside an
+    already-running event loop (e.g., a FastAPI endpoint handler)."""
+    runner = _build_runner(agents, state, events, steps, seed, detectors)
+    return await runner.run()
+
+
 def run(
     *,
     agents: Iterable[_BYOAgent | Agent],
@@ -196,28 +242,12 @@ def run(
 
     Returns:
         drift.RunResult with .actions, .events, .failures, .final_state.
+
+    Notes:
+        This calls asyncio.run() internally; do not call from inside an
+        already-running event loop. Use drift.run_async() in that case.
     """
-    agent_list = list(agents)
-    if not agent_list:
-        raise ValueError("drift.run requires at least one agent")
-
-    initial_world = World(initial=state if state is not None else WorldState())
-
-    events_by_step: dict[int, list[Event]] = {}
-    for t, ev in (events or []):
-        events_by_step.setdefault(int(t), []).append(ev)
-    scheduler = _InlineScheduler(events_by_step=events_by_step, seed=seed)
-
-    detector_list = list(detectors) if detectors is not None else list(GENERAL_DETECTORS)
-
-    runner = SimulationRunner(
-        agents=agent_list,
-        scheduler=scheduler,
-        steps=steps,
-        detectors=detector_list,
-        logger=None,
-        initial_world=initial_world,
-    )
+    runner = _build_runner(agents, state, events, steps, seed, detectors)
     return asyncio.run(runner.run())
 
 
@@ -230,4 +260,5 @@ __all__ = [
     "World",
     "agent",
     "run",
+    "run_async",
 ]
