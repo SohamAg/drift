@@ -74,9 +74,16 @@ Soft cautions:
 
 ## Where the build is heading
 
-Drift today ships the simulator, the detector library, counterfactual replay, the web UI, and a trace ingester that runs detectors on externally-produced JSONL. The next major capability area is the BYOA path — letting users register their own agents (built in LangGraph, CrewAI, AutoGen, custom) and run drift's chaos scenarios + detectors against them. Closing that gap is what moves drift from "tool that demonstrates failure modes on its own simulator" to "tool that tests your multi-agent stack."
+Drift today ships the simulator, the detector library, counterfactual replay, the web UI, and a trace ingester that runs detectors on externally-produced JSONL. The hand-coded topologies (support, code review, ops) are scaffolding to demonstrate the idea, not the product surface.
 
-Empirical validation against published real-world multi-agent trace datasets (MAESTRO, MAST) is in scope. The point is to show drift's detector families fire on coordination failures in real systems, not just on synthetic scenarios.
+The next major capability area is letting users plug their own multi-agent system into drift — both sides of it:
+
+- **Bring your own agents** — register agents built in LangGraph, CrewAI, AutoGen, or custom code; drift drives them through scenarios and captures their actions.
+- **Bring your own environment** — define your own world state schema (the fields drift's detectors read), your own chaos event library (what stress conditions matter in your domain), and your own scenarios (the sequences that exercise coordination). The detector families stay the same; what gets watched changes per domain.
+
+Closing both sides is what moves drift from "tool that demonstrates failure modes on its own simulator" to "tool that tests your multi-agent stack."
+
+Empirical validation against published real-world multi-agent trace datasets (MAESTRO, MAST) is also in scope. The point is to show drift's detector families fire on coordination failures in real systems, not just on synthetic scenarios.
 
 ## Working risks
 
