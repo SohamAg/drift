@@ -1156,3 +1156,18 @@ input[type="range"]::-moz-range-thumb {
 }
 #analyze-result { margin-top: 16px; }
 #analyze-result .card + .card { margin-top: 16px; }
+
+/* Custom (BYOA) tab — code editor textarea */
+.code-input {
+  min-height: 360px;
+  resize: vertical;
+  white-space: pre;
+  overflow: auto;
+  line-height: 1.6;
+  tab-size: 4;
+  font-size: 13px;
+}
+#byoa-result { margin-top: 16px; }
+#byoa-result .card + .card { margin-top: 16px; }
+
+.warn-text { color: var(--warn, #f59e0b); }
