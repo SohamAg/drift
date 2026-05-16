@@ -13,7 +13,7 @@ Multi-agent systems fail in ways single-agent systems don't — and the discipli
 
 ## What drift IS
 
-- A **deterministic detector library** for multi-agent coordination failures — 13 named modes (e.g., contradictory_refund, hallucinated_reference, silent_remediation), each a pure ~20-line Python function over (action history, world snapshots).
+- A **deterministic detector library** for multi-agent coordination failures — a growing catalog of named modes organized into families (see Core failure families below). Each detector is a pure Python function over (action history, world snapshots) — ~20 lines, auditable, runnable in CI. The exact count and naming evolve as drift learns from real-world traces; the *families* are stable.
 - A **chaos / scenario harness** that drives multi-agent systems through stress conditions (mid-flight policy changes, dependency outages, conflicting events) and watches what breaks at the coordination level.
 - A **counterfactual replay engine** — fork any run at any timestep with deterministic overrides (different seed, different prompts per role, disable an agent), compare branches to isolate causes.
 - A working web UI + CLI (FastAPI backend, vanilla HTML/CSS/JS frontend).
@@ -59,30 +59,23 @@ Multi-agent systems fail in ways single-agent systems don't — and the discipli
 2. **Counterfactual replay** — fork at any timestep with overrides. Causal analysis, not just correlation. Neither MAST nor MAESTRO has this.
 3. **Chaos injection** — generates failures pre-production rather than waiting to find them postmortem. Direct analog to Netflix Chaos Monkey for the multi-agent era.
 
-## The detector taxonomy (current 13)
+## Core failure families
 
-**General — work across any topology (4):**
-- `sentiment_collapse` — aggregate health metric below threshold for 5 consecutive steps
-- `hallucinated_reference` — agent acted on a case/PR/incident ID that never existed
-- `stale_snapshot_reference` — agent acted on something that existed but was removed mid-step (coordination failure, not hallucination)
-- `queue_explosion` — backlog growing faster than clearance over a rolling window
+These are the *categories* of multi-agent coordination failure drift's detectors target. The category list is stable. The specific detectors inside each category will grow, get renamed, get retired as drift learns from real-world traces. Treat the families as the unit of analysis; treat specific named detectors as instances that may evolve.
 
-**Support topology (3):**
-- `contradictory_refund` — same case got both approve and deny
-- `escalation_loop` — same case escalated more than 3 times
-- `policy_inconsistency` — action referenced a stale policy version
+1. **Coordination contradictions** — two or more agents reach opposing decisions about the same target (the same case, PR, incident, request). This is what makes multi-agent uniquely bad — the contradiction can't happen in a single-agent system. Surfaces in any domain (refund approve+deny, PR approve+reject, incident gets two distinct root-cause diagnoses).
 
-**Code-review topology (3):**
-- `contradictory_review` — same PR got both approve and reject
-- `security_bypass` — PR merged while security was blocked
-- `merge_without_approval` — PR merged with zero approvals preceding
+2. **Grounding failures** — an agent acts on a target that doesn't exist in the world (pure fabrication) or no longer exists (the case was resolved/removed by another agent mid-step). Drift deliberately splits these because the fix is different — fabrication is a prompting/grounding problem, stale-reference is a coordination/state-propagation problem.
 
-**Ops topology (3):**
-- `silent_remediation` — fix shipped but no comms within 3 steps
-- `comms_lag` — high-sev incident triaged but no comms within 5 steps
-- `contradictory_diagnosis` — same incident received two different root-cause hypotheses
+3. **State / memory drift** — an agent acts on outdated information about world state. Most common form: the rules or policy versions changed mid-run but some agent kept operating off the old version. Generalizes to any "world moved, agent didn't" coordination defect.
 
-Each detector is in `src/drift/failures/detectors.py` or `src/drift/topologies/<name>/detectors.py`. Pure functions over `DetectorContext`. ~20 lines each. Auditable.
+4. **Emergent / system-level decay** — no single agent is "at fault," but the system as a whole is trending bad over time. Aggregate health metrics declining, queue growing faster than clearance, looping. Detectable only over rolling windows of snapshots, not from any individual action.
+
+5. **Process / governance gates bypassed** — the action is well-formed but it's *not allowed* under the system's own rules. Required approvals skipped. Blocked operations executed anyway. Required follow-up never happened (fix shipped, no comms; incident triaged, no status update). This family is where the highest-stakes production failures sit (security bypass, compliance violations, customer-visible silent fixes).
+
+The specific detectors currently shipped (e.g., `contradictory_refund`, `hallucinated_reference`, `policy_inconsistency`, `sentiment_collapse`, `security_bypass`, `silent_remediation`, etc.) are instances of these families. They live in `src/drift/failures/detectors.py` for the general/cross-topology ones and `src/drift/topologies/<name>/detectors.py` for domain-specific ones. The roster is not load-bearing for the pitch — the *families* are.
+
+When new domains get added (legal review, content moderation, supply chain, etc.), drift adds new detectors that map to the same five families. The taxonomy expands; the structure holds.
 
 ## The 3 shipped topologies
 
@@ -107,7 +100,7 @@ These are scaffolding, not the product. Real users will bring their own agents v
 - Applying to YC soon (timing flexible but acute)
 - No revenue, no paying users, no signed LOIs as of 2026-05-15
 - One working MVP, three topologies, 29 tests passing, polished web UI
-- 13 detector library
+- Detector library covering the five core failure families (specific count grows as drift learns; not load-bearing)
 
 ## Honest risks (do not paper over)
 
@@ -147,7 +140,7 @@ What NOT to say in the YC application:
 ## What's next, ranked by leverage (as of 2026-05-15)
 
 1. **BYOA SDK + LangGraph adapter** (~6-8 hours). The single change that turns drift from research artifact into the product the pitch promises. Without this, the YC pitch is hypothetical.
-2. **Empirical validation case study** (~6 hours). Run drift's detectors over MAESTRO's 1,056 multi-agent runs. Cross-walk results to MAST's 14 modes. Write `CASE_STUDY.md`. This becomes the credibility attachment to the YC application.
+2. **Empirical validation case study** (~6 hours). Run drift's detectors over MAESTRO's 1,056 multi-agent runs. Cross-walk results to MAST's failure taxonomy. Write `CASE_STUDY.md`. This becomes the credibility attachment to the YC application.
 3. **OTEL ingester** (~2 hours). Lets drift consume any OTEL-instrumented MAS without users writing drift-format JSONL. Reduces friction substantially.
 4. **DM 5-10 multi-agent teams** for user signal — Cognition, Sierra, Decagon, adamsreview author, others on the recent HN multi-agent feed. The strongest YC differentiator beyond product is *"we talked to N teams running MAS in prod; M confirmed they've hit drift's failure modes."*
 5. **Fix mock LLM honoring prompt variant** (~45 min). Demo credibility on free tier — currently naive vs hardened produces identical output with `--llm mock`.
