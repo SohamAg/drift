@@ -13,5 +13,5 @@ runs/
 *.log
 .DS_Store
 data/
-NEXT_STEPS.md
-TRACE_SCHEMA.md
+/*.md
+!/README.md
