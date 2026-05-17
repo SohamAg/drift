@@ -15,3 +15,8 @@ runs/
 data/
 /*.md
 !/README.md
+
+# MCP / editor configs with credentials
+.vscode/mcp.json
+.mcp.json
+.env

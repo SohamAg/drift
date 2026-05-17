@@ -12,7 +12,10 @@
       "Bash(curl -s http://127.0.0.1:8765/api/runs/ui_smoke_hardened/status)",
       "PowerShell($env:PYTHONPATH = \"e:\\\\drift\\\\src\"; python -m pytest e:\\\\drift\\\\tests -q 2>&1 | Select-Object -Last 6)",
       "PowerShell($env:PYTHONPATH = \"e:\\\\drift\\\\src\"; Set-Location e:\\\\drift; python -m drift serve --port 8765)",
-      "Bash(python examples/adapters/run_drift_on_maestro.py)"
+      "Bash(python examples/adapters/run_drift_on_maestro.py)",
+      "WebFetch(domain:www.galileo.ai)",
+      "Read(//c/Users/soham/**)",
+      "mcp__galileo__search_docs"
     ]
   }
 }
