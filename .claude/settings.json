@@ -15,7 +15,8 @@
       "Bash(python examples/adapters/run_drift_on_maestro.py)",
       "WebFetch(domain:www.galileo.ai)",
       "Read(//c/Users/soham/**)",
-      "mcp__galileo__search_docs"
+      "mcp__galileo__search_docs",
+      "Edit(/.claude/skills/drift-context/**)"
     ]
   }
 }
