@@ -117,7 +117,9 @@ class SimulationRunner:
         if self.logger:
             self.logger.log_snapshot(self.world.state)
 
-        # 4. detectors
+        # 4. detectors — most are sync pure functions; LLM-judged detectors
+        # are async (they call out to an LLM). We await whichever a detector
+        # returns when it returns a coroutine.
         ctx = DetectorContext(
             timestep=t,
             history=self.world.history,
@@ -126,7 +128,10 @@ class SimulationRunner:
             already_reported=self._reported,
         )
         for detector in self.detectors:
-            for failure in detector(ctx):
+            result = detector(ctx)
+            if asyncio.iscoroutine(result):
+                result = await result
+            for failure in result:
                 self.failures.append(failure)
                 self.metrics.record_failure(failure)
                 if self.logger:

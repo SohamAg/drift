@@ -241,6 +241,13 @@ class BYOARequest(BaseModel):
     # The auto-generated events run alongside any events() the user code defines.
     auto_chaos: str = "off"
     auto_chaos_exclude: list[str] = Field(default_factory=list)
+    # LLM-judged detection: drift adds an LLM-judge detector that fires on
+    # coordination failures using natural-language reasoning. "off" disables;
+    # "mock" runs a placeholder (no network); "openai"/"anthropic" use a real
+    # judge. judge_model overrides the default model for the chosen provider.
+    judge: str = "off"
+    judge_model: str | None = None
+    judge_every: int = Field(default=5, ge=1, le=50)
 
 
 class ForkRunRequest(BaseModel):
@@ -839,6 +846,16 @@ def create_app() -> FastAPI:
         topology = get_topology(req.detector_topology)
         detectors = topology.detectors
 
+        # Build the judge if the user picked one. Surface bad config as 400
+        # (caller error) rather than 500 (server error).
+        from drift.failures.judge import JUDGE_PREFIX, build_judge
+        try:
+            judge_llm = build_judge(req.judge, model=req.judge_model)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(400, f"could not build judge {req.judge!r}: {type(e).__name__}: {e}")
+
         try:
             result = await run_async(
                 agents=agents,
@@ -849,11 +866,17 @@ def create_app() -> FastAPI:
                 detectors=detectors,
                 auto_chaos=req.auto_chaos if req.auto_chaos != "off" else None,
                 auto_chaos_exclude=req.auto_chaos_exclude or None,
+                judge_llm=judge_llm,
+                judge_every=req.judge_every,
             )
         except ValueError as e:
             raise HTTPException(400, str(e))
         except Exception as e:
             raise HTTPException(500, f"run failed: {type(e).__name__}: {e}")
+
+        n_llm_failures = sum(
+            1 for f in result.failures if f.failure_type.startswith(JUDGE_PREFIX)
+        )
 
         return {
             "summary": {
@@ -863,8 +886,12 @@ def create_app() -> FastAPI:
                 "n_actions": len(result.actions),
                 "n_events": len(result.events),
                 "n_failures": len(result.failures),
+                "n_failures_llm": n_llm_failures,
+                "n_failures_deterministic": len(result.failures) - n_llm_failures,
                 "n_auto_chaos_injected": len(result.auto_chaos_injected),
                 "auto_chaos": req.auto_chaos,
+                "judge": req.judge,
+                "judge_model": req.judge_model,
                 "detector_topology": req.detector_topology,
             },
             "failures": [f.model_dump(mode="json") for f in result.failures],

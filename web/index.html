@@ -329,6 +329,35 @@
           </p>
         </div>
 
+        <div class="row two-col">
+          <div class="field">
+            <label for="byoa-judge">LLM-judged detection</label>
+            <select id="byoa-judge">
+              <option value="off" selected>Off — deterministic detectors only</option>
+              <option value="mock">Mock — placeholder, no API key required</option>
+              <option value="openai">OpenAI — real judge (needs OPENAI_API_KEY)</option>
+              <option value="anthropic">Anthropic — stubbed, not wired in v0</option>
+            </select>
+            <p class="help">
+              Adds an LLM-judged detector alongside the deterministic ones.
+              Failures it reports are prefixed <code>llm:</code> across the
+              five families (coordination_contradiction, grounding_failure,
+              state_drift, emergent_decay, gate_bypass) so you can tell them
+              apart from deterministic detections.
+            </p>
+          </div>
+          <div class="row two-col">
+            <div class="field">
+              <label for="byoa-judge-model">Judge model</label>
+              <input type="text" id="byoa-judge-model" placeholder="gpt-4o-mini" />
+            </div>
+            <div class="field">
+              <label for="byoa-judge-every">Judge every N steps</label>
+              <input type="number" id="byoa-judge-every" value="5" min="1" max="50" />
+            </div>
+          </div>
+        </div>
+
         <div class="field">
           <label for="byoa-code">Agent code</label>
           <textarea id="byoa-code" class="mono code-input"

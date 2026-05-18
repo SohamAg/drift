@@ -1369,6 +1369,9 @@
       steps: parseInt($('#byoa-steps').value, 10) || 10,
       seed: parseInt($('#byoa-seed').value, 10) || 0,
       auto_chaos: ($('#byoa-auto-chaos') || {}).value || 'off',
+      judge: ($('#byoa-judge') || {}).value || 'off',
+      judge_model: ($('#byoa-judge-model') || {}).value.trim() || null,
+      judge_every: parseInt(($('#byoa-judge-every') || {}).value, 10) || 5,
     };
     const btn = $('#byoa-submit');
     btn.disabled = true;
@@ -1392,6 +1395,13 @@
     meta.innerHTML = '';
     const agentList = (summary.agents || []).map(a => `${a.name} (${a.role})`).join(', ') || '—';
     const acIntensity = summary.auto_chaos && summary.auto_chaos !== 'off' ? summary.auto_chaos : null;
+    const judgeSpec = summary.judge && summary.judge !== 'off' ? summary.judge : null;
+    const judgeDesc = judgeSpec
+      ? `${judgeSpec}${summary.judge_model ? ` (${summary.judge_model})` : ''} — ${summary.n_failures_llm || 0} fired`
+      : 'off';
+    const failuresDesc = (summary.n_failures_llm || 0) > 0
+      ? `${summary.n_failures} (${summary.n_failures_deterministic} deterministic + ${summary.n_failures_llm} llm-judged)`
+      : String(summary.n_failures);
     const kvs = [
       ['Detectors',      summary.detector_topology],
       ['Agents',         agentList],
@@ -1399,7 +1409,8 @@
       ['Actions',        summary.n_actions],
       ['Events',         summary.n_events],
       ['Auto-chaos',     acIntensity ? `${acIntensity} — ${summary.n_auto_chaos_injected} injected` : 'off'],
-      ['Failures',       summary.n_failures],
+      ['LLM judge',      judgeDesc],
+      ['Failures',       failuresDesc],
     ];
     kvs.forEach(([k, v]) => {
       meta.appendChild(el('span', { class: 'k', text: k }));

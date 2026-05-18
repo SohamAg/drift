@@ -21,7 +21,7 @@ These are the load-bearing claims. Any positioning statement should pivot off so
 
 2. **Counterfactual replay** — fork any run at any timestep with deterministic overrides (different seed, different prompts per role, disable an agent), compare branches to isolate causes. Causal analysis, not correlation. No published comparable feature elsewhere.
 
-3. **Hybrid detection** — deterministic Python rules for crisp / named patterns (contradictory action on same target, merge while blocked, stale reference); LLM-as-judge for fuzzy / context-dependent patterns (was the supervisor's response coherent given the specialist's output). Rules are cheap, reproducible, CI-runnable; judges adapt to any domain. Use both; pure deterministic is brittle, pure judge is expensive and non-reproducible.
+3. **Hybrid detection** — both halves ship. Deterministic Python rules for crisp / named patterns (contradictory action on same target, merge while blocked, stale reference) live in `src/drift/failures/detectors.py`. An LLM-judged detector in `src/drift/failures/judge.py` reads a sliding trace window and reports failures across the five families (`llm:coordination_contradiction`, `llm:grounding_failure`, etc.), so when deterministic rules don't speak a user's domain the judge still catches things. Rules are cheap, reproducible, CI-runnable; the judge adapts to any domain. Configurable via `drift.run(judge_llm=build_judge('openai'), judge_every=5)`. The hybrid framing is load-bearing because pure deterministic doesn't generalize across domains (see CASE_STUDY.md MAESTRO zero-fires) and pure judge is expensive + non-reproducible.
 
 ## Core failure families
 
