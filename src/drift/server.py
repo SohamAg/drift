@@ -236,6 +236,11 @@ class BYOARequest(BaseModel):
     detector_topology: str = "support"   # which topology's detectors to layer on top of the general ones
     steps: int = Field(default=20, ge=1, le=200)
     seed: int = 42
+    # Auto-chaos: drift generates chaos events from the user's WorldState
+    # schema. "off" disables; "light"/"moderate"/"aggressive" scale density.
+    # The auto-generated events run alongside any events() the user code defines.
+    auto_chaos: str = "off"
+    auto_chaos_exclude: list[str] = Field(default_factory=list)
 
 
 class ForkRunRequest(BaseModel):
@@ -842,7 +847,11 @@ def create_app() -> FastAPI:
                 steps=req.steps,
                 seed=req.seed,
                 detectors=detectors,
+                auto_chaos=req.auto_chaos if req.auto_chaos != "off" else None,
+                auto_chaos_exclude=req.auto_chaos_exclude or None,
             )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         except Exception as e:
             raise HTTPException(500, f"run failed: {type(e).__name__}: {e}")
 
@@ -854,11 +863,14 @@ def create_app() -> FastAPI:
                 "n_actions": len(result.actions),
                 "n_events": len(result.events),
                 "n_failures": len(result.failures),
+                "n_auto_chaos_injected": len(result.auto_chaos_injected),
+                "auto_chaos": req.auto_chaos,
                 "detector_topology": req.detector_topology,
             },
             "failures": [f.model_dump(mode="json") for f in result.failures],
             "actions": [a.model_dump(mode="json") for a in result.actions],
             "events": [e.model_dump(mode="json") for e in result.events],
+            "auto_chaos_injected": [e.model_dump(mode="json") for e in result.auto_chaos_injected],
             "final_state": result.final_state.model_dump(mode="json"),
         }
 

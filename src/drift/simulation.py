@@ -38,6 +38,10 @@ class RunResult:
     failures: list[FailureRecord] = field(default_factory=list)
     metrics: Metrics = field(default_factory=Metrics)
     run_dir: Path | None = None
+    # EventRecords that came from drift's auto-chaos engine (a subset of
+    # `events`). Populated by drift.sdk.run when auto_chaos is enabled;
+    # always empty otherwise. Names are prefixed `AutoChaos.<pattern>[field]`.
+    auto_chaos_injected: list[EventRecord] = field(default_factory=list)
 
 
 class SimulationRunner:

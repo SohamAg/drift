@@ -34,6 +34,7 @@ import asyncio
 from typing import Any, Awaitable, Callable, Iterable
 
 from drift.agents.base import Action, Agent
+from drift.chaos.engine import plan_auto_chaos
 from drift.events.base import Event, EventRecord
 from drift.events.scheduler import EventScheduler, Scenario
 from drift.failures.detectors import GENERAL_DETECTORS
@@ -167,10 +168,39 @@ class _InlineScheduler(EventScheduler):
         return list(self._events_by_step.get(timestep, []))
 
 
+def _resolve_events(
+    state: WorldState | None,
+    events: Iterable[tuple[int, Event]] | None,
+    steps: int,
+    seed: int,
+    auto_chaos: str | bool | None,
+    auto_chaos_exclude: Iterable[str] | None,
+) -> tuple[list[tuple[int, Event]], set[str]]:
+    """Merge user-supplied events with drift-generated auto-chaos events.
+
+    Returns (combined_event_list, set_of_auto_event_ids) so the caller can
+    later tag which EventRecords came from auto-chaos.
+    """
+    combined: list[tuple[int, Event]] = list(events or [])
+    auto_ids: set[str] = set()
+    if auto_chaos and state is not None:
+        auto = plan_auto_chaos(
+            state=state,
+            steps=steps,
+            intensity=auto_chaos,
+            seed=seed,
+            exclude=auto_chaos_exclude,
+        )
+        for t, ev in auto:
+            auto_ids.add(ev.event_id)
+            combined.append((t, ev))
+    return combined, auto_ids
+
+
 def _build_runner(
     agents: Iterable[_BYOAgent | Agent],
     state: WorldState | None,
-    events: Iterable[tuple[int, Event]] | None,
+    events: Iterable[tuple[int, Event]],
     steps: int,
     seed: int,
     detectors: Iterable | None,
@@ -182,7 +212,7 @@ def _build_runner(
     initial_world = World(initial=state if state is not None else WorldState())
 
     events_by_step: dict[int, list[Event]] = {}
-    for t, ev in (events or []):
+    for t, ev in events:
         events_by_step.setdefault(int(t), []).append(ev)
     scheduler = _InlineScheduler(events_by_step=events_by_step, seed=seed)
 
@@ -198,6 +228,14 @@ def _build_runner(
     )
 
 
+def _attach_auto_chaos(result: RunResult, auto_ids: set[str]) -> RunResult:
+    """Populate `result.auto_chaos_injected` from `result.events` by id."""
+    if not auto_ids:
+        return result
+    result.auto_chaos_injected = [e for e in result.events if e.event_id in auto_ids]
+    return result
+
+
 async def run_async(
     *,
     agents: Iterable[_BYOAgent | Agent],
@@ -206,11 +244,17 @@ async def run_async(
     steps: int = 30,
     seed: int = 42,
     detectors: Iterable | None = None,
+    auto_chaos: str | bool | None = None,
+    auto_chaos_exclude: Iterable[str] | None = None,
 ) -> RunResult:
     """Async version of drift.run(). Use this when calling from inside an
     already-running event loop (e.g., a FastAPI endpoint handler)."""
-    runner = _build_runner(agents, state, events, steps, seed, detectors)
-    return await runner.run()
+    combined, auto_ids = _resolve_events(
+        state, events, steps, seed, auto_chaos, auto_chaos_exclude,
+    )
+    runner = _build_runner(agents, state, combined, steps, seed, detectors)
+    result = await runner.run()
+    return _attach_auto_chaos(result, auto_ids)
 
 
 def run(
@@ -221,6 +265,8 @@ def run(
     steps: int = 30,
     seed: int = 42,
     detectors: Iterable | None = None,
+    auto_chaos: str | bool | None = None,
+    auto_chaos_exclude: Iterable[str] | None = None,
 ) -> RunResult:
     """Run drift's simulator with user-supplied agents, state, and events.
 
@@ -239,16 +285,29 @@ def run(
                    hallucinated_reference, stale_snapshot_reference,
                    queue_explosion). Pass an explicit list to use
                    domain-specific detectors.
+        auto_chaos: drift generates chaos events from the WorldState schema
+                   when set. Accepts "off" | "light" | "moderate" | "aggressive"
+                   (True is an alias for "moderate", False / None disables).
+                   Combines with any user `events`. Result.auto_chaos_injected
+                   lists the EventRecords drift generated.
+        auto_chaos_exclude: pattern substrings to exclude from auto-chaos.
+                   E.g. ["flip_bool"] disables every flip_bool[<field>] event;
+                   ["flip_bool[is_admin]"] excludes only the one field.
 
     Returns:
-        drift.RunResult with .actions, .events, .failures, .final_state.
+        drift.RunResult with .actions, .events, .failures, .final_state,
+        and .auto_chaos_injected.
 
     Notes:
         This calls asyncio.run() internally; do not call from inside an
         already-running event loop. Use drift.run_async() in that case.
     """
-    runner = _build_runner(agents, state, events, steps, seed, detectors)
-    return asyncio.run(runner.run())
+    combined, auto_ids = _resolve_events(
+        state, events, steps, seed, auto_chaos, auto_chaos_exclude,
+    )
+    runner = _build_runner(agents, state, combined, steps, seed, detectors)
+    result = asyncio.run(runner.run())
+    return _attach_auto_chaos(result, auto_ids)
 
 
 __all__ = [
