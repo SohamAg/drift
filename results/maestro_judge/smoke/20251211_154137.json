@@ -1,0 +1,25 @@
+{
+  "path": "20251211_154137.jsonl",
+  "example": "image-scoring",
+  "n_actions": 22,
+  "n_snapshots": 2,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 494,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.688
+    },
+    {
+      "user_chars": 880,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.593
+    }
+  ]
+}

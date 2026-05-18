@@ -1,0 +1,25 @@
+{
+  "path": "20251208_173911.jsonl",
+  "example": "Travel-Planning",
+  "n_actions": 8,
+  "n_snapshots": 2,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 496,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.926
+    },
+    {
+      "user_chars": 878,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.933
+    }
+  ]
+}
