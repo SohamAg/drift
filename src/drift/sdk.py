@@ -38,6 +38,7 @@ from drift.chaos.engine import plan_auto_chaos
 from drift.events.base import Event, EventRecord
 from drift.events.scheduler import EventScheduler, Scenario
 from drift.failures.detectors import GENERAL_DETECTORS
+from drift.failures.judge import JudgeLLM, LLMJudgeDetector
 from drift.memory import AgentMemory
 from drift.simulation import RunResult, SimulationRunner
 from drift.world import World, WorldState
@@ -204,6 +205,9 @@ def _build_runner(
     steps: int,
     seed: int,
     detectors: Iterable | None,
+    judge_llm: JudgeLLM | None = None,
+    judge_every: int = 5,
+    judge_window: int = 5,
 ) -> SimulationRunner:
     agent_list = list(agents)
     if not agent_list:
@@ -217,6 +221,10 @@ def _build_runner(
     scheduler = _InlineScheduler(events_by_step=events_by_step, seed=seed)
 
     detector_list = list(detectors) if detectors is not None else list(GENERAL_DETECTORS)
+    if judge_llm is not None:
+        detector_list.append(LLMJudgeDetector(
+            judge=judge_llm, every=judge_every, window=judge_window,
+        ))
 
     return SimulationRunner(
         agents=agent_list,
@@ -246,13 +254,19 @@ async def run_async(
     detectors: Iterable | None = None,
     auto_chaos: str | bool | None = None,
     auto_chaos_exclude: Iterable[str] | None = None,
+    judge_llm: JudgeLLM | None = None,
+    judge_every: int = 5,
+    judge_window: int = 5,
 ) -> RunResult:
     """Async version of drift.run(). Use this when calling from inside an
     already-running event loop (e.g., a FastAPI endpoint handler)."""
     combined, auto_ids = _resolve_events(
         state, events, steps, seed, auto_chaos, auto_chaos_exclude,
     )
-    runner = _build_runner(agents, state, combined, steps, seed, detectors)
+    runner = _build_runner(
+        agents, state, combined, steps, seed, detectors,
+        judge_llm=judge_llm, judge_every=judge_every, judge_window=judge_window,
+    )
     result = await runner.run()
     return _attach_auto_chaos(result, auto_ids)
 
@@ -267,6 +281,9 @@ def run(
     detectors: Iterable | None = None,
     auto_chaos: str | bool | None = None,
     auto_chaos_exclude: Iterable[str] | None = None,
+    judge_llm: JudgeLLM | None = None,
+    judge_every: int = 5,
+    judge_window: int = 5,
 ) -> RunResult:
     """Run drift's simulator with user-supplied agents, state, and events.
 
@@ -293,6 +310,16 @@ def run(
         auto_chaos_exclude: pattern substrings to exclude from auto-chaos.
                    E.g. ["flip_bool"] disables every flip_bool[<field>] event;
                    ["flip_bool[is_admin]"] excludes only the one field.
+        judge_llm: an LLM judge (build via `drift.failures.judge.build_judge`).
+                   When supplied, drift runs an LLM-judged detector alongside
+                   the deterministic ones. Judge-reported failures have
+                   `failure_type` prefixed `llm:` so they're distinguishable
+                   from deterministic detections. Default None = judge off.
+        judge_every: judge cadence in timesteps. Default 5 — judge runs at
+                   t=5, 10, 15, ... to keep token cost bounded for long runs.
+        judge_window: how many recent steps go into each judge prompt.
+                   Default 5; matches `judge_every` so consecutive judgments
+                   cover disjoint windows.
 
     Returns:
         drift.RunResult with .actions, .events, .failures, .final_state,
@@ -305,7 +332,10 @@ def run(
     combined, auto_ids = _resolve_events(
         state, events, steps, seed, auto_chaos, auto_chaos_exclude,
     )
-    runner = _build_runner(agents, state, combined, steps, seed, detectors)
+    runner = _build_runner(
+        agents, state, combined, steps, seed, detectors,
+        judge_llm=judge_llm, judge_every=judge_every, judge_window=judge_window,
+    )
     result = asyncio.run(runner.run())
     return _attach_auto_chaos(result, auto_ids)
 
