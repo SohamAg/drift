@@ -313,6 +313,23 @@
         </div>
 
         <div class="field">
+          <label for="byoa-auto-chaos">Auto-chaos</label>
+          <select id="byoa-auto-chaos">
+            <option value="off">Off — only run user-defined events()</option>
+            <option value="light">Light — sparse mutations (~8% of steps)</option>
+            <option value="moderate" selected>Moderate — generates chaos against your state schema (~18%)</option>
+            <option value="aggressive">Aggressive — dense mutations (~35%)</option>
+          </select>
+          <p class="help">
+            When on, drift inspects your <code>WorldState</code> fields and auto-injects
+            type-appropriate mutations (bool flips, dict clears / fake keys, list reverses,
+            numeric boundaries, string corruption) at random steps. Auto-events show up in the
+            results list prefixed <code>AutoChaos.&lt;pattern&gt;[field]</code> so you can map
+            fired failures back to specific injected chaos.
+          </p>
+        </div>
+
+        <div class="field">
           <label for="byoa-code">Agent code</label>
           <textarea id="byoa-code" class="mono code-input"
                     spellcheck="false"
@@ -330,6 +347,15 @@
         <div class="card">
           <h3>Run summary</h3>
           <div id="byoa-summary" class="kv-grid"></div>
+        </div>
+        <div class="card" id="byoa-auto-chaos-card" hidden>
+          <h3>Auto-chaos events injected</h3>
+          <p class="help">
+            Events drift generated from your state schema. Each one mutates one field
+            mid-run; any failure that fires after the injection step is a candidate for
+            being caused by it.
+          </p>
+          <div class="failure-list" id="byoa-auto-chaos-list"></div>
         </div>
         <div class="card">
           <h3>Detected failures</h3>

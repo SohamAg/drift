@@ -1351,6 +1351,10 @@
     $('#byoa-summary').innerHTML = '';
     $('#byoa-failure-summary').innerHTML = '';
     $('#byoa-failure-list').innerHTML = '';
+    const acl = $('#byoa-auto-chaos-list');
+    if (acl) acl.innerHTML = '';
+    const acc = $('#byoa-auto-chaos-card');
+    if (acc) acc.hidden = true;
   }
 
   async function submitCustom() {
@@ -1364,6 +1368,7 @@
       detector_topology: $('#byoa-topology').value,
       steps: parseInt($('#byoa-steps').value, 10) || 10,
       seed: parseInt($('#byoa-seed').value, 10) || 0,
+      auto_chaos: ($('#byoa-auto-chaos') || {}).value || 'off',
     };
     const btn = $('#byoa-submit');
     btn.disabled = true;
@@ -1386,18 +1391,44 @@
     const meta = $('#byoa-summary');
     meta.innerHTML = '';
     const agentList = (summary.agents || []).map(a => `${a.name} (${a.role})`).join(', ') || '—';
+    const acIntensity = summary.auto_chaos && summary.auto_chaos !== 'off' ? summary.auto_chaos : null;
     const kvs = [
       ['Detectors',      summary.detector_topology],
       ['Agents',         agentList],
       ['Steps completed', `${summary.steps_completed} / ${summary.steps_requested}`],
       ['Actions',        summary.n_actions],
       ['Events',         summary.n_events],
+      ['Auto-chaos',     acIntensity ? `${acIntensity} — ${summary.n_auto_chaos_injected} injected` : 'off'],
       ['Failures',       summary.n_failures],
     ];
     kvs.forEach(([k, v]) => {
       meta.appendChild(el('span', { class: 'k', text: k }));
       meta.appendChild(el('span', { class: 'v', text: v == null || v === '' ? '—' : String(v) }));
     });
+
+    // Auto-chaos card: list every injected event so the user can see what drift fired.
+    const acCard = $('#byoa-auto-chaos-card');
+    const acList = $('#byoa-auto-chaos-list');
+    if (acCard && acList) {
+      acList.innerHTML = '';
+      const injected = data.auto_chaos_injected || [];
+      if (injected.length) {
+        acCard.hidden = false;
+        injected.forEach(ev => {
+          acList.appendChild(el('div', { class: 'failure-row' }, [
+            el('div', { class: 'step', text: `t=${ev.timestep}` }),
+            el('div', {}, [
+              el('div', {}, [
+                el('span', { class: 'pill', text: ev.name }),
+              ]),
+              el('div', { class: 'mono muted', text: ev.summary || '' }),
+            ]),
+          ]));
+        });
+      } else {
+        acCard.hidden = true;
+      }
+    }
 
     const summaryHost = $('#byoa-failure-summary');
     const listHost = $('#byoa-failure-list');
