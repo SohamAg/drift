@@ -1,0 +1,14 @@
+{
+  "n_traces": 5,
+  "n_errored": 0,
+  "traces_with_llm_failure": 0,
+  "traces_with_det_failure": 0,
+  "llm_failures_by_family": {},
+  "det_failures_by_type": {},
+  "llm_failures_by_example": {},
+  "elapsed_seconds": 6.0,
+  "topology": "support",
+  "judge_model": "gpt-4o-mini",
+  "n_traces_total_in_dir": 1056,
+  "n_traces_judged": 5
+}

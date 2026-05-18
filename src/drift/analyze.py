@@ -22,6 +22,7 @@ TRACE_SCHEMA.md for the field-level contract.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -29,7 +30,7 @@ from typing import Iterable
 
 from drift.agents.base import Action
 from drift.events.base import EventRecord
-from drift.failures.base import DetectorContext, FailureRecord
+from drift.failures.base import Detector, DetectorContext, FailureRecord
 from drift.topologies import Topology, get_topology
 from drift.world import WorldHistory, WorldState
 
@@ -98,23 +99,30 @@ def analyze_records(
     actions_raw: list[dict],
     events_raw: list[dict],
     topology_name: str,
+    extra_detectors: Iterable[Detector] | None = None,
 ) -> tuple[list[FailureRecord], dict]:
     """Replay in-memory trace records through detectors. Same semantics as
     analyze_trace, but accepts already-parsed dict lists (no file I/O).
-    Useful for the web UI, tests, and any other in-memory caller.
+
+    `extra_detectors` are appended to the topology's deterministic detectors —
+    pass an LLMJudgeDetector here to layer LLM-judged detection on top.
     """
-    return _analyze(snapshots_raw, actions_raw, events_raw, topology_name)
+    return _analyze(snapshots_raw, actions_raw, events_raw, topology_name, extra_detectors)
 
 
 def analyze_trace(
     trace_path: Path,
     topology_name: str,
+    extra_detectors: Iterable[Detector] | None = None,
 ) -> tuple[list[FailureRecord], dict]:
     """Replay a trace through a topology's detectors. Returns (failures, summary).
 
     The detectors are invoked once per snapshot timestep, against the cumulative
     set of actions and events up to and including that step — matching what
     drift's SimulationRunner does live. `already_reported` dedupes across steps.
+
+    `extra_detectors` are appended to the topology's list, useful for layering
+    an `LLMJudgeDetector` on top without modifying the topology registry.
     """
     snap_raw, act_raw, evt_raw = load_trace(Path(trace_path))
     if not snap_raw:
@@ -122,7 +130,7 @@ def analyze_trace(
             f"trace at {trace_path} has no snapshots; cannot run detectors. "
             "At minimum, provide one snapshot record per timestep."
         )
-    return _analyze(snap_raw, act_raw, evt_raw, topology_name)
+    return _analyze(snap_raw, act_raw, evt_raw, topology_name, extra_detectors)
 
 
 def _analyze(
@@ -130,6 +138,7 @@ def _analyze(
     act_raw: list[dict],
     evt_raw: list[dict],
     topology_name: str,
+    extra_detectors: Iterable[Detector] | None = None,
 ) -> tuple[list[FailureRecord], dict]:
     topology: Topology = get_topology(topology_name)
     if not snap_raw:
@@ -157,12 +166,107 @@ def _analyze(
     reported: set[str] = set()
     failures: list[FailureRecord] = []
 
+    detectors_to_run: list[Detector] = list(topology.detectors)
+    if extra_detectors:
+        detectors_to_run.extend(extra_detectors)
+    has_async = any(asyncio.iscoroutinefunction(getattr(d, "__call__", d)) for d in detectors_to_run)
+
+    sorted_steps = sorted(snaps_by_step.keys())
+
+    async def _run_async() -> None:
+        for t in sorted_steps:
+            history.record(snaps_by_step[t], [])
+            cum_actions.extend(actions_by_step.get(t, []))
+            cum_events.extend(events_by_step.get(t, []))
+            ctx = DetectorContext(
+                timestep=t,
+                history=history,
+                actions=cum_actions,
+                events=cum_events,
+                already_reported=reported,
+            )
+            for detector in detectors_to_run:
+                result = detector(ctx)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                for failure in result:
+                    failures.append(failure)
+
+    def _run_sync() -> None:
+        for t in sorted_steps:
+            history.record(snaps_by_step[t], [])
+            cum_actions.extend(actions_by_step.get(t, []))
+            cum_events.extend(events_by_step.get(t, []))
+            ctx = DetectorContext(
+                timestep=t,
+                history=history,
+                actions=cum_actions,
+                events=cum_events,
+                already_reported=reported,
+            )
+            for detector in detectors_to_run:
+                for failure in detector(ctx):
+                    failures.append(failure)
+
+    if has_async:
+        asyncio.run(_run_async())
+    else:
+        _run_sync()
+
+    summary = {
+        "topology": topology_name,
+        "n_snapshots": len(snapshots),
+        "n_actions": len(actions),
+        "n_events": len(events),
+        "first_step": sorted_steps[0] if sorted_steps else None,
+        "last_step": sorted_steps[-1] if sorted_steps else None,
+        "failures_by_type": _count_by_type(failures),
+    }
+    return failures, summary
+
+
+async def analyze_records_async(
+    snapshots_raw: list[dict],
+    actions_raw: list[dict],
+    events_raw: list[dict],
+    topology_name: str,
+    extra_detectors: Iterable[Detector] | None = None,
+) -> tuple[list[FailureRecord], dict]:
+    """Async variant — use from inside an event loop (e.g., a script that
+    already has its own asyncio loop, or one that wants to run analyses
+    concurrently). Same return shape as `analyze_records`.
+    """
+    topology: Topology = get_topology(topology_name)
+    if not snapshots_raw:
+        raise ValueError("trace has no snapshots; cannot run detectors.")
+
+    snapshots: list[WorldState] = [WorldState.model_validate(s) for s in snapshots_raw]
+    actions: list[Action] = [Action.model_validate(a) for a in actions_raw]
+    events: list[EventRecord] = [EventRecord.model_validate(e) for e in events_raw]
+
+    snaps_by_step: dict[int, WorldState] = {s.timestep: s for s in snapshots}
+    actions_by_step: dict[int, list[Action]] = defaultdict(list)
+    for a in actions:
+        actions_by_step[a.timestep].append(a)
+    events_by_step: dict[int, list[EventRecord]] = defaultdict(list)
+    for e in events:
+        events_by_step[e.timestep].append(e)
+
+    history = WorldHistory()
+    cum_actions: list[Action] = []
+    cum_events: list[EventRecord] = []
+    reported: set[str] = set()
+    failures: list[FailureRecord] = []
+
+    detectors_to_run: list[Detector] = list(topology.detectors)
+    if extra_detectors:
+        detectors_to_run.extend(extra_detectors)
+
     sorted_steps = sorted(snaps_by_step.keys())
     for t in sorted_steps:
         history.record(snaps_by_step[t], [])
         cum_actions.extend(actions_by_step.get(t, []))
         cum_events.extend(events_by_step.get(t, []))
-
         ctx = DetectorContext(
             timestep=t,
             history=history,
@@ -170,8 +274,11 @@ def _analyze(
             events=cum_events,
             already_reported=reported,
         )
-        for detector in topology.detectors:
-            for failure in detector(ctx):
+        for detector in detectors_to_run:
+            result = detector(ctx)
+            if asyncio.iscoroutine(result):
+                result = await result
+            for failure in result:
                 failures.append(failure)
 
     summary = {
