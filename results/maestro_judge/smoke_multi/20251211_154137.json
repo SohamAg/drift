@@ -1,0 +1,43 @@
+{
+  "path": "20251211_154137.jsonl",
+  "example": "image-scoring",
+  "n_actions": 23,
+  "n_snapshots": 4,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 470,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.518
+    },
+    {
+      "user_chars": 1083,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.095
+    },
+    {
+      "user_chars": 1476,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.573
+    },
+    {
+      "user_chars": 1861,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.766
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}

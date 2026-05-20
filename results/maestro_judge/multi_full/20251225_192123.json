@@ -1,0 +1,68 @@
+{
+  "path": "20251225_192123.jsonl",
+  "example": "Magentic-One",
+  "n_actions": 72,
+  "n_snapshots": 9,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 492,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.792
+    },
+    {
+      "user_chars": 1229,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.51
+    },
+    {
+      "user_chars": 1633,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.576
+    },
+    {
+      "user_chars": 2368,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.265
+    },
+    {
+      "user_chars": 2966,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.599
+    },
+    {
+      "user_chars": 3370,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.641
+    },
+    {
+      "user_chars": 3774,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.564
+    },
+    {
+      "user_chars": 4510,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.636
+    },
+    {
+      "user_chars": 5004,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.57
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}

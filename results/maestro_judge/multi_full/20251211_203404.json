@@ -1,0 +1,103 @@
+{
+  "path": "20251211_203404.jsonl",
+  "example": "Stock-Research-Example",
+  "n_actions": 143,
+  "n_snapshots": 16,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 598,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.715
+    },
+    {
+      "user_chars": 1132,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.468
+    },
+    {
+      "user_chars": 1659,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.627
+    },
+    {
+      "user_chars": 2219,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.716
+    },
+    {
+      "user_chars": 2756,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.97
+    },
+    {
+      "user_chars": 3267,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.109
+    },
+    {
+      "user_chars": 3827,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.633
+    },
+    {
+      "user_chars": 4364,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.688
+    },
+    {
+      "user_chars": 4875,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.175
+    },
+    {
+      "user_chars": 5435,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.348
+    },
+    {
+      "user_chars": 5975,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.646
+    },
+    {
+      "user_chars": 6488,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.673
+    },
+    {
+      "user_chars": 7050,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.216
+    },
+    {
+      "user_chars": 7589,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.999
+    },
+    {
+      "user_chars": 8102,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.784
+    },
+    {
+      "user_chars": 8614,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.865
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}

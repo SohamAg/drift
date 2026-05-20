@@ -1,0 +1,228 @@
+{
+  "path": "20251225_174238.jsonl",
+  "example": "Stock-Research-Example",
+  "n_actions": 391,
+  "n_snapshots": 41,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 499,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.175
+    },
+    {
+      "user_chars": 934,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.654
+    },
+    {
+      "user_chars": 1346,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.294
+    },
+    {
+      "user_chars": 1807,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.982
+    },
+    {
+      "user_chars": 2256,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.1
+    },
+    {
+      "user_chars": 2678,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.626
+    },
+    {
+      "user_chars": 3100,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.989
+    },
+    {
+      "user_chars": 3891,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.368
+    },
+    {
+      "user_chars": 4330,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.209
+    },
+    {
+      "user_chars": 4752,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.28
+    },
+    {
+      "user_chars": 5546,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.648
+    },
+    {
+      "user_chars": 5987,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.637
+    },
+    {
+      "user_chars": 6411,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.702
+    },
+    {
+      "user_chars": 7204,
+      "raw": "{\"failures\": []}",
+      "latency_s": 16.614
+    },
+    {
+      "user_chars": 7645,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.262
+    },
+    {
+      "user_chars": 8069,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.595
+    },
+    {
+      "user_chars": 8862,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.441
+    },
+    {
+      "user_chars": 9303,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.16
+    },
+    {
+      "user_chars": 9727,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.311
+    },
+    {
+      "user_chars": 10520,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.735
+    },
+    {
+      "user_chars": 10950,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.239
+    },
+    {
+      "user_chars": 11364,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.749
+    },
+    {
+      "user_chars": 11827,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.466
+    },
+    {
+      "user_chars": 12278,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.731
+    },
+    {
+      "user_chars": 12692,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.714
+    },
+    {
+      "user_chars": 13155,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.019
+    },
+    {
+      "user_chars": 13606,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.104
+    },
+    {
+      "user_chars": 14020,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.119
+    },
+    {
+      "user_chars": 14483,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.946
+    },
+    {
+      "user_chars": 14934,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.703
+    },
+    {
+      "user_chars": 15348,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.8
+    },
+    {
+      "user_chars": 15811,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.605
+    },
+    {
+      "user_chars": 16262,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.168
+    },
+    {
+      "user_chars": 16725,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.292
+    },
+    {
+      "user_chars": 17176,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.449
+    },
+    {
+      "user_chars": 17627,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.36
+    },
+    {
+      "user_chars": 18046,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.383
+    },
+    {
+      "user_chars": 18839,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.541
+    },
+    {
+      "user_chars": 19263,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.831
+    },
+    {
+      "user_chars": 20056,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.916
+    },
+    {
+      "user_chars": 20507,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.678
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}

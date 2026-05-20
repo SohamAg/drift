@@ -1,0 +1,53 @@
+{
+  "path": "20251211_220958.jsonl",
+  "example": "Stock-Research-Example",
+  "n_actions": 49,
+  "n_snapshots": 6,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 609,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.168
+    },
+    {
+      "user_chars": 1154,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.46
+    },
+    {
+      "user_chars": 1692,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.623
+    },
+    {
+      "user_chars": 2230,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.746
+    },
+    {
+      "user_chars": 2751,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.986
+    },
+    {
+      "user_chars": 3273,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.537
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}

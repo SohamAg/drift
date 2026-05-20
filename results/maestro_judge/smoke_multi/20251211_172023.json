@@ -1,0 +1,53 @@
+{
+  "path": "20251211_172023.jsonl",
+  "example": "brand-search-optimization",
+  "n_actions": 46,
+  "n_snapshots": 6,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 482,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.47
+    },
+    {
+      "user_chars": 896,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.696
+    },
+    {
+      "user_chars": 1291,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.813
+    },
+    {
+      "user_chars": 1695,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.696
+    },
+    {
+      "user_chars": 2105,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.636
+    },
+    {
+      "user_chars": 2512,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.67
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}

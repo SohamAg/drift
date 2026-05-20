@@ -1,0 +1,53 @@
+{
+  "path": "20251222_202130.jsonl",
+  "example": "marketing-agency",
+  "n_actions": 47,
+  "n_snapshots": 6,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 473,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.142
+    },
+    {
+      "user_chars": 868,
+      "raw": "{\"failures\": []}",
+      "latency_s": 4.714
+    },
+    {
+      "user_chars": 1254,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.896
+    },
+    {
+      "user_chars": 1659,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.025
+    },
+    {
+      "user_chars": 2043,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.637
+    },
+    {
+      "user_chars": 2427,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.489
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}
