@@ -1,0 +1,63 @@
+{
+  "path": "20251225_170518.jsonl",
+  "example": "Stock-Research-Example",
+  "n_actions": 66,
+  "n_snapshots": 8,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 499,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.675
+    },
+    {
+      "user_chars": 934,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.561
+    },
+    {
+      "user_chars": 1351,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.921
+    },
+    {
+      "user_chars": 2130,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.979
+    },
+    {
+      "user_chars": 2569,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.695
+    },
+    {
+      "user_chars": 2980,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.553
+    },
+    {
+      "user_chars": 3760,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.748
+    },
+    {
+      "user_chars": 4506,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.657
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}

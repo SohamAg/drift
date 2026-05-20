@@ -1,0 +1,73 @@
+{
+  "path": "20251222_173808.jsonl",
+  "example": "brand-search-optimization",
+  "n_actions": 83,
+  "n_snapshots": 10,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 482,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.051
+    },
+    {
+      "user_chars": 896,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.477
+    },
+    {
+      "user_chars": 1322,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.245
+    },
+    {
+      "user_chars": 1787,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.013
+    },
+    {
+      "user_chars": 2199,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.604
+    },
+    {
+      "user_chars": 2604,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.262
+    },
+    {
+      "user_chars": 3068,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.104
+    },
+    {
+      "user_chars": 3481,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.237
+    },
+    {
+      "user_chars": 3886,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.391
+    },
+    {
+      "user_chars": 4293,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.557
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}

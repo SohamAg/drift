@@ -1,0 +1,78 @@
+{
+  "path": "20251222_202552.jsonl",
+  "example": "marketing-agency",
+  "n_actions": 100,
+  "n_snapshots": 11,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 473,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.54
+    },
+    {
+      "user_chars": 868,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.765
+    },
+    {
+      "user_chars": 1265,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.995
+    },
+    {
+      "user_chars": 1649,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.693
+    },
+    {
+      "user_chars": 2033,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.573
+    },
+    {
+      "user_chars": 2417,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.78
+    },
+    {
+      "user_chars": 2803,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.545
+    },
+    {
+      "user_chars": 3206,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.969
+    },
+    {
+      "user_chars": 3611,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.183
+    },
+    {
+      "user_chars": 3995,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.837
+    },
+    {
+      "user_chars": 4382,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.922
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}

@@ -61,7 +61,29 @@ from drift.failures.judge import (  # noqa: E402
 )
 
 TRACES_DIR = REPO_ROOT / "data" / "external" / "maestro" / "drift_traces"
+GT_DIR = REPO_ROOT / "data" / "external" / "maestro" / "ground_truth"
 RESULTS_DIR = REPO_ROOT / "results" / "maestro_judge"
+
+
+def _load_ground_truth(run_id: str) -> dict | None:
+    p = GT_DIR / f"{run_id}.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _is_failed_run(gt: dict | None) -> bool:
+    """A run is 'failed' if MAESTRO's outcome says so OR there are explicit
+    per-agent failure annotations OR useless-output flags."""
+    if not gt:
+        return False
+    outcome = (gt.get("run_outcome") or "").lower()
+    if outcome in {"failure", "failed", "fail"}:
+        return True
+    return bool(gt.get("agent_failures") or gt.get("useless_outputs"))
 
 
 class _RecordingJudge:
@@ -91,7 +113,9 @@ async def _judge_one_trace(
     """Run analyze_records_async on one trace with a judge layered on top.
 
     Returns a dict with per-trace stats — det/llm failure counts, judge
-    raw responses, MAESTRO example name, errors if any.
+    raw responses, MAESTRO example name, MAESTRO ground-truth verdict
+    (used after-the-fact for agreement metrics — judge never sees it),
+    errors if any.
     """
     snap_raw, act_raw, evt_raw = load_trace(path)
     if not snap_raw:
@@ -101,6 +125,10 @@ async def _judge_one_trace(
     first_case = next(iter(snap_raw[0].get("open_cases", {}).values()), None)
     if first_case:
         example_name = first_case.get("issue", "unknown")
+
+    run_id = path.stem
+    gt = _load_ground_truth(run_id)
+    gt_failed = _is_failed_run(gt)
 
     recorder = _RecordingJudge(OpenAIJudge(model=model))
     detector = LLMJudgeDetector(recorder, every=1, window=10_000)
@@ -137,6 +165,16 @@ async def _judge_one_trace(
             for f in llm
         ],
         "judge_calls": recorder.calls,
+        # Ground truth from MAESTRO — judge did NOT see this. Used for
+        # post-hoc agreement metrics in _tabulate.
+        "maestro": {
+            "run_outcome": (gt or {}).get("run_outcome"),
+            "run_judgement": (gt or {}).get("run_judgement"),
+            "agent_failures_count": len((gt or {}).get("agent_failures") or []),
+            "useless_outputs_count": len((gt or {}).get("useless_outputs") or []),
+            "is_failed": gt_failed,
+            "has_ground_truth": gt is not None,
+        },
     }
 
 
@@ -183,6 +221,24 @@ def _tabulate(results: list[dict]) -> dict:
             for ftype, n in r.get("failures_by_type", {}).get("llm", {}).items():
                 by_example_llm[ex][ftype] += n
 
+    # Ground-truth agreement: precision/recall of judge-fired-vs-MAESTRO-failed.
+    # Only counted over traces that have ground-truth coverage.
+    tp = fp = fn = tn = 0
+    n_with_gt = 0
+    for r in results:
+        m = r.get("maestro") or {}
+        if not m.get("has_ground_truth"):
+            continue
+        n_with_gt += 1
+        judge_fired = (r.get("n_failures_llm", 0) > 0)
+        gt_failed = bool(m.get("is_failed"))
+        if judge_fired and gt_failed:     tp += 1
+        elif judge_fired and not gt_failed: fp += 1
+        elif (not judge_fired) and gt_failed: fn += 1
+        else:                              tn += 1
+    precision = tp / (tp + fp) if (tp + fp) else None
+    recall    = tp / (tp + fn) if (tp + fn) else None
+
     return {
         "n_traces": len(results),
         "n_errored": errored,
@@ -191,6 +247,15 @@ def _tabulate(results: list[dict]) -> dict:
         "llm_failures_by_family": dict(llm_by_family),
         "det_failures_by_type": dict(det_by_type),
         "llm_failures_by_example": {k: dict(v) for k, v in by_example_llm.items()},
+        "ground_truth_agreement": {
+            "n_with_ground_truth": n_with_gt,
+            "tp_judge_fired_and_maestro_failed":      tp,
+            "fp_judge_fired_but_maestro_clean":       fp,
+            "fn_judge_silent_but_maestro_failed":     fn,
+            "tn_judge_silent_and_maestro_clean":      tn,
+            "precision": precision,
+            "recall":    recall,
+        },
     }
 
 
@@ -198,6 +263,13 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--sample", type=int, default=5, help="run on the first N traces (smoke test). Use --full for all.")
     p.add_argument("--full", action="store_true", help="run on all available traces (overrides --sample).")
+    p.add_argument("--only-failed", action="store_true",
+                   help="only run on traces MAESTRO flagged as failures "
+                        "(non-success run.outcome OR has agent.failure.* OR useless_outputs).")
+    p.add_argument("--only-multi-agent", action="store_true",
+                   help="only run on traces with >=2 distinct agent names. The "
+                        "single-agent majority of MAESTRO can't have coordination "
+                        "failures by definition, so this is the real evaluation set.")
     p.add_argument("--topology", default="support", choices=["support", "code_review", "ops"])
     p.add_argument("--judge-model", default="gpt-4o-mini")
     p.add_argument("--concurrency", type=int, default=8)
@@ -214,7 +286,22 @@ def main() -> None:
     if not all_traces:
         sys.exit(f"no traces in {TRACES_DIR}")
 
-    paths = all_traces if args.full else all_traces[: args.sample]
+    candidates = all_traces
+    if args.only_failed:
+        candidates = [p for p in candidates if _is_failed_run(_load_ground_truth(p.stem))]
+        print(f"filtered to {len(candidates)} / {len(all_traces)} traces flagged failure by MAESTRO", file=sys.stderr)
+
+    if args.only_multi_agent:
+        kept = []
+        for p in candidates:
+            recs = [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+            agents = {r["agent_name"] for r in recs if r.get("type") == "action"}
+            if len(agents) >= 2:
+                kept.append(p)
+        candidates = kept
+        print(f"filtered to {len(candidates)} / {len(all_traces)} traces with >=2 distinct agents", file=sys.stderr)
+
+    paths = candidates if args.full else candidates[: args.sample]
     label = args.output_name or time.strftime("%Y%m%d_%H%M%S")
     out_dir = RESULTS_DIR / label
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -270,6 +357,18 @@ def main() -> None:
         print(f"  deterministic failures (for comparison):")
         for ft, n in sorted(summary["det_failures_by_type"].items(), key=lambda kv: -kv[1]):
             print(f"    {n:6d}  {ft}")
+    print()
+    gta = summary["ground_truth_agreement"]
+    if gta["n_with_ground_truth"]:
+        print(f"  ground-truth agreement (over {gta['n_with_ground_truth']} traces with MAESTRO labels):")
+        print(f"    TP  judge fired & MAESTRO failed : {gta['tp_judge_fired_and_maestro_failed']:4d}")
+        print(f"    FP  judge fired & MAESTRO clean  : {gta['fp_judge_fired_but_maestro_clean']:4d}")
+        print(f"    FN  judge silent & MAESTRO failed: {gta['fn_judge_silent_but_maestro_failed']:4d}")
+        print(f"    TN  judge silent & MAESTRO clean : {gta['tn_judge_silent_and_maestro_clean']:4d}")
+        if gta["precision"] is not None:
+            print(f"    precision: {gta['precision']:.3f}")
+        if gta["recall"] is not None:
+            print(f"    recall:    {gta['recall']:.3f}")
     print()
     print(f"per-trace details + raw judge responses: {out_dir.relative_to(REPO_ROOT)}/")
 

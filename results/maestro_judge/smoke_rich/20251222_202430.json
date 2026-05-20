@@ -1,0 +1,38 @@
+{
+  "path": "20251222_202430.jsonl",
+  "example": "language-agent-tree-search",
+  "n_actions": 20,
+  "n_snapshots": 3,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 488,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.24
+    },
+    {
+      "user_chars": 882,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.665
+    },
+    {
+      "user_chars": 1283,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.802
+    }
+  ],
+  "maestro": {
+    "run_outcome": "failure",
+    "run_judgement": "wrong",
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": true,
+    "has_ground_truth": true
+  }
+}

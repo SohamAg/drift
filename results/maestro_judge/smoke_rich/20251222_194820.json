@@ -1,0 +1,98 @@
+{
+  "path": "20251222_194820.jsonl",
+  "example": "language-agent-tree-search",
+  "n_actions": 134,
+  "n_snapshots": 15,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 554,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.481
+    },
+    {
+      "user_chars": 948,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.852
+    },
+    {
+      "user_chars": 1341,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.579
+    },
+    {
+      "user_chars": 1763,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.736
+    },
+    {
+      "user_chars": 2156,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.776
+    },
+    {
+      "user_chars": 2578,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.721
+    },
+    {
+      "user_chars": 3000,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.793
+    },
+    {
+      "user_chars": 3422,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.661
+    },
+    {
+      "user_chars": 3844,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.665
+    },
+    {
+      "user_chars": 4237,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.612
+    },
+    {
+      "user_chars": 4633,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.586
+    },
+    {
+      "user_chars": 5057,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.949
+    },
+    {
+      "user_chars": 5460,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.791
+    },
+    {
+      "user_chars": 5884,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.757
+    },
+    {
+      "user_chars": 6279,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.671
+    }
+  ],
+  "maestro": {
+    "run_outcome": "failure",
+    "run_judgement": null,
+    "agent_failures_count": 1,
+    "useless_outputs_count": 0,
+    "is_failed": true,
+    "has_ground_truth": true
+  }
+}

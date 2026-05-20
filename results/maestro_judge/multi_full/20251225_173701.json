@@ -1,0 +1,38 @@
+{
+  "path": "20251225_173701.jsonl",
+  "example": "Travel-Planning",
+  "n_actions": 12,
+  "n_snapshots": 3,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 482,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.38
+    },
+    {
+      "user_chars": 1221,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.429
+    },
+    {
+      "user_chars": 1960,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.631
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}

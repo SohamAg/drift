@@ -1,0 +1,218 @@
+{
+  "path": "20251225_194044.jsonl",
+  "example": "Stock-Research-Example",
+  "n_actions": 376,
+  "n_snapshots": 39,
+  "n_failures_det": 0,
+  "n_failures_llm": 0,
+  "failures_by_type": {
+    "deterministic": {},
+    "llm": {}
+  },
+  "llm_failures": [],
+  "judge_calls": [
+    {
+      "user_chars": 554,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.35
+    },
+    {
+      "user_chars": 1044,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.681
+    },
+    {
+      "user_chars": 1516,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.604
+    },
+    {
+      "user_chars": 2010,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.01
+    },
+    {
+      "user_chars": 2477,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.597
+    },
+    {
+      "user_chars": 2981,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.151
+    },
+    {
+      "user_chars": 3448,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.97
+    },
+    {
+      "user_chars": 3974,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.718
+    },
+    {
+      "user_chars": 4468,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.47
+    },
+    {
+      "user_chars": 4945,
+      "raw": "{\"failures\": []}",
+      "latency_s": 0.764
+    },
+    {
+      "user_chars": 5734,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.035
+    },
+    {
+      "user_chars": 6208,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.513
+    },
+    {
+      "user_chars": 7001,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.338
+    },
+    {
+      "user_chars": 7497,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.256
+    },
+    {
+      "user_chars": 7976,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.201
+    },
+    {
+      "user_chars": 8494,
+      "raw": "{\"failures\": []}",
+      "latency_s": 5.085
+    },
+    {
+      "user_chars": 9000,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.065
+    },
+    {
+      "user_chars": 9469,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.845
+    },
+    {
+      "user_chars": 9987,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.162
+    },
+    {
+      "user_chars": 10466,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.245
+    },
+    {
+      "user_chars": 10984,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.09
+    },
+    {
+      "user_chars": 11490,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.416
+    },
+    {
+      "user_chars": 12238,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.759
+    },
+    {
+      "user_chars": 12707,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.682
+    },
+    {
+      "user_chars": 13500,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.731
+    },
+    {
+      "user_chars": 13996,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.172
+    },
+    {
+      "user_chars": 14470,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.952
+    },
+    {
+      "user_chars": 15263,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.023
+    },
+    {
+      "user_chars": 15759,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.162
+    },
+    {
+      "user_chars": 16238,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.212
+    },
+    {
+      "user_chars": 16756,
+      "raw": "{\"failures\": []}",
+      "latency_s": 1.35
+    },
+    {
+      "user_chars": 17225,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.342
+    },
+    {
+      "user_chars": 17743,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.549
+    },
+    {
+      "user_chars": 18249,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.496
+    },
+    {
+      "user_chars": 18718,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.323
+    },
+    {
+      "user_chars": 19298,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.975
+    },
+    {
+      "user_chars": 19766,
+      "raw": "{\"failures\": []}",
+      "latency_s": 2.585
+    },
+    {
+      "user_chars": 20294,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.825
+    },
+    {
+      "user_chars": 21042,
+      "raw": "{\"failures\": []}",
+      "latency_s": 3.363
+    }
+  ],
+  "maestro": {
+    "run_outcome": null,
+    "run_judgement": null,
+    "agent_failures_count": 0,
+    "useless_outputs_count": 0,
+    "is_failed": false,
+    "has_ground_truth": true
+  }
+}
