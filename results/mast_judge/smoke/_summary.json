@@ -1,0 +1,196 @@
+{
+  "n_traces": 3,
+  "n_errored": 0,
+  "tp": 2,
+  "fp": 5,
+  "fn": 4,
+  "tn": 43,
+  "precision": 0.2857142857142857,
+  "recall": 0.3333333333333333,
+  "f1": 0.30769230769230765,
+  "per_mode": [
+    {
+      "mode": "1.1 1.1 Poor task constraint compliance",
+      "tp": 0,
+      "fp": 2,
+      "fn": 0,
+      "tn": 1,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "1.2 1.2 Inconsistency between reasoning and action",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 2,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "1.3 1.3 Undetected conversation ambiguities and contradictions",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "1.4 1.4 Fail to elicit clarification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "1.5 1.5 Unaware of stopping conditions",
+      "tp": 1,
+      "fp": 0,
+      "fn": 2,
+      "tn": 0,
+      "ground_truth_positives": 3,
+      "precision": 1.0,
+      "recall": 0.3333333333333333
+    },
+    {
+      "mode": "2.1 2.1 Unbatched repetitive execution",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "2.2 2.2 Step repetition",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "2.3 2.3 Backtracking interruption",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "2.4 2.4 Conversation reset",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "2.5 2.5 Derailment from task",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "2.6 2.6 Disobey role specification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "3.1 3.1 Disagreement induced inaction",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 2,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "3.2 3.2 Withholding relevant information",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "3.3 3.3 Ignoring suggestions from agents",
+      "tp": 1,
+      "fp": 0,
+      "fn": 2,
+      "tn": 0,
+      "ground_truth_positives": 3,
+      "precision": 1.0,
+      "recall": 0.3333333333333333
+    },
+    {
+      "mode": "3.4 3.4 Waiting for known information",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "4.1 4.1 Ill specified termination condition leading to premature termination",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 2,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "4.2 4.2 Lack of result verification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "4.3 4.3 Lack of critical verification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    }
+  ],
+  "elapsed_seconds": 4.6,
+  "judge_model": "gpt-4o-mini",
+  "n_records": 3
+}

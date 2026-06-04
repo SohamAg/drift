@@ -42,6 +42,50 @@ PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]  # e:\drift
 RUNS_DIR: Path = PROJECT_ROOT / "runs"
 SCENARIOS_DIR: Path = PROJECT_ROOT / "scenarios"
 WEB_DIR: Path = PROJECT_ROOT / "web"
+MAST_DATASET: Path = PROJECT_ROOT / "data" / "external" / "mast" / "MAD_human_labelled_dataset.json"
+MAST_CACHED_RESULTS_DIR: Path = PROJECT_ROOT / "results" / "mast_judge" / "full"
+
+
+# Curated MAST traces for the "Detect" demo tab. Each entry pairs one
+# MAST trace_id with a short human-readable narrative so the demo can show
+# "real published multi-agent run X had these human-flagged failures —
+# here is what drift's judge sees." Picked to span MAS frameworks and
+# represent a mix of outcomes (clean win, mixed, hard miss) so the demo
+# is honest about where drift works and where it doesn't.
+MAST_DEMO_TRACES: list[dict[str, Any]] = [
+    {
+        "id": 2,
+        "title": "AG2 — Christmas ribbon math",
+        "mas_name": "AG2",
+        "task_brief": "Math word problem with insufficient data. Agents debate how much ribbon to use per gift bow.",
+        "story": "WIN",
+        "story_blurb": "Drift caught both failure modes the human annotators flagged, with zero false alarms.",
+    },
+    {
+        "id": 11,
+        "title": "AppWorld — Bucket-list manager",
+        "mas_name": "AppWorld",
+        "task_brief": "Supervisor + Spotify/Notes/etc. agents coordinate to mark items off a bucket list.",
+        "story": "MIXED",
+        "story_blurb": "Drift caught 2 of 4 real failures (task drift and constraint violation) but missed both verification-related ones.",
+    },
+    {
+        "id": 9,
+        "title": "MetaGPT — Budget tracker app",
+        "mas_name": "MetaGPT",
+        "task_brief": "Coder + Tester agents build a budget tracker. Tests don't actually match the code's logic.",
+        "story": "MIXED",
+        "story_blurb": "Drift correctly flagged the reasoning-action mismatch but missed the backtracking failure.",
+    },
+    {
+        "id": 3,
+        "title": "ChatDev — Sudoku project (hard case)",
+        "mas_name": "ChatDev",
+        "task_brief": "Software dev pipeline (CEO/CTO/coder/tester) builds a Sudoku app over hundreds of agent turns.",
+        "story": "MISS",
+        "story_blurb": "Long-trace honest limit: 9 human-flagged failures, drift's current generic prompt caught none. Shows the prompt-iteration headroom.",
+    },
+]
 
 
 # Starter snippet for the Custom (BYOA) tab. Demonstrates the full
@@ -220,6 +264,18 @@ class AnalyzeRequest(BaseModel):
     trace: str   # raw JSONL text — one record per line, each with a "type" field
 
 
+class MastAnalyzeRequest(BaseModel):
+    """Run drift's judge on one curated MAST trace and compare with human
+    ground truth. Backs the Detect tab.
+
+    `trace_id` selects from MAST_DEMO_TRACES. `mode` chooses cached results
+    (instant, no API spend) or live re-run (~5-30s + token cost).
+    """
+    trace_id: int
+    mode: str = "cached"   # "cached" | "live"
+    judge_model: str = "gpt-4o-mini"
+
+
 class BYOARequest(BaseModel):
     """Run drift on user-supplied agent code. Backs the Custom (BYOA) tab.
 
@@ -326,6 +382,44 @@ def _build_timeline(
             }
             for t in all_steps
         ],
+    }
+
+
+def _shape_mast_response(entry: dict[str, Any], result: dict[str, Any], *, mode: str) -> dict[str, Any]:
+    """Format a MAST per-trace result for the Detect tab.
+
+    Both cached and live paths produce the same per-trace shape (from
+    `drift.failures.mast_eval.judge_one_trace`); this shapes it for the UI
+    by adding the curated demo metadata + a precision/recall summary.
+    """
+    per_mode = result.get("per_mode", [])
+    n_tp = sum(1 for m in per_mode if m["outcome"] == "TP")
+    n_fp = sum(1 for m in per_mode if m["outcome"] == "FP")
+    n_fn = sum(1 for m in per_mode if m["outcome"] == "FN")
+    n_tn = sum(1 for m in per_mode if m["outcome"] == "TN")
+    precision = n_tp / (n_tp + n_fp) if (n_tp + n_fp) else None
+    recall = n_tp / (n_tp + n_fn) if (n_tp + n_fn) else None
+    f1 = (2 * precision * recall / (precision + recall)) if (precision and recall) else None
+
+    return {
+        "demo_meta": entry,
+        "mode": mode,
+        "trace_id": result.get("trace_id"),
+        "mas_name": result.get("mas_name"),
+        "benchmark_name": result.get("benchmark_name"),
+        "n_chars": result.get("n_chars"),
+        "truncated": result.get("truncated", False),
+        "latency_s": result.get("latency_s"),
+        "predictions": result.get("predictions", []),
+        "per_mode": per_mode,
+        "summary": {
+            "n_tp": n_tp, "n_fp": n_fp, "n_fn": n_fn, "n_tn": n_tn,
+            "n_ground_truth_positives": n_tp + n_fn,
+            "n_predicted_positives": n_tp + n_fp,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+        },
     }
 
 
@@ -908,6 +1002,117 @@ def create_app() -> FastAPI:
             "detector_topology": "code_review",
             "code": _BYOA_EXAMPLE_CODE,
         }
+
+    # ---- MAST demo (Detect tab) -------------------------------------------
+
+    @app.get("/api/mast-demos")
+    def mast_demos() -> dict[str, Any]:
+        """List the curated MAST demo traces with task + outcome metadata.
+
+        Used by the Detect tab to render the four cards. We pull the human
+        ground truth from the per-trace cached result so the card can show
+        what annotators flagged before the user even clicks Run.
+        """
+        if not MAST_DATASET.exists():
+            raise HTTPException(404, f"MAST dataset not bundled at {MAST_DATASET}")
+        mast = json.loads(MAST_DATASET.read_text(encoding="utf-8"))
+        mast_by_id = {r["trace_id"]: r for r in mast}
+
+        out = []
+        for entry in MAST_DEMO_TRACES:
+            rec = mast_by_id.get(entry["id"])
+            if not rec:
+                continue
+            cached_path = MAST_CACHED_RESULTS_DIR / f"trace_{entry['id']:03d}.json"
+            cached = json.loads(cached_path.read_text(encoding="utf-8")) if cached_path.exists() else None
+            gt_modes = []
+            if cached:
+                gt_modes = [m["name"] for m in cached.get("per_mode", []) if m.get("ground_truth")]
+            out.append({
+                **entry,
+                "trace_chars": len(rec["trace"]),
+                "trace_truncated": len(rec["trace"]) > 100_000,
+                "benchmark_name": rec.get("benchmark_name"),
+                "ground_truth_modes": gt_modes,
+                "n_ground_truth_positives": len(gt_modes),
+                "has_cached_result": cached is not None,
+            })
+        return {"traces": out, "judge_model_default": "gpt-4o-mini"}
+
+    @app.get("/api/mast-demos/{trace_id}/trace")
+    def mast_demo_trace_text(trace_id: int) -> dict[str, Any]:
+        """Return the raw MAST trace text so the demo UI can render it
+        alongside drift's analysis. Truncated to keep the response small."""
+        if not MAST_DATASET.exists():
+            raise HTTPException(404, "MAST dataset not bundled")
+        mast = json.loads(MAST_DATASET.read_text(encoding="utf-8"))
+        rec = next((r for r in mast if r["trace_id"] == trace_id), None)
+        if not rec:
+            raise HTTPException(404, f"trace_id {trace_id} not found in MAST")
+        # Cap the returned text at 50k chars so we don't blow the UI; users
+        # can see it's truncated and inspect the raw file if they want more.
+        text = rec["trace"]
+        truncated = len(text) > 50_000
+        if truncated:
+            text = text[:50_000]
+        return {
+            "trace_id": trace_id,
+            "mas_name": rec.get("mas_name"),
+            "benchmark_name": rec.get("benchmark_name"),
+            "n_chars_total": len(rec["trace"]),
+            "n_chars_returned": len(text),
+            "truncated": truncated,
+            "trace": text,
+        }
+
+    @app.post("/api/mast-analyze")
+    async def mast_analyze(req: MastAnalyzeRequest) -> dict[str, Any]:
+        """Run (or replay cached) drift's judge against one curated MAST trace.
+
+        mode='cached' returns the prior judge result from disk — instant,
+        no API spend. Used for the default demo experience.
+
+        mode='live' calls the OpenAI judge with the same prompt the offline
+        runner uses and returns fresh predictions. Costs tokens but gives
+        the user the "run it for real" moment.
+
+        Either way the response includes per-mode TP/FP/FN/TN labels so the
+        Detect tab can show the honest side-by-side.
+        """
+        # Validate that this trace_id is one we curated.
+        entry = next((e for e in MAST_DEMO_TRACES if e["id"] == req.trace_id), None)
+        if entry is None:
+            raise HTTPException(400, f"trace_id {req.trace_id} is not a curated MAST demo trace")
+
+        if req.mode == "cached":
+            cached_path = MAST_CACHED_RESULTS_DIR / f"trace_{req.trace_id:03d}.json"
+            if not cached_path.exists():
+                raise HTTPException(404, f"no cached result for trace_id {req.trace_id}")
+            cached = json.loads(cached_path.read_text(encoding="utf-8"))
+            return _shape_mast_response(entry, cached, mode="cached")
+
+        if req.mode == "live":
+            # Re-run the judge live against this trace. Import lazily so the
+            # server still loads when openai isn't installed.
+            from drift.failures.judge import OpenAIJudge
+            from drift.failures.mast_eval import judge_one_trace
+
+            mast = json.loads(MAST_DATASET.read_text(encoding="utf-8"))
+            rec = next((r for r in mast if r["trace_id"] == req.trace_id), None)
+            if rec is None:
+                raise HTTPException(404, f"trace_id {req.trace_id} missing from MAST dataset")
+
+            try:
+                judge = OpenAIJudge(model=req.judge_model)
+            except Exception as e:
+                raise HTTPException(400, f"could not build judge: {type(e).__name__}: {e}")
+
+            result = await judge_one_trace(rec, judge)
+            if "error" in result:
+                raise HTTPException(500, f"judge call failed: {result['error']}")
+            return _shape_mast_response(entry, result, mode="live")
+
+        raise HTTPException(400, f"unknown mode {req.mode!r}; expected 'cached' or 'live'")
 
     @app.get("/api/sample-trace")
     def sample_trace() -> dict[str, Any]:

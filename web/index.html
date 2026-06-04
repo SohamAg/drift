@@ -23,7 +23,8 @@
   </header>
 
   <nav class="tabs" role="tablist">
-    <button class="tab active" data-tab="new"     role="tab">New Run</button>
+    <button class="tab active" data-tab="detect"  role="tab">Detect <span class="badge">demo</span></button>
+    <button class="tab"        data-tab="new"     role="tab">New Run</button>
     <button class="tab"        data-tab="runs"    role="tab">Runs <span id="runs-count" class="badge"></span></button>
     <button class="tab"        data-tab="compare" role="tab">Compare</button>
     <button class="tab"        data-tab="analyze" role="tab">Analyze</button>
@@ -34,7 +35,48 @@
   <main>
 
     <!-- ===================== NEW RUN ===================== -->
-    <section id="tab-new" class="tab-panel active">
+    <!-- ===================== DETECT (MAST demo) ===================== -->
+    <section id="tab-detect" class="tab-panel active">
+      <div class="card">
+        <h2>Detect coordination failures in real multi-agent runs</h2>
+        <p class="help">
+          Four published multi-agent runs from the
+          <a href="https://arxiv.org/abs/2503.13657" target="_blank" rel="noopener">MAST benchmark</a>
+          (Cemri et al., Berkeley, 2025). Each trace was annotated by <strong>three human raters</strong>
+          against the MAST 14-mode failure taxonomy. Click a card to see what drift's LLM judge
+          flags, side-by-side with the human ground truth.
+        </p>
+        <p class="help">
+          The default <em>Cached</em> view replays the analysis drift already ran on these traces
+          (no API spend). <em>Run live</em> re-runs the judge against the trace from scratch — costs
+          a few cents at gpt-4o-mini rates.
+        </p>
+
+        <div id="mast-cards" class="mast-card-grid">
+          <div class="empty">Loading curated MAST traces…</div>
+        </div>
+      </div>
+
+      <div id="mast-result" class="hidden">
+        <div class="card">
+          <h3 id="mast-result-title">Analysis</h3>
+          <div id="mast-result-meta" class="kv-grid"></div>
+          <div id="mast-result-summary" style="margin-top: 12px;"></div>
+        </div>
+        <div class="card">
+          <h3>Side-by-side: human ground truth vs drift's judge</h3>
+          <p class="help">
+            <span class="pill sev-critical">TP</span> drift correctly flagged a real failure.
+            <span class="pill sev-critical">FN</span> drift missed a real failure.
+            <span class="pill warn">FP</span> drift flagged something annotators didn't.
+            <span class="pill">TN</span> both agreed: no failure of that mode.
+          </p>
+          <div id="mast-result-modes" class="failure-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-new" class="tab-panel">
       <div class="grid two-col">
         <div class="card">
           <h2>Configure run</h2>

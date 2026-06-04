@@ -1173,3 +1173,27 @@ input[type="range"]::-moz-range-thumb {
 .warn-text { color: var(--warn, #f59e0b); }
 .compact-list { margin: 4px 0 8px 18px; padding: 0; }
 .compact-list li { margin: 2px 0; }
+
+/* Detect tab (MAST demo) */
+.mast-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.mast-card {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mast-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.mast-card .actions { margin-top: auto; padding-top: 12px; }
+.pill.warn   { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
+.failure-cell.sev-warn .fcount { color: #fbbf24; }
+#mast-result { margin-top: 16px; }
+#mast-result .card + .card { margin-top: 16px; }
