@@ -114,6 +114,7 @@
   function activateTab(name) {
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
+    if (name === 'detect') initDetect();
     if (name === 'runs') refreshRuns();
     if (name === 'compare') populateComparePickers();
     if (name === 'analyze') initAnalyze();
@@ -146,6 +147,9 @@
       toast('Could not load topologies/scenarios: ' + e.message, 'error');
     }
     await refreshRuns();
+    // Detect tab is the default landing — load its cards immediately so
+    // visitors see content without having to click anything.
+    initDetect();
   }
 
   function populateTopologyDropdown() {
@@ -1167,6 +1171,183 @@
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Launch fork';
+    }
+  }
+
+  // ---------- detect (MAST demo) -----------------------------------------
+
+  let DETECT_INITED = false;
+  let DETECT_TRACES = [];
+
+  async function initDetect() {
+    if (DETECT_INITED) return;
+    DETECT_INITED = true;
+    try {
+      const data = await api('/api/mast-demos');
+      DETECT_TRACES = data.traces || [];
+      renderDetectCards();
+    } catch (e) {
+      $('#mast-cards').innerHTML = '';
+      $('#mast-cards').appendChild(el('div', { class: 'empty', text: 'Could not load MAST demos: ' + e.message }));
+    }
+  }
+
+  function renderDetectCards() {
+    const host = $('#mast-cards');
+    host.innerHTML = '';
+    if (!DETECT_TRACES.length) {
+      host.appendChild(el('div', { class: 'empty', text: 'No MAST demo traces available.' }));
+      return;
+    }
+    DETECT_TRACES.forEach(t => {
+      const storyBadge = el('span', {
+        class: 'pill ' + (t.story === 'WIN' ? '' : t.story === 'MIXED' ? 'warn' : 'critical'),
+        text: t.story,
+      });
+      const card = el('div', { class: 'card mast-card' }, [
+        el('div', { class: 'mast-card-head' }, [
+          el('h3', { style: 'margin:0; flex:1;', text: t.title }),
+          storyBadge,
+        ]),
+        el('p', { class: 'help', text: t.task_brief }),
+        el('p', { class: 'help', text: t.story_blurb }),
+        el('div', { class: 'kv-grid', style: 'margin: 8px 0;' }, [
+          el('span', { class: 'k', text: 'Trace size' }),
+          el('span', { class: 'v', text: `${fmt.num(t.trace_chars)} chars${t.trace_truncated ? ' (truncated to 100k)' : ''}` }),
+          el('span', { class: 'k', text: 'Human-flagged modes' }),
+          el('span', { class: 'v', text: `${t.n_ground_truth_positives}` }),
+        ]),
+        t.ground_truth_modes && t.ground_truth_modes.length
+          ? el('div', { class: 'mono muted', style: 'font-size: 11px; margin-bottom: 8px;', text: t.ground_truth_modes.join(' • ') })
+          : null,
+        el('div', { class: 'actions' }, [
+          el('button', {
+            class: 'primary',
+            text: 'Run drift (cached)',
+            onclick: () => runMastDemo(t.id, 'cached'),
+          }),
+          el('button', {
+            class: 'ghost-btn',
+            text: 'Run live (≈ 5 s, costs tokens)',
+            onclick: () => runMastDemo(t.id, 'live'),
+          }),
+        ]),
+      ].filter(Boolean));
+      host.appendChild(card);
+    });
+  }
+
+  async function runMastDemo(traceId, mode) {
+    // Disable all card buttons while a request is in flight.
+    const buttons = Array.from(document.querySelectorAll('#mast-cards button'));
+    buttons.forEach(b => b.disabled = true);
+    try {
+      const data = await api('/api/mast-analyze', {
+        method: 'POST',
+        body: { trace_id: traceId, mode },
+      });
+      renderMastResult(data);
+      $('#mast-result').classList.remove('hidden');
+      $('#mast-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (e) {
+      toast('Run failed: ' + e.message, 'error');
+    } finally {
+      buttons.forEach(b => b.disabled = false);
+    }
+  }
+
+  function renderMastResult(data) {
+    const title = `${data.demo_meta.title} — ${data.mode === 'live' ? 'live' : 'cached'} drift analysis`;
+    $('#mast-result-title').textContent = title;
+
+    const meta = $('#mast-result-meta');
+    meta.innerHTML = '';
+    const s = data.summary || {};
+    const kvs = [
+      ['MAS framework',    data.mas_name],
+      ['Benchmark',        data.benchmark_name],
+      ['Trace size',       `${fmt.num(data.n_chars)} chars${data.truncated ? ' (truncated)' : ''}`],
+      ['Mode',             data.mode + (data.latency_s ? ` (${data.latency_s}s)` : '')],
+      ['Human-flagged',    s.n_ground_truth_positives],
+      ['drift predictions', s.n_predicted_positives],
+    ];
+    kvs.forEach(([k, v]) => {
+      meta.appendChild(el('span', { class: 'k', text: k }));
+      meta.appendChild(el('span', { class: 'v', text: v == null || v === '' ? '—' : String(v) }));
+    });
+
+    // Precision / recall headline
+    const summaryHost = $('#mast-result-summary');
+    summaryHost.innerHTML = '';
+    const precStr = s.precision != null ? s.precision.toFixed(2) : '—';
+    const recStr  = s.recall    != null ? s.recall.toFixed(2)    : '—';
+    const f1Str   = s.f1        != null ? s.f1.toFixed(2)        : '—';
+    const grid = el('div', { class: 'failure-summary' }, [
+      el('div', { class: 'failure-cell' }, [
+        el('div', { class: 'ftype', text: 'TP' }),
+        el('div', { class: 'fcount', text: String(s.n_tp) }),
+      ]),
+      el('div', { class: 'failure-cell sev-warn' }, [
+        el('div', { class: 'ftype', text: 'FP' }),
+        el('div', { class: 'fcount', text: String(s.n_fp) }),
+      ]),
+      el('div', { class: 'failure-cell sev-critical' }, [
+        el('div', { class: 'ftype', text: 'FN' }),
+        el('div', { class: 'fcount', text: String(s.n_fn) }),
+      ]),
+      el('div', { class: 'failure-cell' }, [
+        el('div', { class: 'ftype', text: 'TN' }),
+        el('div', { class: 'fcount', text: String(s.n_tn) }),
+      ]),
+      el('div', { class: 'failure-cell' }, [
+        el('div', { class: 'ftype', text: 'Precision' }),
+        el('div', { class: 'fcount', text: precStr }),
+      ]),
+      el('div', { class: 'failure-cell' }, [
+        el('div', { class: 'ftype', text: 'Recall' }),
+        el('div', { class: 'fcount', text: recStr }),
+      ]),
+      el('div', { class: 'failure-cell' }, [
+        el('div', { class: 'ftype', text: 'F1' }),
+        el('div', { class: 'fcount', text: f1Str }),
+      ]),
+    ]);
+    summaryHost.appendChild(grid);
+
+    // Per-mode side-by-side
+    const modesHost = $('#mast-result-modes');
+    modesHost.innerHTML = '';
+    // Sort: TP first (wins), FN next (misses), FP, then TN
+    const order = { TP: 0, FN: 1, FP: 2, TN: 3 };
+    const sorted = (data.per_mode || []).slice().sort((a, b) =>
+      (order[a.outcome] ?? 9) - (order[b.outcome] ?? 9) || (a.mode_id || '').localeCompare(b.mode_id || '')
+    );
+    sorted.forEach(m => {
+      // Hide pure TN rows by default to keep the list focused on signal
+      if (m.outcome === 'TN') return;
+      const pillClass =
+        m.outcome === 'TP' ? '' :
+        m.outcome === 'FN' ? 'critical' :
+        m.outcome === 'FP' ? 'warn' : '';
+      const agree = m.annotator_agreement || [0, 0];
+      modesHost.appendChild(el('div', { class: 'failure-row' }, [
+        el('div', { class: 'step', text: m.outcome }),
+        el('div', {}, [
+          el('div', {}, [
+            el('span', { class: `pill ${pillClass}`, text: m.name }),
+            ' ',
+            el('span', { class: 'muted', text: `human raters: ${agree[0]}/${agree[1]}` }),
+          ]),
+          m.evidence
+            ? el('div', { class: 'mono muted', text: `drift evidence: ${m.evidence}` })
+            : (m.outcome === 'FN'
+                ? el('div', { class: 'mono muted', text: 'drift did not flag this — human raters did.' })
+                : null),
+        ].filter(Boolean)),
+      ]));
+    });
+    if (!modesHost.children.length) {
+      modesHost.appendChild(el('div', { class: 'empty', text: 'No signal vs ground truth — all modes were TN (both agreed no failure).' }));
     }
   }
 
