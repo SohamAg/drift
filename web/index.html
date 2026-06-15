@@ -52,6 +52,20 @@
           a few cents at gpt-4o-mini rates.
         </p>
 
+        <div class="field" style="margin-top: 12px;">
+          <label for="mast-user-guidelines">
+            Optional guidelines for live runs <span class="muted">(one per line)</span>
+          </label>
+          <textarea id="mast-user-guidelines" class="mono"
+                    rows="3"
+                    placeholder="agents must verify before producing a final answer&#10;the planner must respond to questions from worker agents within 3 steps"></textarea>
+          <p class="help">
+            Plain-English patterns appended to the judge's prompt. Use these to A/B the same
+            trace with vs without your guidelines — the F1 / TP / FN numbers in the result
+            card show the delta. Cached runs ignore this field; live runs apply it.
+          </p>
+        </div>
+
         <div id="mast-cards" class="mast-card-grid">
           <div class="empty">Loading curated MAST traces…</div>
         </div>
@@ -398,6 +412,19 @@
               <input type="number" id="byoa-judge-every" value="5" min="1" max="50" />
             </div>
           </div>
+        </div>
+
+        <div class="field">
+          <label for="byoa-user-guidelines">User guidelines <span class="muted">(optional, one per line)</span></label>
+          <textarea id="byoa-user-guidelines" class="mono"
+                    rows="4"
+                    placeholder="agents must escalate when sentiment drops below 0.3&#10;merger must never act while security_block is active&#10;reviewer_b must not reference cases not in open_cases"></textarea>
+          <p class="help">
+            Plain-English patterns drift's judge will additionally watch for. Matches
+            are reported under <code>llm:user_guideline:&lt;n&gt;</code> in the failures list.
+            This is the programmable test surface — write what's specific to your domain
+            (anything the five-family taxonomy doesn't cover). Empty = current behaviour.
+          </p>
         </div>
 
         <div class="field">

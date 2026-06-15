@@ -68,8 +68,41 @@ def annotator_agreement(ann: dict) -> tuple[int, int]:
     return n_yes, len(keys)
 
 
-def build_system_prompt(annotations: list[dict]) -> str:
-    """Build a judge system prompt with the mode list specific to this trace."""
+def _render_mast_guidelines_block(guidelines: list[str]) -> str:
+    """Render user guidelines for the MAST per-mode schema.
+
+    Unlike the generic judge prompt (judge.render_user_guidelines_block) which
+    introduces a new `user_guideline` family + `guideline_id` schema, the MAST
+    runner uses a fixed per-trace mode_id schema. Guidelines here are *hints
+    to bias detection toward existing modes*, not new output types. So we
+    inject them as additional "ALSO consider" bullets that point back into
+    the trace's existing mode vocabulary. No schema change.
+    """
+    cleaned = [g.strip() for g in guidelines if g and g.strip()]
+    if not cleaned:
+        return ""
+    bullets = "\n".join(f"  - {g}" for g in cleaned)
+    return (
+        "\n\nUser-supplied detection hints — apply these IN ADDITION to the mode list above. "
+        "If a hint matches the trace, report under the closest matching mode_id from the list above; "
+        "do not invent new mode_ids. Hints that are anti-examples (\"do NOT flag X\") should "
+        "tighten precision against the matching mode:\n"
+        + bullets
+    )
+
+
+def build_system_prompt(
+    annotations: list[dict],
+    user_guidelines: list[str] | None = None,
+) -> str:
+    """Build a judge system prompt with the mode list specific to this trace.
+
+    user_guidelines, if supplied, are appended as detection HINTS that the
+    judge maps back onto the existing per-trace mode_id vocabulary — they
+    do NOT introduce a new family. This preserves the MAST per-mode F1
+    accounting and lets users measure the lift their domain knowledge adds
+    over the generic prompt.
+    """
     lines = []
     seen_ids: set[str] = set()
     for ann in annotations:
@@ -82,7 +115,8 @@ def build_system_prompt(annotations: list[dict]) -> str:
         rest = mode_text[len(head):].strip()
         first_sentence = rest.split(".")[0].strip()[:180] if rest else ""
         lines.append(f"  - {head}: {first_sentence}")
-    return JUDGE_SYSTEM_TEMPLATE.format(mode_descriptions="\n".join(lines))
+    base = JUDGE_SYSTEM_TEMPLATE.format(mode_descriptions="\n".join(lines))
+    return base + _render_mast_guidelines_block(list(user_guidelines or []))
 
 
 def parse_predictions(raw: str) -> list[dict]:
@@ -115,16 +149,27 @@ def parse_predictions(raw: str) -> list[dict]:
     return out
 
 
-async def judge_one_trace(record: dict, judge: JudgeLLM) -> dict:
+async def judge_one_trace(
+    record: dict,
+    judge: JudgeLLM,
+    *,
+    user_guidelines: list[str] | None = None,
+) -> dict:
     """Run the judge against one MAST record and compute per-mode TP/FP/FN/TN.
 
     Same return shape as the offline runner's per-trace results. Used both
     by the offline runner and by the /api/mast-analyze live mode.
+
+    user_guidelines, if supplied, are appended to the judge's system prompt
+    as additional patterns to watch for. They don't affect per-mode TP/FP/FN/TN
+    accounting (MAST ground truth is fixed) but they can lift recall when the
+    judge's blind spots are domain-specific. Use to measure F1 delta vs the
+    no-guideline baseline.
     """
     trajectory = record["trace"][:MAX_TRACE_CHARS]
     truncated = len(record["trace"]) > MAX_TRACE_CHARS
     annotations = record["annotations"]
-    system = build_system_prompt(annotations)
+    system = build_system_prompt(annotations, user_guidelines=user_guidelines)
     user = (
         f"# Multi-agent trace ({record['mas_name']}, {record['benchmark_name']}, "
         f"trace_id={record['trace_id']}, {len(record['trace'])} chars"

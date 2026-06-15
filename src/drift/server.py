@@ -269,11 +269,14 @@ class MastAnalyzeRequest(BaseModel):
     ground truth. Backs the Detect tab.
 
     `trace_id` selects from MAST_DEMO_TRACES. `mode` chooses cached results
-    (instant, no API spend) or live re-run (~5-30s + token cost).
+    (instant, no API spend) or live re-run (~5-30s + token cost). When live,
+    `user_guidelines` is appended to the judge's prompt so users can A/B the
+    same trace with vs without their domain-specific patterns.
     """
     trace_id: int
     mode: str = "cached"   # "cached" | "live"
     judge_model: str = "gpt-4o-mini"
+    user_guidelines: list[str] = Field(default_factory=list)
 
 
 class BYOARequest(BaseModel):
@@ -304,6 +307,10 @@ class BYOARequest(BaseModel):
     judge: str = "off"
     judge_model: str | None = None
     judge_every: int = Field(default=5, ge=1, le=50)
+    # User guidelines — pillar 4. Each line becomes an additional pattern the
+    # judge watches for; matches are reported under `llm:user_guideline:<n>`.
+    # Empty list = current behaviour (the generic 5-family taxonomy only).
+    user_guidelines: list[str] = Field(default_factory=list)
 
 
 class ForkRunRequest(BaseModel):
@@ -962,6 +969,7 @@ def create_app() -> FastAPI:
                 auto_chaos_exclude=req.auto_chaos_exclude or None,
                 judge_llm=judge_llm,
                 judge_every=req.judge_every,
+                user_guidelines=req.user_guidelines or None,
             )
         except ValueError as e:
             raise HTTPException(400, str(e))
@@ -982,10 +990,15 @@ def create_app() -> FastAPI:
                 "n_failures": len(result.failures),
                 "n_failures_llm": n_llm_failures,
                 "n_failures_deterministic": len(result.failures) - n_llm_failures,
+                "n_failures_user_guideline": sum(
+                    1 for f in result.failures
+                    if f.failure_type.startswith(JUDGE_PREFIX + "user_guideline")
+                ),
                 "n_auto_chaos_injected": len(result.auto_chaos_injected),
                 "auto_chaos": req.auto_chaos,
                 "judge": req.judge,
                 "judge_model": req.judge_model,
+                "n_user_guidelines": len(req.user_guidelines or []),
                 "detector_topology": req.detector_topology,
             },
             "failures": [f.model_dump(mode="json") for f in result.failures],
@@ -1107,7 +1120,10 @@ def create_app() -> FastAPI:
             except Exception as e:
                 raise HTTPException(400, f"could not build judge: {type(e).__name__}: {e}")
 
-            result = await judge_one_trace(rec, judge)
+            result = await judge_one_trace(
+                rec, judge,
+                user_guidelines=req.user_guidelines or None,
+            )
             if "error" in result:
                 raise HTTPException(500, f"judge call failed: {result['error']}")
             return _shape_mast_response(entry, result, mode="live")

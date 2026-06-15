@@ -42,7 +42,12 @@ MAST_DATASET = REPO_ROOT / "data" / "external" / "mast" / "MAD_human_labelled_da
 RESULTS_DIR = REPO_ROOT / "results" / "mast_judge"
 
 
-async def _run_all(records: list[dict], judge_model: str, concurrency: int) -> list[dict]:
+async def _run_all(
+    records: list[dict],
+    judge_model: str,
+    concurrency: int,
+    user_guidelines: list[str] | None = None,
+) -> list[dict]:
     judge = OpenAIJudge(model=judge_model)
     sem = asyncio.Semaphore(concurrency)
     done = 0
@@ -50,7 +55,7 @@ async def _run_all(records: list[dict], judge_model: str, concurrency: int) -> l
     async def _bounded(r: dict) -> dict:
         nonlocal done
         async with sem:
-            res = await _judge_one(r, judge)
+            res = await _judge_one(r, judge, user_guidelines=user_guidelines)
         done += 1
         print(f"  {done}/{len(records)} judged  (trace_id={r['trace_id']} {r['mas_name']})", file=sys.stderr)
         return res
@@ -104,12 +109,35 @@ def _tabulate(results: list[dict]) -> dict:
     }
 
 
+def _load_guidelines(path: str | None) -> list[str]:
+    """Load guidelines from a file: one plain-English pattern per non-blank line.
+    Lines starting with `#` are treated as comments."""
+    if not path:
+        return []
+    p = Path(path)
+    if not p.exists():
+        sys.exit(f"guidelines file not found: {path}")
+    out = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        out.append(s)
+    return out
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--sample", type=int, default=None, help="run on the first N traces only (smoke test)")
     p.add_argument("--judge-model", default="gpt-4o-mini")
     p.add_argument("--concurrency", type=int, default=4)
     p.add_argument("--output-name", default=None)
+    p.add_argument(
+        "--guidelines-file", default=None,
+        help="path to a file with user guidelines (one per non-blank line, # for comments). "
+             "Appended to the judge's system prompt for every trace; lets you measure F1 delta "
+             "vs the no-guideline baseline (CASE_STUDY_MAST.md = F1 0.16).",
+    )
     args = p.parse_args()
 
     if not os.environ.get("OPENAI_API_KEY"):
@@ -121,6 +149,8 @@ def main() -> None:
     if args.sample is not None:
         records = records[: args.sample]
 
+    user_guidelines = _load_guidelines(args.guidelines_file)
+
     label = args.output_name or time.strftime("%Y%m%d_%H%M%S")
     out_dir = RESULTS_DIR / label
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -129,10 +159,15 @@ def main() -> None:
     print(f"  judge model      : {args.judge_model}", file=sys.stderr)
     print(f"  concurrency      : {args.concurrency}", file=sys.stderr)
     print(f"  output dir       : {out_dir.relative_to(REPO_ROOT)}", file=sys.stderr)
+    if user_guidelines:
+        print(f"  guidelines       : {len(user_guidelines)} from {args.guidelines_file}", file=sys.stderr)
     print(file=sys.stderr)
 
     t0 = time.perf_counter()
-    results = asyncio.run(_run_all(records, args.judge_model, args.concurrency))
+    results = asyncio.run(_run_all(
+        records, args.judge_model, args.concurrency,
+        user_guidelines=user_guidelines or None,
+    ))
     elapsed = time.perf_counter() - t0
 
     for r in results:
@@ -146,6 +181,8 @@ def main() -> None:
     summary["elapsed_seconds"] = round(elapsed, 1)
     summary["judge_model"] = args.judge_model
     summary["n_records"] = len(records)
+    summary["user_guidelines"] = user_guidelines
+    summary["n_user_guidelines"] = len(user_guidelines)
     (out_dir / "_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     print()

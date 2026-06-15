@@ -23,6 +23,7 @@ from drift.failures.judge import (
     DEFAULT_JUDGE_SYSTEM,
     JUDGE_FAMILIES,
     JUDGE_PREFIX,
+    USER_GUIDELINE_FAMILY,
     AnthropicJudge,
     LLMJudgeDetector,
     OpenAIJudge,
@@ -30,6 +31,8 @@ from drift.failures.judge import (
     _parse_judge_response,
     _render_window,
     build_judge,
+    build_system_prompt,
+    render_user_guidelines_block,
 )
 from drift.world import World, WorldState
 
@@ -256,7 +259,142 @@ def test_judge_families_match_skill_md():
         "state_drift",
         "emergent_decay",
         "gate_bypass",
+        "user_guideline",
     )
+
+
+# ---- user-guideline language (pillar 4) ----------------------------------
+
+
+def test_render_user_guidelines_block_empty_for_no_guidelines():
+    assert render_user_guidelines_block([]) == ""
+    assert render_user_guidelines_block(["", "  "]) == ""
+
+
+def test_render_user_guidelines_block_lists_one_based_indices():
+    block = render_user_guidelines_block([
+        "agents must escalate when sentiment drops below 0.3",
+        "merger must never act while security_block is active",
+    ])
+    assert "1. agents must escalate when sentiment drops below 0.3" in block
+    assert "2. merger must never act while security_block is active" in block
+    # Mentions the family and the guideline_id field — judge needs both.
+    assert USER_GUIDELINE_FAMILY in block
+    assert "guideline_id" in block
+
+
+def test_render_user_guidelines_block_strips_blank_lines():
+    block = render_user_guidelines_block(["", "real guideline", "   "])
+    assert "1. real guideline" in block
+    assert "2." not in block
+
+
+def test_build_system_prompt_no_guidelines_equals_base():
+    assert build_system_prompt(None) == DEFAULT_JUDGE_SYSTEM
+    assert build_system_prompt([]) == DEFAULT_JUDGE_SYSTEM
+
+
+def test_build_system_prompt_appends_guidelines_at_end():
+    prompt = build_system_prompt(["g1", "g2"])
+    assert prompt.startswith(DEFAULT_JUDGE_SYSTEM)
+    assert "1. g1" in prompt
+    assert "2. g2" in prompt
+
+
+def test_llmjudgedetector_threads_guidelines_into_prompt():
+    judge = _CannedJudge({"failures": []})
+    det = LLMJudgeDetector(
+        judge, every=5, window=5,
+        user_guidelines=["always escalate angry customers"],
+    )
+    ctx = _make_ctx([], timestep=5)
+    asyncio.run(det(ctx))
+    assert len(judge.calls) == 1
+    system, _ = judge.calls[0]
+    assert "always escalate angry customers" in system
+    # Guidelines are kept on the instance for inspection / debugging.
+    assert det.user_guidelines == ["always escalate angry customers"]
+
+
+def test_parser_accepts_user_guideline_with_guideline_id():
+    ctx = _make_ctx([], timestep=5)
+    raw = json.dumps({"failures": [{
+        "family": "user_guideline",
+        "guideline_id": 2,
+        "summary": "merger acted while security block was active on PR-7",
+        "evidence_action_ids": ["a000042"],
+        "agents_involved": ["merger"],
+    }]})
+    out = _parse_judge_response(raw, ctx)
+    assert len(out) == 1
+    f = out[0]
+    # failure_type encodes which guideline fired (1-based).
+    assert f.failure_type == f"{JUDGE_PREFIX}user_guideline:2"
+    # Summary is prefixed with the guideline pointer for human-readability.
+    assert f.summary.startswith("[guideline #2]")
+    assert "merger acted" in f.summary
+    assert f.evidence_action_ids == ["a000042"]
+
+
+def test_parser_drops_user_guideline_with_missing_guideline_id():
+    ctx = _make_ctx([], timestep=5)
+    raw = json.dumps({"failures": [{
+        "family": "user_guideline",
+        # missing guideline_id — judge violated the schema; drop the row
+        # rather than mis-attribute the match.
+        "summary": "some pattern matched",
+    }]})
+    assert _parse_judge_response(raw, ctx) == []
+
+
+def test_parser_drops_user_guideline_with_zero_or_negative_id():
+    ctx = _make_ctx([], timestep=5)
+    raw = json.dumps({"failures": [
+        {"family": "user_guideline", "guideline_id": 0, "summary": "x"},
+        {"family": "user_guideline", "guideline_id": -1, "summary": "y"},
+    ]})
+    assert _parse_judge_response(raw, ctx) == []
+
+
+def test_end_to_end_drift_run_with_user_guidelines():
+    """drift.run accepts user_guidelines and the judge reports them as
+    `llm:user_guideline:<n>` failures alongside the standard families."""
+    judge = _CannedJudge({"failures": [{
+        "family": "user_guideline",
+        "guideline_id": 1,
+        "summary": "two agents acted on same target in same step",
+        "evidence_action_ids": [],
+        "agents_involved": ["alice", "bob"],
+    }]})
+
+    @drift.agent(role="alice")
+    async def alice(state, memory):
+        return drift.Action(kind="no_op")
+
+    @drift.agent(role="bob")
+    async def bob(state, memory):
+        return drift.Action(kind="no_op")
+
+    result = drift.run(
+        agents=[alice, bob],
+        steps=10,
+        seed=1,
+        judge_llm=judge,
+        judge_every=5,
+        user_guidelines=["two agents must not act on the same target in the same step"],
+    )
+    # Judge was called twice (t=5, t=10). System prompt carries the guideline both times.
+    assert len(judge.calls) == 2
+    for system, _ in judge.calls:
+        assert "two agents must not act on the same target in the same step" in system
+
+    user_guideline_failures = [
+        f for f in result.failures
+        if f.failure_type.startswith(f"{JUDGE_PREFIX}user_guideline")
+    ]
+    # Dedupe keeps it at 1 even though the judge canned the same response twice.
+    assert len(user_guideline_failures) == 1
+    assert user_guideline_failures[0].failure_type == f"{JUDGE_PREFIX}user_guideline:1"
 
 
 # ---- scripted mock judge -------------------------------------------------
