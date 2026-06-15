@@ -35,25 +35,28 @@ from typing import Any, Awaitable, Protocol
 
 from drift.failures.base import DetectorContext, FailureRecord
 
-# The judge maps every reported failure into one of these five families
-# (drift-context SKILL.md "Core failure families"). The vocabulary is
-# intentionally small and domain-independent so a judge can be reused
-# across any user topology. Final failure_type is `llm:<family>` so the
-# UI can split LLM-judged from deterministic detections.
+# The judge maps every reported failure into one of these families.
+# The first five are the stable drift coordination taxonomy (SKILL.md
+# "Core failure families") — domain-independent so the judge can be reused
+# across any user topology. The sixth (`user_guideline`) is the umbrella
+# family for matches against user-supplied guideline strings; the specific
+# guideline index is appended to the failure_type as `llm:user_guideline:<i>`.
+USER_GUIDELINE_FAMILY = "user_guideline"
+
 JUDGE_FAMILIES: tuple[str, ...] = (
     "coordination_contradiction",
     "grounding_failure",
     "state_drift",
     "emergent_decay",
     "gate_bypass",
+    USER_GUIDELINE_FAMILY,
 )
 
 JUDGE_PREFIX = "llm:"
 
-# Default judge prompt. The judge is asked to be conservative — better to
-# miss a failure than fabricate one — because fabricated failures destroy
-# user trust and the counterfactual-replay story (you can't replay to
-# isolate a cause that didn't exist).
+# Default judge prompt for the standard five-family taxonomy. When the user
+# supplies guidelines via `user_guidelines=`, an extra block is appended at
+# run time describing the additional patterns and the user_guideline family.
 DEFAULT_JUDGE_SYSTEM = (
     "You analyze a window of one multi-agent system's recent activity and "
     "report coordination failures. You return strict JSON only — never prose.\n\n"
@@ -73,6 +76,47 @@ DEFAULT_JUDGE_SYSTEM = (
     '"agents_involved": ["agent_name", ...]}]}\n'
     'If no failures: {"failures": []}'
 )
+
+
+def render_user_guidelines_block(guidelines: list[str]) -> str:
+    """Render the user-guideline block appended to the system prompt.
+
+    Returns empty string when no guidelines are supplied so the default
+    prompt is byte-equivalent to the pre-guideline behaviour.
+
+    The block tells the judge two things: the patterns to additionally
+    watch for, and how to report a match (family=`user_guideline` with the
+    1-based `guideline_id` matching the index here). 1-based because LLMs
+    confuse 0-based on small lists.
+    """
+    if not guidelines:
+        return ""
+    # Filter to non-blank lines FIRST, then enumerate — so the 1-based numbers
+    # the judge sees match the indices the user would count themselves and any
+    # downstream `llm:user_guideline:<n>` failure_type rows resolve correctly.
+    cleaned = [g.strip() for g in guidelines if g and g.strip()]
+    if not cleaned:
+        return ""
+    bullets = "\n".join(f"  {i + 1}. {g}" for i, g in enumerate(cleaned))
+    return (
+        "\n\nAdditional user-specified patterns to flag — treat each as an additional "
+        "failure type in scope. If you find one of these, report it under "
+        f"`family: \"{USER_GUIDELINE_FAMILY}\"` and include a `guideline_id` field equal to "
+        "the 1-based number in this list:\n"
+        + bullets
+        + "\n\nWhen reporting a `user_guideline` failure, the output schema becomes:\n"
+        '{"family": "user_guideline", "guideline_id": <int>, "summary": "...", '
+        '"evidence_action_ids": [...], "agents_involved": [...]}'
+    )
+
+
+def build_system_prompt(
+    user_guidelines: list[str] | None = None,
+    *,
+    base: str = DEFAULT_JUDGE_SYSTEM,
+) -> str:
+    """Compose the full judge system prompt, appending user guidelines if any."""
+    return base + render_user_guidelines_block(list(user_guidelines or []))
 
 
 # ---- Judge LLM protocol + implementations --------------------------------
@@ -283,12 +327,37 @@ def _parse_judge_response(
         if family not in JUDGE_FAMILIES:
             print(f"[drift] judge returned unknown family {family!r}, skipping", file=sys.stderr)
             continue
+
+        failure_type = f"{JUDGE_PREFIX}{family}"
+        summary = str(item.get("summary") or "").strip() or f"{family} (no summary)"
+
+        # user_guideline matches carry a 1-based guideline_id pointer back to
+        # the user's guideline list. Embed it in the failure_type so callers
+        # can resolve which specific pattern fired without changing the
+        # FailureRecord schema. Skip the row entirely if the id is missing
+        # or unparseable — better to drop than to mis-attribute.
+        if family == USER_GUIDELINE_FAMILY:
+            gid_raw = item.get("guideline_id")
+            try:
+                gid = int(gid_raw)
+            except (TypeError, ValueError):
+                print(
+                    f"[drift] user_guideline match missing parseable guideline_id "
+                    f"({gid_raw!r}), skipping",
+                    file=sys.stderr,
+                )
+                continue
+            if gid < 1:
+                continue
+            failure_type = f"{JUDGE_PREFIX}{family}:{gid}"
+            summary = f"[guideline #{gid}] {summary}"
+
         out.append(FailureRecord(
             timestep=ctx.timestep,
-            failure_type=f"{JUDGE_PREFIX}{family}",
+            failure_type=failure_type,
             agents_involved=[str(a) for a in (item.get("agents_involved") or [])],
             evidence_action_ids=[str(a) for a in (item.get("evidence_action_ids") or [])],
-            summary=str(item.get("summary") or "").strip() or f"{family} (no summary)",
+            summary=summary,
             snapshot_timestep=ctx.timestep,
         ))
     return out
@@ -310,8 +379,15 @@ class LLMJudgeDetector:
         window: how many recent steps to include in each judge prompt.
                 Default 5 matches `every` so consecutive judgments cover
                 disjoint windows.
-        system_prompt: override the default judge system prompt. Subclassing
-                       is also fine if you want richer prompt building.
+        system_prompt: override the default judge system prompt base. The
+                       user-guideline block (if any) is appended to whatever
+                       base is supplied.
+        user_guidelines: optional list of plain-English patterns the user
+                         wants drift to additionally flag. Each becomes a
+                         user_guideline match candidate; matches are reported
+                         under failure_type `llm:user_guideline:<index>`.
+                         This is pillar 4 — the programmable test surface
+                         that differentiates drift from fixed-primitive tools.
     """
 
     def __init__(
@@ -321,11 +397,14 @@ class LLMJudgeDetector:
         every: int = 5,
         window: int = 5,
         system_prompt: str | None = None,
+        user_guidelines: list[str] | None = None,
     ) -> None:
         self.judge = judge
         self.every = max(1, int(every))
         self.window = max(1, int(window))
-        self.system_prompt = system_prompt or DEFAULT_JUDGE_SYSTEM
+        self.user_guidelines = [g for g in (user_guidelines or []) if g and g.strip()]
+        base = system_prompt or DEFAULT_JUDGE_SYSTEM
+        self.system_prompt = build_system_prompt(self.user_guidelines, base=base)
 
     async def __call__(self, ctx: DetectorContext) -> list[FailureRecord]:
         if ctx.timestep % self.every != 0:
@@ -352,10 +431,13 @@ __all__ = [
     "DEFAULT_JUDGE_SYSTEM",
     "JUDGE_FAMILIES",
     "JUDGE_PREFIX",
+    "USER_GUIDELINE_FAMILY",
     "JudgeLLM",
     "LLMJudgeDetector",
     "OpenAIJudge",
     "AnthropicJudge",
     "ScriptedMockJudge",
     "build_judge",
+    "build_system_prompt",
+    "render_user_guidelines_block",
 ]

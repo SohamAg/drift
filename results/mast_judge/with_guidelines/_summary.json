@@ -1,0 +1,491 @@
+{
+  "n_traces": 19,
+  "n_errored": 0,
+  "tp": 6,
+  "fp": 32,
+  "fn": 50,
+  "tn": 228,
+  "precision": 0.15789473684210525,
+  "recall": 0.10714285714285714,
+  "f1": 0.1276595744680851,
+  "per_mode": [
+    {
+      "mode": "1.1 1.1 Disobey Task Specification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 3,
+      "tn": 1,
+      "ground_truth_positives": 3,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "mode": "1.1 1.1 Poor task constraint compliance",
+      "tp": 0,
+      "fp": 7,
+      "fn": 3,
+      "tn": 5,
+      "ground_truth_positives": 3,
+      "precision": 0.0,
+      "recall": 0.0
+    },
+    {
+      "mode": "1.2 1.2 Disobey Role Specification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 4,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "1.2 1.2 Inconsistency between reasoning and action",
+      "tp": 1,
+      "fp": 5,
+      "fn": 3,
+      "tn": 6,
+      "ground_truth_positives": 4,
+      "precision": 0.16666666666666666,
+      "recall": 0.25
+    },
+    {
+      "mode": "1.3 1.3 Step Repetition",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "1.3 1.3 Unaware of stopping conditions",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 9,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "1.3 1.3 Undetected conversation ambiguities and contradictions",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 5,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "1.4 1.4 Fail to elicit clarification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 5,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "1.4 1.4 Loss of Conversation History",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 4,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "1.4 1.4 Unbatched repetitive execution",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 10,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "1.5 1.5 Step repetition",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 9,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "1.5 1.5 Unaware of Termination Conditions",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 4,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "1.5 1.5 Unaware of stopping conditions",
+      "tp": 1,
+      "fp": 0,
+      "fn": 4,
+      "tn": 0,
+      "ground_truth_positives": 5,
+      "precision": 1.0,
+      "recall": 0.2
+    },
+    {
+      "mode": "1.6 1.6 Backtracking interruption",
+      "tp": 0,
+      "fp": 0,
+      "fn": 2,
+      "tn": 8,
+      "ground_truth_positives": 2,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "mode": "1.7 1.7 Disobey role specification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 10,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "2.1 2.1 Conversation reset",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 14,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "2.1 2.1 Unbatched repetitive execution",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 5,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "2.2 2.2 Fail to ask for clarification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 4,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "2.2 2.2 Fail to elicit clarification",
+      "tp": 2,
+      "fp": 0,
+      "fn": 3,
+      "tn": 5,
+      "ground_truth_positives": 5,
+      "precision": 1.0,
+      "recall": 0.4
+    },
+    {
+      "mode": "2.2 2.2 Step repetition",
+      "tp": 0,
+      "fp": 0,
+      "fn": 2,
+      "tn": 3,
+      "ground_truth_positives": 2,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "mode": "2.3 2.3 Backtracking interruption",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 5,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "2.3 2.3 Derailment from task",
+      "tp": 1,
+      "fp": 0,
+      "fn": 2,
+      "tn": 7,
+      "ground_truth_positives": 3,
+      "precision": 1.0,
+      "recall": 0.3333333333333333
+    },
+    {
+      "mode": "2.3 2.3 Task derailment",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "2.4 2.4 Conversation reset",
+      "tp": 0,
+      "fp": 0,
+      "fn": 2,
+      "tn": 3,
+      "ground_truth_positives": 2,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "mode": "2.4 2.4 Information Witholding",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 4,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "2.4 2.4 Undetected conversation ambiguities and contradictions",
+      "tp": 0,
+      "fp": 6,
+      "fn": 0,
+      "tn": 4,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "2.5 2.5 Derailment from task",
+      "tp": 0,
+      "fp": 0,
+      "fn": 2,
+      "tn": 3,
+      "ground_truth_positives": 2,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "mode": "2.5 2.5 Disagreement induced inaction",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 9,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "2.5 2.5 Ignored Other Agents' Input",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "2.6 2.6 Disobey role specification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 2,
+      "tn": 3,
+      "ground_truth_positives": 2,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "mode": "2.6 2.6 Reasoning-Action Mismatch",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 3,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "2.6 2.6 Withholding relevant information",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 9,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "2.7 2.7 Ignoring suggestions from agents",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 9,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "3.1 3.1 Disagreement induced inaction",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 4,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "3.1 3.1 Ill specified termination condition leading to premature termination",
+      "tp": 0,
+      "fp": 2,
+      "fn": 0,
+      "tn": 8,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "3.1 3.1 Premature Termination",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 4,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "3.2 3.2 Lack of critical verification",
+      "tp": 0,
+      "fp": 1,
+      "fn": 2,
+      "tn": 7,
+      "ground_truth_positives": 2,
+      "precision": 0.0,
+      "recall": 0.0
+    },
+    {
+      "mode": "3.2 3.2 No or Incomplete Verification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 3,
+      "tn": 1,
+      "ground_truth_positives": 3,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "mode": "3.2 3.2 Withholding relevant information",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 4,
+      "ground_truth_positives": 0,
+      "precision": 0.0,
+      "recall": null
+    },
+    {
+      "mode": "3.3 3.3 Ignoring suggestions from agents",
+      "tp": 1,
+      "fp": 0,
+      "fn": 2,
+      "tn": 2,
+      "ground_truth_positives": 3,
+      "precision": 1.0,
+      "recall": 0.3333333333333333
+    },
+    {
+      "mode": "3.3 3.3 Incorrect Verification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 3,
+      "tn": 1,
+      "ground_truth_positives": 3,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "mode": "3.3 3.3 Lack of result verification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 6,
+      "tn": 4,
+      "ground_truth_positives": 6,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "mode": "3.4 3.4 Waiting for known information",
+      "tp": 0,
+      "fp": 0,
+      "fn": 2,
+      "tn": 3,
+      "ground_truth_positives": 2,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "mode": "4.1 4.1 Ill specified termination condition leading to premature termination",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 5,
+      "ground_truth_positives": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "mode": "4.2 4.2 Lack of result verification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 2,
+      "tn": 3,
+      "ground_truth_positives": 2,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "mode": "4.3 4.3 Lack of critical verification",
+      "tp": 0,
+      "fp": 0,
+      "fn": 2,
+      "tn": 3,
+      "ground_truth_positives": 2,
+      "precision": null,
+      "recall": 0.0
+    }
+  ],
+  "elapsed_seconds": 14.4,
+  "judge_model": "gpt-4o-mini",
+  "n_records": 19,
+  "user_guidelines": [
+    "1. flag any case where an agent produced a final answer, code, plan, or output WITHOUT another agent or step verifying it",
+    "2. flag any case where a verification step exists but does not actually check the thing it was meant to verify (e.g. tester only checks the code compiles, but the requirement was correctness)",
+    "3. flag any case where verification produced an incorrect \"all good\" verdict despite obvious problems visible in the trace",
+    "4. flag any case where agents kept going (more agent turns, more tool calls) after the task was effectively complete OR after no further progress is possible",
+    "5. flag any case where the run terminated before all necessary information had been collected or shared between agents",
+    "6. flag any case where one agent needed information another agent had but did not request it",
+    "7. flag any case where one agent shared incomplete or ambiguous information and the recipient did not ask for clarification",
+    "8. flag any case where an agent acted outside its assigned role (e.g. a tester writing code, a planner executing tools)",
+    "9. flag any case where an agent ignored an explicit user-specified constraint of the task",
+    "10. do NOT flag a coordination failure just because the agents could not solve a hard task \u2014 task difficulty is not coordination failure",
+    "11. do NOT flag a coordination failure for SDK / API / network errors (e.g. \"ChatVertexAI has no attribute kwargs\", \"token expired\", timeouts) \u2014 those are system errors, not agent coordination",
+    "12. do NOT flag a coordination failure for bugs in code the agents are writing about \u2014 code quality of the artifact under construction is the artifact's problem, not a coordination failure between the agents writing it"
+  ],
+  "n_user_guidelines": 12
+}

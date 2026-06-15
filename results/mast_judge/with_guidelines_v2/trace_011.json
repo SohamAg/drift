@@ -1,0 +1,236 @@
+{
+  "trace_id": 11,
+  "mas_name": "AppWorld",
+  "benchmark_name": "Test-C",
+  "n_chars": 34565,
+  "truncated": false,
+  "latency_s": 8.7,
+  "raw_response": "{\"failures\": [{\"mode_id\": \"1.1\", \"evidence\": \"The task of marking 'Learning to cook a signature dish from scratch' as done was completed, but the note was not updated correctly.\"}, {\"mode_id\": \"2.5\", \"evidence\": \"The agents failed to converge on a resolution regarding the bucket list notes, leading to unnecessary additional interactions.\"}, {\"mode_id\": \"3.1\", \"evidence\": \"The task was marked complete before confirming that the note was updated as intended.\"}]}",
+  "predictions": [
+    {
+      "mode_id": "1.1",
+      "evidence": "The task of marking 'Learning to cook a signature dish from scratch' as done was completed, but the note was not updated correctly."
+    },
+    {
+      "mode_id": "2.5",
+      "evidence": "The agents failed to converge on a resolution regarding the bucket list notes, leading to unnecessary additional interactions."
+    },
+    {
+      "mode_id": "3.1",
+      "evidence": "The task was marked complete before confirming that the note was updated as intended."
+    }
+  ],
+  "per_mode": [
+    {
+      "mode_id": "1.1",
+      "name": "1.1 Poor task constraint compliance",
+      "ground_truth": true,
+      "predicted": true,
+      "outcome": "TP",
+      "annotator_agreement": [
+        3,
+        3
+      ],
+      "evidence": "The task of marking 'Learning to cook a signature dish from scratch' as done was completed, but the note was not updated correctly."
+    },
+    {
+      "mode_id": "1.2",
+      "name": "1.2 Inconsistency between reasoning and action",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "1.3",
+      "name": "1.3 Unaware of stopping conditions",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "1.4",
+      "name": "1.4 Unbatched repetitive execution",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "1.5",
+      "name": "1.5 Step repetition",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        1,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "1.6",
+      "name": "1.6 Backtracking interruption",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "1.7",
+      "name": "1.7 Disobey role specification",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.1",
+      "name": "2.1 Conversation reset",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.2",
+      "name": "2.2 Fail to elicit clarification",
+      "ground_truth": true,
+      "predicted": false,
+      "outcome": "FN",
+      "annotator_agreement": [
+        3,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.3",
+      "name": "2.3 Derailment from task",
+      "ground_truth": true,
+      "predicted": false,
+      "outcome": "FN",
+      "annotator_agreement": [
+        3,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.4",
+      "name": "2.4 Undetected conversation ambiguities and contradictions",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.5",
+      "name": "2.5 Disagreement induced inaction",
+      "ground_truth": false,
+      "predicted": true,
+      "outcome": "FP",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": "The agents failed to converge on a resolution regarding the bucket list notes, leading to unnecessary additional interactions."
+    },
+    {
+      "mode_id": "2.6",
+      "name": "2.6 Withholding relevant information",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.7",
+      "name": "2.7 Ignoring suggestions from agents",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        1,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "3.1",
+      "name": "3.1 Ill specified termination condition leading to premature termination",
+      "ground_truth": false,
+      "predicted": true,
+      "outcome": "FP",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": "The task was marked complete before confirming that the note was updated as intended."
+    },
+    {
+      "mode_id": "3.2",
+      "name": "3.2 Lack of critical verification",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "3.3",
+      "name": "3.3 Lack of result verification",
+      "ground_truth": true,
+      "predicted": false,
+      "outcome": "FN",
+      "annotator_agreement": [
+        3,
+        3
+      ],
+      "evidence": ""
+    }
+  ],
+  "n_modes_evaluated": 17,
+  "n_ground_truth_positives": 4,
+  "n_predicted_positives": 3,
+  "n_tp": 1,
+  "n_fp": 2,
+  "n_fn": 3,
+  "n_tn": 11
+}

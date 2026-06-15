@@ -208,6 +208,7 @@ def _build_runner(
     judge_llm: JudgeLLM | None = None,
     judge_every: int = 5,
     judge_window: int = 5,
+    user_guidelines: Iterable[str] | None = None,
 ) -> SimulationRunner:
     agent_list = list(agents)
     if not agent_list:
@@ -223,7 +224,10 @@ def _build_runner(
     detector_list = list(detectors) if detectors is not None else list(GENERAL_DETECTORS)
     if judge_llm is not None:
         detector_list.append(LLMJudgeDetector(
-            judge=judge_llm, every=judge_every, window=judge_window,
+            judge=judge_llm,
+            every=judge_every,
+            window=judge_window,
+            user_guidelines=list(user_guidelines) if user_guidelines else None,
         ))
 
     return SimulationRunner(
@@ -257,6 +261,7 @@ async def run_async(
     judge_llm: JudgeLLM | None = None,
     judge_every: int = 5,
     judge_window: int = 5,
+    user_guidelines: Iterable[str] | None = None,
 ) -> RunResult:
     """Async version of drift.run(). Use this when calling from inside an
     already-running event loop (e.g., a FastAPI endpoint handler)."""
@@ -266,6 +271,7 @@ async def run_async(
     runner = _build_runner(
         agents, state, combined, steps, seed, detectors,
         judge_llm=judge_llm, judge_every=judge_every, judge_window=judge_window,
+        user_guidelines=user_guidelines,
     )
     result = await runner.run()
     return _attach_auto_chaos(result, auto_ids)
@@ -284,6 +290,7 @@ def run(
     judge_llm: JudgeLLM | None = None,
     judge_every: int = 5,
     judge_window: int = 5,
+    user_guidelines: Iterable[str] | None = None,
 ) -> RunResult:
     """Run drift's simulator with user-supplied agents, state, and events.
 
@@ -320,6 +327,13 @@ def run(
         judge_window: how many recent steps go into each judge prompt.
                    Default 5; matches `judge_every` so consecutive judgments
                    cover disjoint windows.
+        user_guidelines: optional list of plain-English patterns the user
+                   wants drift to additionally flag (pillar 4 — the
+                   programmable test surface). Each becomes a candidate the
+                   judge can match against; matches are reported under
+                   `failure_type` `llm:user_guideline:<index>`. Use this to
+                   codify domain-specific coordination rules drift's generic
+                   five-family prompt would miss.
 
     Returns:
         drift.RunResult with .actions, .events, .failures, .final_state,
@@ -335,6 +349,7 @@ def run(
     runner = _build_runner(
         agents, state, combined, steps, seed, detectors,
         judge_llm=judge_llm, judge_every=judge_every, judge_window=judge_window,
+        user_guidelines=user_guidelines,
     )
     result = asyncio.run(runner.run())
     return _attach_auto_chaos(result, auto_ids)

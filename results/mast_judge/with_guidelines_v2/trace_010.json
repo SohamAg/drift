@@ -1,0 +1,236 @@
+{
+  "trace_id": 10,
+  "mas_name": "HyperAgent",
+  "benchmark_name": "SWE-Bench-Lite",
+  "n_chars": 644556,
+  "truncated": true,
+  "latency_s": 8.3,
+  "raw_response": "{\"failures\": [{\"mode_id\": \"1.1\", \"evidence\": \"The `ascii.qdp` table format assumes QDP commands are uppercase, leading to a ValueError when lowercase commands are used.\"}, {\"mode_id\": \"2.4\", \"evidence\": \"The issue arises from the inability to recognize lowercase commands, indicating undetected conversation ambiguities.\"}, {\"mode_id\": \"3.1\", \"evidence\": \"The dialogue and task were not completed before the interaction was terminated, as the issue was not resolved.\"}]}",
+  "predictions": [
+    {
+      "mode_id": "1.1",
+      "evidence": "The `ascii.qdp` table format assumes QDP commands are uppercase, leading to a ValueError when lowercase commands are used."
+    },
+    {
+      "mode_id": "2.4",
+      "evidence": "The issue arises from the inability to recognize lowercase commands, indicating undetected conversation ambiguities."
+    },
+    {
+      "mode_id": "3.1",
+      "evidence": "The dialogue and task were not completed before the interaction was terminated, as the issue was not resolved."
+    }
+  ],
+  "per_mode": [
+    {
+      "mode_id": "1.1",
+      "name": "1.1 Poor task constraint compliance",
+      "ground_truth": true,
+      "predicted": true,
+      "outcome": "TP",
+      "annotator_agreement": [
+        3,
+        3
+      ],
+      "evidence": "The `ascii.qdp` table format assumes QDP commands are uppercase, leading to a ValueError when lowercase commands are used."
+    },
+    {
+      "mode_id": "1.2",
+      "name": "1.2 Inconsistency between reasoning and action",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "1.3",
+      "name": "1.3 Unaware of stopping conditions",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "1.4",
+      "name": "1.4 Unbatched repetitive execution",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "1.5",
+      "name": "1.5 Step repetition",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        1,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "1.6",
+      "name": "1.6 Backtracking interruption",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "1.7",
+      "name": "1.7 Disobey role specification",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.1",
+      "name": "2.1 Conversation reset",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.2",
+      "name": "2.2 Fail to elicit clarification",
+      "ground_truth": true,
+      "predicted": false,
+      "outcome": "FN",
+      "annotator_agreement": [
+        3,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.3",
+      "name": "2.3 Derailment from task",
+      "ground_truth": true,
+      "predicted": false,
+      "outcome": "FN",
+      "annotator_agreement": [
+        3,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.4",
+      "name": "2.4 Undetected conversation ambiguities and contradictions",
+      "ground_truth": false,
+      "predicted": true,
+      "outcome": "FP",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": "The issue arises from the inability to recognize lowercase commands, indicating undetected conversation ambiguities."
+    },
+    {
+      "mode_id": "2.5",
+      "name": "2.5 Disagreement induced inaction",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.6",
+      "name": "2.6 Withholding relevant information",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "2.7",
+      "name": "2.7 Ignoring suggestions from agents",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        1,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "3.1",
+      "name": "3.1 Ill specified termination condition leading to premature termination",
+      "ground_truth": false,
+      "predicted": true,
+      "outcome": "FP",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": "The dialogue and task were not completed before the interaction was terminated, as the issue was not resolved."
+    },
+    {
+      "mode_id": "3.2",
+      "name": "3.2 Lack of critical verification",
+      "ground_truth": false,
+      "predicted": false,
+      "outcome": "TN",
+      "annotator_agreement": [
+        0,
+        3
+      ],
+      "evidence": ""
+    },
+    {
+      "mode_id": "3.3",
+      "name": "3.3 Lack of result verification",
+      "ground_truth": true,
+      "predicted": false,
+      "outcome": "FN",
+      "annotator_agreement": [
+        3,
+        3
+      ],
+      "evidence": ""
+    }
+  ],
+  "n_modes_evaluated": 17,
+  "n_ground_truth_positives": 4,
+  "n_predicted_positives": 3,
+  "n_tp": 1,
+  "n_fp": 2,
+  "n_fn": 3,
+  "n_tn": 11
+}

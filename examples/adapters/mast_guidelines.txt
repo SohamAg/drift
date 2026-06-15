@@ -1,0 +1,34 @@
+# MAST guideline pack — targets drift's known F1-killing blind spots.
+#
+# Each guideline below is plain English. The judge gets these appended to its
+# system prompt and is told to flag matches as additional patterns. Guidelines
+# 1-5 attack the *verification* family (modes 3.2 / 3.3 / 4.2 / 4.3 — 13 of
+# the 49 FNs in the F1=0.16 baseline). Guidelines 6-9 target the next-largest
+# FN clusters (stopping conditions, clarification, role specification,
+# task constraint compliance). 10-12 attack the FP failure mode — judge
+# confusing task difficulty with coordination failure.
+#
+# Used by examples/adapters/run_drift_judge_on_mast.py --guidelines-file.
+# See CASE_STUDY_MAST.md for the baseline and per-mode breakdown.
+
+# --- verification blind-spot guidelines (target 13 of 49 FNs) ---
+1. flag any case where an agent produced a final answer, code, plan, or output WITHOUT another agent or step verifying it
+2. flag any case where a verification step exists but does not actually check the thing it was meant to verify (e.g. tester only checks the code compiles, but the requirement was correctness)
+3. flag any case where verification produced an incorrect "all good" verdict despite obvious problems visible in the trace
+
+# --- stopping / termination guidelines ---
+4. flag any case where agents kept going (more agent turns, more tool calls) after the task was effectively complete OR after no further progress is possible
+5. flag any case where the run terminated before all necessary information had been collected or shared between agents
+
+# --- clarification / communication guidelines ---
+6. flag any case where one agent needed information another agent had but did not request it
+7. flag any case where one agent shared incomplete or ambiguous information and the recipient did not ask for clarification
+
+# --- role / task constraint guidelines ---
+8. flag any case where an agent acted outside its assigned role (e.g. a tester writing code, a planner executing tools)
+9. flag any case where an agent ignored an explicit user-specified constraint of the task
+
+# --- anti-examples (reduce FPs by telling judge what is NOT a coordination failure) ---
+10. do NOT flag a coordination failure just because the agents could not solve a hard task — task difficulty is not coordination failure
+11. do NOT flag a coordination failure for SDK / API / network errors (e.g. "ChatVertexAI has no attribute kwargs", "token expired", timeouts) — those are system errors, not agent coordination
+12. do NOT flag a coordination failure for bugs in code the agents are writing about — code quality of the artifact under construction is the artifact's problem, not a coordination failure between the agents writing it

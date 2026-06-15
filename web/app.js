@@ -1241,10 +1241,13 @@
     // Disable all card buttons while a request is in flight.
     const buttons = Array.from(document.querySelectorAll('#mast-cards button'));
     buttons.forEach(b => b.disabled = true);
+    // Pull guidelines (only meaningful for live mode; server ignores on cached).
+    const guidelinesRaw = (($('#mast-user-guidelines') || {}).value || '').split('\n');
+    const userGuidelines = guidelinesRaw.map(s => s.trim()).filter(Boolean);
     try {
       const data = await api('/api/mast-analyze', {
         method: 'POST',
-        body: { trace_id: traceId, mode },
+        body: { trace_id: traceId, mode, user_guidelines: userGuidelines },
       });
       renderMastResult(data);
       $('#mast-result').classList.remove('hidden');
@@ -1544,6 +1547,8 @@
       toast('Paste agent code first (or click "Load example").', 'error');
       return;
     }
+    const guidelinesRaw = (($('#byoa-user-guidelines') || {}).value || '').split('\n');
+    const userGuidelines = guidelinesRaw.map(s => s.trim()).filter(Boolean);
     const body = {
       code,
       detector_topology: $('#byoa-topology').value,
@@ -1553,6 +1558,7 @@
       judge: ($('#byoa-judge') || {}).value || 'off',
       judge_model: ($('#byoa-judge-model') || {}).value.trim() || null,
       judge_every: parseInt(($('#byoa-judge-every') || {}).value, 10) || 5,
+      user_guidelines: userGuidelines,
     };
     const btn = $('#byoa-submit');
     btn.disabled = true;
