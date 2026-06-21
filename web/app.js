@@ -115,6 +115,7 @@
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
     if (name === 'detect') initDetect();
+    if (name === 'adapter') initAdapter();
     if (name === 'runs') refreshRuns();
     if (name === 'compare') populateComparePickers();
     if (name === 'analyze') initAnalyze();
@@ -1704,6 +1705,129 @@
       });
       host.appendChild(block);
     });
+  }
+
+  // ---------- adapter tab (langgraph) -------------------------------------
+
+  let _adapterWired = false;
+  function initAdapter() {
+    if (_adapterWired) return;
+    _adapterWired = true;
+    $('#adapter-run').addEventListener('click', runAdapterDemo);
+  }
+
+  async function runAdapterDemo() {
+    const btn = $('#adapter-run');
+    const status = $('#adapter-status');
+    const intensity = $('#adapter-intensity').value;
+    const seed = parseInt($('#adapter-seed').value, 10) || 0;
+    const excludeRaw = ($('#adapter-exclude').value || '').trim();
+    const auto_chaos_exclude = excludeRaw
+      ? excludeRaw.split(',').map(s => s.trim()).filter(Boolean)
+      : [];
+
+    btn.disabled = true;
+    status.textContent = 'running…';
+    try {
+      const data = await api('/api/adapter-demo', {
+        method: 'POST',
+        body: { intensity, seed, auto_chaos_exclude },
+      });
+      renderAdapterResult(data);
+      $('#adapter-result').classList.remove('hidden');
+      $('#adapter-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      status.textContent = `done — ${data.perturbations.length} perturbations`;
+    } catch (e) {
+      toast('Adapter run failed: ' + e.message, 'error');
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderAdapterResult(data) {
+    // --- summary kv ---
+    const summary = $('#adapter-summary');
+    summary.innerHTML = '';
+    const kvs = [
+      ['Graph',          data.graph_name],
+      ['Intensity',      data.intensity],
+      ['Seed',           data.seed],
+      ['Patterns total', data.patterns_total + ' (schema-derived)'],
+      ['Perturbations',  data.perturbations.length],
+      ['Crashed',        data.n_crashed],
+      ['Diverged',       data.n_diverged],
+      ['Unchanged',      data.n_unchanged],
+    ];
+    kvs.forEach(([k, v]) => {
+      summary.appendChild(el('span', { class: 'k', text: k }));
+      summary.appendChild(el('span', { class: 'v', text: v == null || v === '' ? '—' : String(v) }));
+    });
+
+    const headline = $('#adapter-headline');
+    headline.innerHTML = '';
+    headline.appendChild(el('p', {
+      class: 'help',
+      text: data.graph_description,
+    }));
+
+    // --- baseline ---
+    const base = $('#adapter-baseline');
+    base.innerHTML = '';
+    const b = data.baseline;
+    if (b.crashed) {
+      base.appendChild(el('div', {}, [
+        el('span', { class: 'pill danger', text: 'BASELINE CRASHED' }),
+        el('div', { class: 'mono', style: 'margin-top: 8px;', text: `${b.error_type}: ${b.error}` }),
+      ]));
+    } else {
+      const fs = b.final_state || {};
+      base.appendChild(el('pre', { class: 'mono', text: JSON.stringify(fs, null, 2) }));
+    }
+
+    // --- perturbations ---
+    const host = $('#adapter-perturbations');
+    host.innerHTML = '';
+    if (!data.perturbations.length) {
+      host.appendChild(el('div', {
+        class: 'empty',
+        text: 'No perturbations scheduled — increase intensity above or pick a richer initial state.',
+      }));
+      return;
+    }
+    // Sort: crashes -> diverges -> unchanged. Highest-signal first.
+    const sorted = data.perturbations.slice().sort((p, q) => {
+      const rank = (x) => x.crashed ? 0 : x.diverged ? 1 : 2;
+      const r = rank(p) - rank(q);
+      return r !== 0 ? r : p.event_name.localeCompare(q.event_name);
+    });
+    sorted.forEach(p => host.appendChild(renderPerturbation(p)));
+  }
+
+  function renderPerturbation(p) {
+    let pillClass, pillText, detail;
+    if (p.crashed) {
+      pillClass = 'pill danger';
+      pillText  = `CRASH · ${p.error_type}`;
+      detail = p.error;
+    } else if (p.diverged) {
+      pillClass = 'pill warning';
+      pillText  = 'DIVERGE';
+      detail = p.divergence_summary;
+    } else {
+      pillClass = 'pill success';
+      pillText  = 'UNCHANGED';
+      detail = 'Graph absorbed the perturbation; no observable change in final state.';
+    }
+
+    const head = el('div', { class: 'row', style: 'align-items: center; gap: 10px; margin-bottom: 4px;' }, [
+      el('span', { class: pillClass, text: pillText }),
+      el('code', { text: p.event_name }),
+      el('span', { class: 'muted', text: `(${p.duration_s}s)` }),
+    ]);
+    const sum = el('div', { class: 'muted', style: 'margin-bottom: 6px;', text: p.event_summary });
+    const det = el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word;', text: detail });
+    return el('div', { class: 'failure-cell', style: 'padding: 10px 12px;' }, [head, sum, det]);
   }
 
   // ---------- utils -------------------------------------------------------

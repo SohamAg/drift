@@ -91,6 +91,88 @@
       </div>
     </section>
 
+    <!-- ===================== ADAPTER ===================== -->
+    <section id="tab-adapter" class="tab-panel">
+      <div class="card">
+        <h2>LangGraph adapter — schema-driven chaos against any compiled graph</h2>
+        <p class="help">
+          Drift's adapter takes a compiled LangGraph (or anything with
+          <code>.invoke(state)</code>) and runs schema-driven perturbations
+          against the initial state — flipping booleans, removing dict keys,
+          duplicating list entries, corrupting strings. Each perturbation is
+          a full graph invocation. Results bucket into <strong>crashed</strong>
+          (your graph threw), <strong>diverged</strong> (output silently
+          changed), or <strong>unchanged</strong> (graph absorbed it).
+        </p>
+        <p class="help">
+          The bundled demo graph is a 3-node ticket triage
+          (<code>classify → escalate | respond</code>). Both terminal nodes
+          look up <code>open_tickets[ticket_id]</code> without a defensive
+          check — exactly the kind of subtle production bug a developer
+          wouldn't write a test for. Chaos that empties or rekeys the dict
+          should reliably crash it.
+        </p>
+
+        <form id="adapter-form">
+          <div class="row two-col">
+            <div class="field">
+              <label for="adapter-intensity">Chaos intensity</label>
+              <select id="adapter-intensity" name="intensity">
+                <option value="off">off (baseline only)</option>
+                <option value="light">light (~8% per step)</option>
+                <option value="moderate">moderate (~18%)</option>
+                <option value="aggressive" selected>aggressive (~35%)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="adapter-seed">Seed</label>
+              <input type="number" id="adapter-seed" name="seed" value="7" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="adapter-exclude">Exclude patterns <span class="muted">(optional, comma-separated)</span></label>
+            <input type="text" id="adapter-exclude" name="exclude"
+                   placeholder="e.g. flip_bool, corrupt_string[priority]" />
+            <p class="help">
+              Substring match against pattern names. <code>flip_bool</code>
+              skips all bool flips; <code>open_tickets</code> skips every
+              perturbation targeting that field.
+            </p>
+          </div>
+
+          <div class="row">
+            <button type="button" id="adapter-run" class="primary">Run drift_test</button>
+            <span id="adapter-status" class="muted"></span>
+          </div>
+        </form>
+      </div>
+
+      <div id="adapter-result" class="hidden">
+        <div class="card">
+          <h3>Summary</h3>
+          <div id="adapter-summary" class="kv-grid"></div>
+          <div id="adapter-headline" style="margin-top: 12px;"></div>
+        </div>
+
+        <div class="card">
+          <h3>Baseline run</h3>
+          <p class="help">Graph output with no perturbations applied. This is the anchor for divergence detection.</p>
+          <div id="adapter-baseline"></div>
+        </div>
+
+        <div class="card">
+          <h3>Perturbations</h3>
+          <p class="help">
+            <span class="pill danger">CRASH</span> graph threw an exception under this chaos event.
+            <span class="pill warning">DIVERGE</span> graph output differs from baseline.
+            <span class="pill success">UNCHANGED</span> graph absorbed the perturbation; no observable effect.
+          </p>
+          <div id="adapter-perturbations" class="failure-list"></div>
+        </div>
+      </div>
+    </section>
+
     <section id="tab-new" class="tab-panel">
       <div class="grid two-col">
         <div class="card">
