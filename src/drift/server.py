@@ -313,6 +313,21 @@ class BYOARequest(BaseModel):
     user_guidelines: list[str] = Field(default_factory=list)
 
 
+class AdapterDemoRequest(BaseModel):
+    """Run drift's langgraph adapter against the bundled ticket-triage demo
+    graph. Backs the Adapter tab — the user picks an intensity + seed and
+    sees crashed / diverged / unchanged perturbations side-by-side.
+
+    The demo graph is built server-side (no user code), so the endpoint
+    is safe to expose. For arbitrary-graph runs the user can install drift
+    locally and call drift_test from a notebook.
+    """
+    intensity: str = "aggressive"   # off | light | moderate | aggressive
+    seed: int = 7
+    max_perturbations: int = Field(default=25, ge=1, le=100)
+    auto_chaos_exclude: list[str] = Field(default_factory=list)
+
+
 class ForkRunRequest(BaseModel):
     """Fork an existing run at a chosen step with optional overrides."""
     branch_at_step: int = Field(ge=0)
@@ -1014,6 +1029,129 @@ def create_app() -> FastAPI:
         return {
             "detector_topology": "code_review",
             "code": _BYOA_EXAMPLE_CODE,
+        }
+
+    # ---- LangGraph adapter demo (Adapter tab) -----------------------------
+
+    @app.post("/api/adapter-demo")
+    async def adapter_demo(req: AdapterDemoRequest) -> dict[str, Any]:
+        """Run drift's auto-chaos against a bundled langgraph-shaped graph.
+
+        The graph is a 3-node ticket triage (classify -> route -> respond
+        or escalate). Both terminal nodes assume `open_tickets[ticket_id]`
+        exists; chaos that empties or rekeys the dict reliably crashes
+        the run, demonstrating the schema-driven failure-finding that's
+        drift's verified moat. Same shape as the standalone demo at
+        examples/adapters/langgraph_demo.py.
+        """
+        from drift.adapters.langgraph import drift_test_async
+
+        def _classify(state: dict) -> dict:
+            text = (state.get("text") or "").lower()
+            if "urgent" in text or "down" in text:
+                priority = "high"
+            elif "question" in text:
+                priority = "low"
+            else:
+                priority = "normal"
+            return {"priority": priority}
+
+        def _escalate(state: dict) -> dict:
+            tid = state["ticket_id"]
+            ticket = state["open_tickets"][tid]
+            return {
+                "reply": f"escalated ticket {tid} ({ticket['issue']}) to on-call",
+                "escalated": True,
+            }
+
+        def _respond(state: dict) -> dict:
+            tid = state["ticket_id"]
+            ticket = state["open_tickets"][tid]
+            return {
+                "reply": f"resolved ticket {tid}: {ticket['issue']}",
+                "escalated": False,
+            }
+
+        class _DemoGraph:
+            """Hand-rolled equivalent of the langgraph demo graph — same
+            interface (.invoke(state) -> dict). Keeps the server free of
+            a hard langgraph dependency."""
+
+            def invoke(self, state: dict) -> dict:
+                merged = dict(state)
+                merged.update(_classify(merged))
+                if merged.get("priority") == "high" or merged.get("is_premium"):
+                    merged.update(_escalate(merged))
+                else:
+                    merged.update(_respond(merged))
+                return merged
+
+        initial_state = {
+            "ticket_id": "TKT-42",
+            "text": "site is down can someone help",
+            "is_premium": True,
+            "open_tickets": {
+                "TKT-42": {"issue": "checkout 500s", "customer": "acme"},
+            },
+            "reply": "",
+            "escalated": False,
+            "priority": "",
+        }
+
+        try:
+            result = await drift_test_async(
+                graph=_DemoGraph(),
+                initial_state=initial_state,
+                intensity=req.intensity,
+                seed=req.seed,
+                auto_chaos_exclude=req.auto_chaos_exclude or None,
+                max_perturbations=req.max_perturbations,
+            )
+        except (TypeError, ValueError) as e:
+            raise HTTPException(400, str(e))
+
+        def _baseline_dict(b: Any) -> dict[str, Any]:
+            return {
+                "initial_state": b.initial_state,
+                "final_state": b.final_state,
+                "crashed": b.crashed,
+                "error": b.error,
+                "error_type": b.error_type,
+                "duration_s": round(b.duration_s, 4),
+            }
+
+        def _pert_dict(p: Any) -> dict[str, Any]:
+            return {
+                "event_name": p.event_name,
+                "event_summary": p.event_summary,
+                "perturbed_field": p.perturbed_field,
+                "pattern_type": p.pattern_type,
+                "perturbed_initial_state": p.perturbed_initial_state,
+                "final_state": p.final_state,
+                "crashed": p.crashed,
+                "error": p.error,
+                "error_type": p.error_type,
+                "diverged": p.diverged,
+                "divergence_summary": p.divergence_summary,
+                "duration_s": round(p.duration_s, 4),
+            }
+
+        return {
+            "graph_name": "ticket_triage",
+            "graph_description": (
+                "3-node ticket triage: classify -> (escalate | respond). "
+                "Both terminal nodes look up open_tickets[ticket_id] without "
+                "a defensive check — production-realistic and brittle."
+            ),
+            "intensity": result.intensity,
+            "seed": req.seed,
+            "patterns_total": result.patterns_total,
+            "n_crashed": result.n_crashed,
+            "n_diverged": result.n_diverged,
+            "n_unchanged": result.n_unchanged,
+            "summary_lines": result.summary_lines(),
+            "baseline": _baseline_dict(result.baseline),
+            "perturbations": [_pert_dict(p) for p in result.perturbations],
         }
 
     # ---- MAST demo (Detect tab) -------------------------------------------
