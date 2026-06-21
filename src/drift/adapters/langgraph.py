@@ -206,12 +206,33 @@ def _state_to_dict(world: World) -> dict:
     return out
 
 
+def _validate_graph(graph: Any) -> None:
+    """Fail fast if `graph` doesn't have one of the entry points we support.
+
+    Raised eagerly (outside the per-run try/except) so misuse surfaces as
+    a TypeError to the caller rather than getting recorded as a baseline
+    crash — a real user-code crash is interesting telemetry, a misconfigured
+    graph reference is not.
+    """
+    if (
+        callable(getattr(graph, "ainvoke", None))
+        or callable(getattr(graph, "invoke", None))
+        or callable(graph)
+    ):
+        return
+    raise TypeError(
+        f"graph object {type(graph).__name__!r} has no .invoke/.ainvoke and "
+        "is not callable; pass a compiled langgraph StateGraph, an async "
+        "function, or any object with .invoke(state) -> dict"
+    )
+
+
 async def _invoke_graph(graph: Any, state: dict) -> dict:
     """Call graph.ainvoke or graph.invoke, returning the resulting state.
 
     Tries ainvoke first (native for compiled langgraph), falls back to
-    sync invoke. Plain callables are also supported — if `graph` is
-    callable but has neither method, we just call it with the state.
+    sync invoke, then to plain __call__. Assumes _validate_graph has
+    already ruled out the no-entry-point case.
     """
     ainvoke = getattr(graph, "ainvoke", None)
     if callable(ainvoke):
@@ -227,17 +248,11 @@ async def _invoke_graph(graph: Any, state: dict) -> dict:
             result = await result
         return result if isinstance(result, dict) else dict(result)
 
-    if callable(graph):
-        result = graph(state)
-        if inspect.isawaitable(result):
-            result = await result
-        return result if isinstance(result, dict) else dict(result)
-
-    raise TypeError(
-        f"graph object {type(graph).__name__!r} has no .invoke/.ainvoke and "
-        "is not callable; pass a compiled langgraph StateGraph, an async "
-        "function, or any object with .invoke(state) -> dict"
-    )
+    # Plain callable fallback — _validate_graph already confirmed it's callable.
+    result = graph(state)
+    if inspect.isawaitable(result):
+        result = await result
+    return result if isinstance(result, dict) else dict(result)
 
 
 def _diff_states(baseline: dict | None, perturbed: dict | None) -> tuple[bool, str]:
@@ -320,6 +335,7 @@ async def drift_test_async(
             f"initial_state must be a dict; got {type(initial_state).__name__}. "
             "If you're using a TypedDict, pass it as dict(my_state)."
         )
+    _validate_graph(graph)
 
     state_cls = _build_state_model(initial_state)
     level = _normalize_intensity(intensity)
