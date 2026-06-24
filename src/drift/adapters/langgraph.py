@@ -524,6 +524,281 @@ def _diff_states(
     return (True, "; ".join(d.summary for d in details), details)
 
 
+# --- Phase 2: noise floor + tier 2 (similarity) + tier 3 (judge) ----------
+
+
+def _text_similarity(a: str, b: str) -> float:
+    """SequenceMatcher ratio over the raw text. Cheap, no embeddings.
+
+    Range [0, 1]: 1 = identical, ~0.85 = same intent worded slightly differently,
+    < 0.5 = substantively different. The exact cutoff is configurable per-call.
+    """
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _analyze_field_variance(name: str, values: list[Any]) -> FieldNoiseBand:
+    """Build a per-field noise band from N baseline samples.
+
+    Strategy:
+      - For enum-shaped fields (small distinct value set), record value
+        frequencies. Tier 2 just checks membership.
+      - For numeric fields (int / float, excluding bool), record min/max.
+        Tier 2 checks the perturbed value's distance from the observed range.
+      - For text fields (all samples are str), compute pairwise similarity
+        stats. Tier 2 compares perturbed-vs-baseline similarity against the
+        baseline-vs-baseline floor.
+    """
+    band = FieldNoiseBand(name=name, sample_count=len(values))
+    # Distinct values (use canonical JSON as the dedup key so dicts/lists
+    # with the same content collapse).
+    seen: dict[str, Any] = {}
+    freqs: Counter[str] = Counter()
+    for v in values:
+        key = _canonical(v)
+        freqs[key] += 1
+        seen.setdefault(key, v)
+    band.distinct_values = list(seen.values())
+    band.value_frequencies = dict(freqs)
+
+    # Numeric stats (skip bool since bool is a subclass of int).
+    if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values) and values:
+        band.numeric_min = float(min(values))
+        band.numeric_max = float(max(values))
+        return band
+
+    # Text stats.
+    if all(isinstance(v, str) for v in values) and len(values) >= 2:
+        sims: list[float] = []
+        for i in range(len(values)):
+            for j in range(i + 1, len(values)):
+                sims.append(_text_similarity(values[i], values[j]))
+        if sims:
+            band.text_min_similarity = min(sims)
+            band.text_mean_similarity = sum(sims) / len(sims)
+
+    return band
+
+
+async def _measure_noise_band(
+    graph: Any,
+    initial_state: dict,
+    state_factory: Callable[[], dict] | None,
+    n_rollouts: int,
+) -> tuple[dict[str, FieldNoiseBand], list[dict | None]]:
+    """Run baseline N times to amortize the noise floor.
+
+    Returns (noise_band_by_field, list_of_final_states). The list of finals
+    is exposed so the caller can pick one as THE baseline (we use the first)
+    while still benefiting from the variance information from the rest.
+
+    Note: drift can't re-seed an LLM. Re-running the same graph just gets
+    whatever the model returns each time; for temp>0 models this is the
+    natural wobble we want to measure. For deterministic graphs (mocks,
+    temp=0 + cached LLMs), all N rollouts return the same final state and
+    every band has distinct_values=[single value] — phase-2 still works,
+    just with a zero-tolerance noise floor.
+    """
+    n_rollouts = max(1, int(n_rollouts))
+    finals: list[dict | None] = []
+    for _ in range(n_rollouts):
+        fresh = (
+            deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
+        )
+        final, _trace, etype, _err, _dur = await _run_one(graph, fresh)
+        # If any rollout crashes we skip it for noise analysis but keep its
+        # slot so callers can see counts didn't add up.
+        finals.append(None if etype else final)
+
+    successful = [f for f in finals if isinstance(f, dict)]
+    if not successful:
+        return ({}, finals)
+
+    # Collect all keys that appeared in any successful rollout.
+    all_keys: set[str] = set()
+    for f in successful:
+        all_keys.update(f.keys())
+
+    bands: dict[str, FieldNoiseBand] = {}
+    for k in all_keys:
+        present_values = [f[k] for f in successful if k in f]
+        if not present_values:
+            continue
+        bands[k] = _analyze_field_variance(k, present_values)
+    return (bands, finals)
+
+
+def _is_within_noise(
+    perturbed_value: Any,
+    band: FieldNoiseBand | None,
+    similarity_threshold: float,
+) -> tuple[bool, float | None]:
+    """Tier 2 verdict: is this perturbed value plausibly within baseline noise?
+
+    Returns (within_noise, similarity_score). similarity_score is None for
+    non-text fields where the check is membership or range rather than ratio.
+
+    Decision tree:
+      - No noise band (band is None or sample_count < 2): we have no variance
+        info, so we can't say "this is normal." Returns (False, None) and
+        forces tier 3 or surfaces the divergence directly.
+      - Perturbed value is exactly one of the observed distinct values: True.
+      - Numeric band: within [min, max]: True.
+      - Text band: similarity vs any baseline >= max(threshold, observed
+        baseline-vs-baseline floor): True. We compare against EACH observed
+        baseline value and take the best; this matches "is the perturbed
+        output one of the things the baseline could plausibly have said?"
+      - Otherwise: False.
+    """
+    if band is None or band.sample_count < 2:
+        return (False, None)
+
+    # Exact match against any observed distinct value (works for any type).
+    pkey = _canonical(perturbed_value)
+    if pkey in band.value_frequencies:
+        return (True, None)
+
+    # Numeric range check.
+    if (
+        band.numeric_min is not None
+        and band.numeric_max is not None
+        and isinstance(perturbed_value, (int, float))
+        and not isinstance(perturbed_value, bool)
+    ):
+        return (band.numeric_min <= perturbed_value <= band.numeric_max, None)
+
+    # Text similarity: take the best match against any observed baseline,
+    # threshold against max(user_threshold, observed_baseline_floor).
+    if (
+        band.text_min_similarity is not None
+        and isinstance(perturbed_value, str)
+    ):
+        text_baselines = [v for v in band.distinct_values if isinstance(v, str)]
+        if not text_baselines:
+            return (False, None)
+        best_sim = max(_text_similarity(perturbed_value, b) for b in text_baselines)
+        floor = max(similarity_threshold, band.text_min_similarity)
+        return (best_sim >= floor, best_sim)
+
+    return (False, None)
+
+
+_TIER3_JUDGE_SYSTEM = (
+    "You are comparing two outputs from a multi-agent system to decide if "
+    "they are semantically equivalent — i.e., do they convey the same "
+    "decision, intent, or answer despite possibly differing in wording, "
+    "formatting, or incidental detail.\n\n"
+    "Reply strictly as JSON: {\"equivalent\": true|false, \"reasoning\": \"<one short sentence>\"}.\n"
+    "Treat as equivalent: same decision in different words, reordered list "
+    "with same items, same numeric answer formatted differently.\n"
+    "Treat as NOT equivalent: different decision/action chosen, different "
+    "answer, missing required information, added incorrect information."
+)
+
+
+async def _tier3_judge_equivalent(
+    judge_llm: JudgeLLM,
+    field: str,
+    baseline_value: Any,
+    perturbed_value: Any,
+) -> tuple[bool, str]:
+    """Tier 3 LLM equivalence check. Caller is responsible for budget gating.
+
+    Returns (is_equivalent, reasoning). On any parse/network error, defaults
+    to (False, "judge error: ...") so the divergence gets surfaced rather
+    than silently dropped.
+    """
+    user = (
+        f"Field: {field}\n\n"
+        f"BASELINE:\n{_shorten(_canonical(baseline_value), 800)}\n\n"
+        f"PERTURBED:\n{_shorten(_canonical(perturbed_value), 800)}"
+    )
+    try:
+        raw = await judge_llm.judge(system=_TIER3_JUDGE_SYSTEM, user=user)
+    except Exception as exc:  # noqa: BLE001 — judge is user-supplied, anything possible
+        return (False, f"judge error: {type(exc).__name__}: {exc}")
+    if not raw:
+        return (False, "judge returned empty response")
+    text = raw.strip()
+    if not text.startswith("{"):
+        i = text.find("{")
+        text = text[i:] if i >= 0 else text
+    if not text.endswith("}"):
+        j = text.rfind("}")
+        text = text[: j + 1] if j >= 0 else text
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return (False, f"judge non-JSON: {raw[:120]!r}")
+    eq = bool(payload.get("equivalent"))
+    reasoning = str(payload.get("reasoning") or "").strip() or ("equivalent" if eq else "different")
+    return (eq, reasoning)
+
+
+async def _diff_states_tiered(
+    baseline: dict | None,
+    perturbed: dict | None,
+    noise_band: dict[str, FieldNoiseBand],
+    judge_llm: JudgeLLM | None,
+    similarity_threshold: float,
+    judge_calls_remaining: int,
+) -> tuple[bool, str, list[FieldDivergence], int]:
+    """Full cost cascade. Returns (diverged, summary, details, judge_used).
+
+    Pipeline per field:
+      tier 0 — structural change (always reported, never noise-filtered)
+      tier 1 — exact canonical equality (drop if equal)
+      tier 2 — within noise band? (drop if within)
+      tier 3 — judge equivalence (drop if judged equivalent), budget-gated.
+
+    Fields surviving all four tiers are returned as confirmed divergences.
+    """
+    if baseline is None or perturbed is None:
+        return (False, "", [], 0)
+
+    tier0 = _tier0_structural(baseline, perturbed)
+    seen0 = {d.name for d in tier0}
+    tier1_candidates = _tier1_exact(baseline, perturbed, skip_fields=seen0)
+
+    confirmed: list[FieldDivergence] = list(tier0)
+    judge_used = 0
+
+    for cand in tier1_candidates:
+        band = noise_band.get(cand.name)
+        within, sim = _is_within_noise(cand.perturbed_value, band, similarity_threshold)
+        cand.similarity_score = sim
+        cand.within_noise_band = within
+        if within:
+            # Filtered by noise floor — natural variance, not divergence.
+            continue
+        if judge_llm is None or judge_calls_remaining - judge_used <= 0:
+            # No judge available or budget exhausted: surface the
+            # divergence; the user sees a tier-2 (or unmarked tier-1)
+            # candidate with whatever similarity info we have.
+            confirmed.append(cand)
+            continue
+        # Tier 3: ask the judge if these are semantically equivalent.
+        judge_used += 1
+        eq, reasoning = await _tier3_judge_equivalent(
+            judge_llm, cand.name, cand.baseline_value, cand.perturbed_value,
+        )
+        cand.tier = 3
+        cand.judge_equivalent = eq
+        cand.judge_reasoning = reasoning
+        if eq:
+            continue  # judge cleared it
+        cand.summary = f"{cand.summary}  · judge: {reasoning}"
+        confirmed.append(cand)
+
+    if not confirmed:
+        return (False, "", [], judge_used)
+    return (
+        True,
+        "; ".join(d.summary for d in confirmed),
+        confirmed,
+        judge_used,
+    )
+
+
 async def _run_one(
     graph: Any, initial_state: dict
 ) -> tuple[dict | None, list[dict], str, str, float]:
@@ -611,6 +886,10 @@ async def drift_test_async(
     state_factory: Callable[[], dict] | None = None,
     judge_llm: JudgeLLM | None = None,
     user_guidelines: Iterable[str] | None = None,
+    divergence_mode: str = DEFAULT_DIVERGENCE_MODE,
+    baseline_rollouts: int = DEFAULT_BASELINE_ROLLOUTS,
+    max_judge_calls: int = DEFAULT_MAX_JUDGE_CALLS,
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
 ) -> AdapterResult:
     """Async variant of drift_test. Use from inside an existing event loop.
 
@@ -622,6 +901,10 @@ async def drift_test_async(
         raise TypeError(
             f"initial_state must be a dict; got {type(initial_state).__name__}. "
             "If you're using a TypedDict, pass it as dict(my_state)."
+        )
+    if divergence_mode not in ("exact", "tiered", "off"):
+        raise ValueError(
+            f"divergence_mode must be 'exact', 'tiered', or 'off'; got {divergence_mode!r}"
         )
     _validate_graph(graph)
 
@@ -655,10 +938,28 @@ async def drift_test_async(
 
     # Baseline run uses a fresh copy of the user's state so the graph can't
     # mutate the input dict and leak across perturbation runs.
-    baseline_input = (
-        deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
-    )
-    bfinal, btrace, betype, berr, btime = await _run_one(graph, baseline_input)
+    # In tiered mode with baseline_rollouts > 1, we measure natural variance
+    # FIRST (N rollouts), then use the first successful one as THE baseline.
+    # Otherwise we just run baseline once like before.
+    noise_band: dict[str, FieldNoiseBand] = {}
+    if divergence_mode == "tiered" and baseline_rollouts > 1:
+        noise_band, finals = await _measure_noise_band(
+            graph, initial_state, state_factory, baseline_rollouts,
+        )
+        # Pick the first successful rollout as THE baseline. Time/trace/etc.
+        # are re-derived from a one-shot run below so we have consistent
+        # trace data — the noise band is derived from final-state variance,
+        # not from per-step traces, so we don't need to keep all N traces.
+        baseline_input = (
+            deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
+        )
+        bfinal, btrace, betype, berr, btime = await _run_one(graph, baseline_input)
+    else:
+        baseline_input = (
+            deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
+        )
+        bfinal, btrace, betype, berr, btime = await _run_one(graph, baseline_input)
+
     baseline_findings: list[dict] = []
     if judge_llm is not None and btrace:
         baseline_findings = await _run_judge_on_trace(
@@ -675,6 +976,7 @@ async def drift_test_async(
         judge_findings=baseline_findings,
     )
 
+    judge_calls_used = 0
     perturbations: list[PerturbationResult] = []
     for _t, event in scheduled:
         # Each perturbation gets its own World built from a fresh copy of
@@ -687,7 +989,20 @@ async def drift_test_async(
         post_state = _state_to_dict(world)
 
         final, ptrace, etype, err, took = await _run_one(graph, post_state)
-        diverged, divsum, divdetails = _diff_states(baseline.final_state, final)
+
+        # Divergence detection: dispatch through the cost cascade.
+        if divergence_mode == "off":
+            diverged, divsum, divdetails = (False, "", [])
+        elif divergence_mode == "tiered":
+            remaining = max(0, max_judge_calls - judge_calls_used)
+            diverged, divsum, divdetails, used = await _diff_states_tiered(
+                baseline.final_state, final, noise_band,
+                judge_llm if remaining > 0 else None,
+                similarity_threshold, remaining,
+            )
+            judge_calls_used += used
+        else:  # "exact"
+            diverged, divsum, divdetails = _diff_states(baseline.final_state, final)
 
         # Judge runs even on crashes — partial traces (steps before the crash)
         # are often the most diagnostic. Skipped only when there's literally
@@ -723,6 +1038,11 @@ async def drift_test_async(
         perturbations=perturbations,
         intensity=level,
         patterns_total=len(all_specs),
+        divergence_mode=divergence_mode,
+        baseline_rollouts=baseline_rollouts,
+        noise_band=noise_band,
+        judge_calls_used=judge_calls_used,
+        judge_calls_budget=max_judge_calls,
     )
 
 
@@ -737,6 +1057,10 @@ def drift_test(
     state_factory: Callable[[], dict] | None = None,
     judge_llm: JudgeLLM | None = None,
     user_guidelines: Iterable[str] | None = None,
+    divergence_mode: str = DEFAULT_DIVERGENCE_MODE,
+    baseline_rollouts: int = DEFAULT_BASELINE_ROLLOUTS,
+    max_judge_calls: int = DEFAULT_MAX_JUDGE_CALLS,
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
 ) -> AdapterResult:
     """Run drift's auto-chaos against a compiled graph and report results.
 
@@ -782,6 +1106,27 @@ def drift_test(
             judge's prompt. Matches show up under
             `failure_type = "llm:user_guideline:<n>"`. Use to express
             coordination rules specific to your domain.
+        divergence_mode: how to compare baseline vs perturbed final state.
+            "exact" (default) — equality on the whole dict; fast/free but
+            noisy on LLM-driven graphs. "tiered" — cost cascade: structural
+            → exact → similarity (vs measured noise floor) → LLM judge,
+            with each tier filtering candidates before the next. Most
+            comparisons resolve in tiers 0-1 for free; tier 3 only fires
+            on survivors and is hard-capped. "off" — skip divergence
+            detection entirely (crash detection still runs).
+        baseline_rollouts: when divergence_mode="tiered", how many times to
+            run the baseline to measure natural variance. >1 enables the
+            noise floor that tier 2 consults. Cost = `baseline_rollouts`
+            extra graph invocations once per drift_test call (amortized).
+            Default 1 (no noise floor).
+        max_judge_calls: hard ceiling on tier-3 judge calls across all
+            perturbations in this drift_test call. Default 10. Tier 0-2
+            are free; only tier 3 costs LLM tokens for divergence
+            equivalence checks.
+        similarity_threshold: tier-2 lexical similarity cutoff for text
+            fields, 0..1. Default 0.85. Effective threshold is
+            max(this, measured baseline-vs-baseline floor) so text fields
+            with naturally high variance get a tighter band automatically.
 
     Returns:
         AdapterResult with .baseline and .perturbations; see those
@@ -790,8 +1135,10 @@ def drift_test(
     Notes:
         This calls asyncio.run() internally — don't call from inside an
         already-running event loop. Use drift_test_async in that case.
-        Cost: 1 + len(scheduled_perturbations) graph invocations per call,
-        plus one judge call per perturbation if judge_llm is supplied.
+        Cost in tiered mode with noise floor and budget B:
+            baseline_rollouts + 1 + len(scheduled_perturbations) graph runs
+            + up to (B + 1 if baseline has trace) judge calls for coord findings
+            + up to B judge calls for divergence equivalence (capped).
     """
     return asyncio.run(
         drift_test_async(
@@ -804,6 +1151,10 @@ def drift_test(
             state_factory=state_factory,
             judge_llm=judge_llm,
             user_guidelines=user_guidelines,
+            divergence_mode=divergence_mode,
+            baseline_rollouts=baseline_rollouts,
+            max_judge_calls=max_judge_calls,
+            similarity_threshold=similarity_threshold,
         )
     )
 
@@ -812,6 +1163,8 @@ __all__ = [
     "AdapterResult",
     "BaselineResult",
     "PerturbationResult",
+    "FieldDivergence",
+    "FieldNoiseBand",
     "drift_test",
     "drift_test_async",
 ]
