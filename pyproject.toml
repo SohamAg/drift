@@ -13,7 +13,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-anthropic = ["anthropic>=0.40"]
 openai    = ["openai>=1.40"]
 web       = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
 # The langgraph adapter doesn't import langgraph itself — it works against

@@ -246,7 +246,7 @@ class StartRunRequest(BaseModel):
     scenario: str | None = None     # filename in scenarios/, or None for empty scenario
     steps: int = Field(default=30, ge=1, le=500)
     seed: int = 42
-    llm: str = "mock"               # mock | openai | anthropic
+    llm: str = "mock"               # mock | openai
     model: str | None = None
     prompt_variant: str = "naive"   # naive | hardened
     run_id: str | None = None       # optional human-friendly label; otherwise auto-generated
@@ -302,7 +302,7 @@ class BYOARequest(BaseModel):
     auto_chaos_exclude: list[str] = Field(default_factory=list)
     # LLM-judged detection: drift adds an LLM-judge detector that fires on
     # coordination failures using natural-language reasoning. "off" disables;
-    # "mock" runs a placeholder (no network); "openai"/"anthropic" use a real
+    # "mock" runs a placeholder (no network); "openai" uses a real
     # judge. judge_model overrides the default model for the chosen provider.
     judge: str = "off"
     judge_model: str | None = None
@@ -346,9 +346,6 @@ def _build_llm(req: StartRunRequest, topology: Topology) -> LLMClient:
     if req.llm == "openai":
         from drift.llm.openai_adapter import OpenAILLM
         return OpenAILLM(model=req.model or "gpt-4o-mini")
-    if req.llm == "anthropic":
-        from drift.llm.anthropic_adapter import AnthropicLLM
-        return AnthropicLLM(model=req.model or "claude-haiku-4-5")
     raise HTTPException(400, f"unknown llm {req.llm!r}")
 
 

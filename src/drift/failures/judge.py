@@ -147,7 +147,7 @@ class ScriptedMockJudge:
         if not type(self)._warned:
             print(
                 "[drift] scripted mock judge is a placeholder — use "
-                "openai/anthropic for real LLM-judged detection.",
+                "openai for real LLM-judged detection.",
                 file=sys.stderr,
             )
             type(self)._warned = True
@@ -158,7 +158,7 @@ class ScriptedMockJudge:
                     "family": "emergent_decay",
                     "summary": (
                         "scripted mock judge placeholder — configure a real "
-                        "judge LLM (openai/anthropic) to get real detection"
+                        "judge LLM (openai) to get real detection"
                     ),
                     "evidence_action_ids": [],
                     "agents_involved": [],
@@ -201,24 +201,6 @@ class OpenAIJudge:
             return '{"failures": []}'
 
 
-class AnthropicJudge:
-    """Anthropic Claude judge — scaffolded but not wired in v0.
-
-    To enable: implement against anthropic.AsyncAnthropic with a tool-use
-    schema that mirrors the JSON shape DEFAULT_JUDGE_SYSTEM describes.
-    """
-
-    def __init__(self, model: str = "claude-haiku-4-5", api_key: str | None = None) -> None:
-        self.model = model
-        self.api_key = api_key
-
-    async def judge(self, *, system: str, user: str) -> str:  # pragma: no cover - stubbed
-        raise NotImplementedError(
-            "Anthropic judge is scaffolded but not wired in v0. "
-            "Use judge='openai' or judge='mock' for now."
-        )
-
-
 def build_judge(spec: str, *, model: str | None = None) -> JudgeLLM | None:
     """Factory: map a string spec to a JudgeLLM instance.
 
@@ -226,7 +208,6 @@ def build_judge(spec: str, *, model: str | None = None) -> JudgeLLM | None:
       - "off" / "" / None-ish → returns None (no judge runs)
       - "mock"                → ScriptedMockJudge (placeholder, no network)
       - "openai"              → OpenAIJudge with optional model override
-      - "anthropic"           → AnthropicJudge (stubbed, raises on call)
 
     Raises ValueError for unrecognized specs.
     """
@@ -237,9 +218,7 @@ def build_judge(spec: str, *, model: str | None = None) -> JudgeLLM | None:
         return ScriptedMockJudge()
     if s == "openai":
         return OpenAIJudge(model=model or "gpt-4o-mini")
-    if s == "anthropic":
-        return AnthropicJudge(model=model or "claude-haiku-4-5")
-    raise ValueError(f"unknown judge spec {spec!r}; expected off/mock/openai/anthropic")
+    raise ValueError(f"unknown judge spec {spec!r}; expected off/mock/openai")
 
 
 # ---- Window rendering ----------------------------------------------------
@@ -435,7 +414,6 @@ __all__ = [
     "JudgeLLM",
     "LLMJudgeDetector",
     "OpenAIJudge",
-    "AnthropicJudge",
     "ScriptedMockJudge",
     "build_judge",
     "build_system_prompt",
