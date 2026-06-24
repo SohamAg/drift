@@ -17,21 +17,26 @@ production." This module makes that a one-liner:
             print(f"CRASH under {p.event_name}: {p.error}")
         elif p.diverged:
             print(f"DIVERGED under {p.event_name}: {p.divergence_summary}")
+        for f in p.judge_findings:
+            print(f"  JUDGE [{f['failure_type']}]: {f['summary']}")
 
 What it actually does:
   1. Walks the user's initial_state dict and enumerates schema-driven
      perturbations (flip_bool[is_admin], remove_dict_key[open_cases], etc.)
      via drift.chaos. Pattern selection dispatches on runtime types so the
      user doesn't have to declare anything.
-  2. Invokes the graph once with the unperturbed state (baseline).
+  2. Streams the graph once with the unperturbed state (baseline), capturing
+     per-super-step records (node name + state delta).
   3. For each perturbation, copies the initial state, applies the chaos
-     mutation, invokes the graph, captures (final_state, exception, time).
-  4. Compares each perturbed final state to the baseline final state and
-     reports crashed / diverged / unchanged.
+     mutation, streams the graph, captures (final_state, exception, trace).
+  4. Compares each perturbed final state to the baseline; runs the LLM judge
+     (if supplied) over the per-perturbation trace to surface coordination
+     failures the deterministic crash/diverge buckets can't catch.
 
-It does NOT import langgraph. Anything with `.invoke(dict) -> dict` or
-`.ainvoke(dict) -> dict` works. That lets us ship + test without pulling
-langgraph as a hard dep and incidentally covers homemade graph runners too.
+It does NOT import langgraph. Anything with `.invoke(dict) -> dict` (or
+`.ainvoke` / `.stream` / `.astream`) works. Plain callables work too —
+they just don't produce a trace and so can't be judged. That lets us ship +
+test without pulling langgraph as a hard dep and covers homemade runners.
 
 For chaos that fires *between* nodes (not just at initial state), the
 user needs to switch their graph to a langgraph checkpointer and use a
@@ -42,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import time
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -49,9 +55,12 @@ from typing import Any, Callable, Iterable, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
+from drift.agents.base import Action
 from drift.chaos.engine import _normalize_intensity, plan_auto_chaos
 from drift.chaos.fuzzer import discover_field_patterns
-from drift.world import World, WorldState
+from drift.failures.base import DetectorContext
+from drift.failures.judge import JudgeLLM, LLMJudgeDetector
+from drift.world import World, WorldHistory, WorldState
 
 # How many perturbations we'll run by default before clamping. Each
 # perturbation = one full graph invocation, so users who set
@@ -86,6 +95,11 @@ class PerturbationResult:
     Exactly one of `crashed` or `final_state` is meaningful per result:
       - crashed=True  -> error/error_type set, final_state is None
       - crashed=False -> final_state set, error fields are empty strings
+
+    `trace` is the captured per-super-step sequence — populated only when the
+    graph supports `.stream()` / `.astream()`. Plain callables run via
+    `.invoke()` and produce no trace, so `judge_findings` stays empty for
+    those even when a judge is supplied.
     """
 
     event_name: str
@@ -100,6 +114,8 @@ class PerturbationResult:
     diverged: bool = False
     divergence_summary: str = ""
     duration_s: float = 0.0
+    trace: list[dict] = field(default_factory=list)
+    judge_findings: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -112,6 +128,8 @@ class BaselineResult:
     error: str = ""
     error_type: str = ""
     duration_s: float = 0.0
+    trace: list[dict] = field(default_factory=list)
+    judge_findings: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -147,16 +165,25 @@ class AdapterResult:
             if not p.crashed and not p.diverged
         )
 
+    @property
+    def n_judge_findings(self) -> int:
+        """Total judge-flagged findings across baseline + all perturbations."""
+        return len(self.baseline.judge_findings) + sum(
+            len(p.judge_findings) for p in self.perturbations
+        )
+
     def summary_lines(self) -> list[str]:
         """Human-readable one-line-per-bucket summary. Used by the example
         and any caller who wants a quick stdout report."""
         out = [
             f"drift × graph: {len(self.perturbations)} perturbation(s) "
             f"(intensity={self.intensity}, schema yielded {self.patterns_total} pattern(s))",
-            f"  crashed   : {self.n_crashed}",
-            f"  diverged  : {self.n_diverged}",
-            f"  unchanged : {self.n_unchanged}",
+            f"  crashed         : {self.n_crashed}",
+            f"  diverged        : {self.n_diverged}",
+            f"  unchanged       : {self.n_unchanged}",
         ]
+        if self.n_judge_findings:
+            out.append(f"  judge findings  : {self.n_judge_findings}")
         if self.baseline.crashed:
             out.append(
                 f"  ! baseline itself crashed: {self.baseline.error_type}: {self.baseline.error}"
@@ -207,52 +234,108 @@ def _state_to_dict(world: World) -> dict:
 
 
 def _validate_graph(graph: Any) -> None:
-    """Fail fast if `graph` doesn't have one of the entry points we support.
+    """Fail fast if `graph` doesn't expose any entry point we support.
 
+    Recognized: `.astream` / `.stream` / `.ainvoke` / `.invoke` / `__call__`.
     Raised eagerly (outside the per-run try/except) so misuse surfaces as
     a TypeError to the caller rather than getting recorded as a baseline
     crash — a real user-code crash is interesting telemetry, a misconfigured
     graph reference is not.
     """
-    if (
-        callable(getattr(graph, "ainvoke", None))
-        or callable(getattr(graph, "invoke", None))
-        or callable(graph)
-    ):
+    for attr in ("astream", "stream", "ainvoke", "invoke"):
+        if callable(getattr(graph, attr, None)):
+            return
+    if callable(graph):
         return
     raise TypeError(
-        f"graph object {type(graph).__name__!r} has no .invoke/.ainvoke and "
-        "is not callable; pass a compiled langgraph StateGraph, an async "
+        f"graph object {type(graph).__name__!r} has no .invoke/.ainvoke/.stream/.astream "
+        "and is not callable; pass a compiled langgraph StateGraph, an async "
         "function, or any object with .invoke(state) -> dict"
     )
 
 
-async def _invoke_graph(graph: Any, state: dict) -> dict:
-    """Call graph.ainvoke or graph.invoke, returning the resulting state.
+def _normalize_chunk(chunk: Any) -> dict[str, dict]:
+    """Coerce a langgraph stream chunk into a {node_name: update} dict.
 
-    Tries ainvoke first (native for compiled langgraph), falls back to
-    sync invoke, then to plain __call__. Assumes _validate_graph has
-    already ruled out the no-entry-point case.
+    LangGraph's `stream_mode="updates"` (default) yields chunks shaped like
+    `{"node_name": {update_dict}}`. Some chunks carry framework-internal keys
+    like "__start__" / "__end__" — we keep them so the trace has full fidelity,
+    and downstream callers can filter if they care.
     """
+    if isinstance(chunk, dict):
+        return {str(k): (v if isinstance(v, dict) else {"_value": v}) for k, v in chunk.items()}
+    return {"_chunk": {"_value": chunk}}
+
+
+async def _stream_or_invoke(graph: Any, state: dict) -> tuple[dict | None, list[dict]]:
+    """Run the graph once. Capture a per-super-step trace if possible.
+
+    Returns (final_state, trace). The trace is a list of records
+    `{step, node, update, state_after}` — empty if the graph supports
+    invoke only (plain function / `.invoke()`-only stubs).
+
+    Prefer `.astream()` -> `.stream()` -> `.ainvoke()` -> `.invoke()` ->
+    `__call__`. Streaming uses default mode (`"updates"`) and accumulates
+    each super-step's delta onto a running state dict. For most graphs
+    this matches the canonical final state; graphs that rely on langgraph
+    reducer channels (e.g. messages with `add_messages`) may see slight
+    drift in the merged final_state vs what `.invoke()` would return. The
+    trace is unaffected — it just records each node's emitted update.
+    """
+    running: dict = dict(state)
+    trace: list[dict] = []
+    step = 0
+
+    astream = getattr(graph, "astream", None)
+    if callable(astream):
+        async for chunk in astream(state):
+            for node, update in _normalize_chunk(chunk).items():
+                if isinstance(update, dict):
+                    running.update(update)
+                step += 1
+                trace.append({
+                    "step": step,
+                    "node": node,
+                    "update": deepcopy(update),
+                    "state_after": deepcopy(running),
+                })
+        return (running, trace)
+
+    stream = getattr(graph, "stream", None)
+    if callable(stream):
+        for chunk in stream(state):
+            for node, update in _normalize_chunk(chunk).items():
+                if isinstance(update, dict):
+                    running.update(update)
+                step += 1
+                trace.append({
+                    "step": step,
+                    "node": node,
+                    "update": deepcopy(update),
+                    "state_after": deepcopy(running),
+                })
+        return (running, trace)
+
+    # Plain invoke fallback: no per-step trace possible.
     ainvoke = getattr(graph, "ainvoke", None)
     if callable(ainvoke):
         result = ainvoke(state)
         if inspect.isawaitable(result):
             result = await result
-        return result if isinstance(result, dict) else dict(result)
+        return (result if isinstance(result, dict) else dict(result), [])
 
     invoke = getattr(graph, "invoke", None)
     if callable(invoke):
         result = invoke(state)
         if inspect.isawaitable(result):
             result = await result
-        return result if isinstance(result, dict) else dict(result)
+        return (result if isinstance(result, dict) else dict(result), [])
 
-    # Plain callable fallback — _validate_graph already confirmed it's callable.
+    # _validate_graph guaranteed the graph is at minimum callable.
     result = graph(state)
     if inspect.isawaitable(result):
         result = await result
-    return result if isinstance(result, dict) else dict(result)
+    return (result if isinstance(result, dict) else dict(result), [])
 
 
 def _diff_states(baseline: dict | None, perturbed: dict | None) -> tuple[bool, str]:
@@ -301,17 +384,78 @@ def _diff_states(baseline: dict | None, perturbed: dict | None) -> tuple[bool, s
 
 async def _run_one(
     graph: Any, initial_state: dict
-) -> tuple[dict | None, str, str, float]:
-    """Invoke the graph once, capturing exceptions and timing.
+) -> tuple[dict | None, list[dict], str, str, float]:
+    """Invoke the graph once, capturing exceptions, trace, and timing.
 
-    Returns (final_state_or_None, error_type, error_msg, duration_seconds).
+    Returns (final_state_or_None, trace, error_type, error_msg, duration).
+    Trace is [] if the graph doesn't support streaming or if it crashed
+    before any super-step yielded.
     """
     t0 = time.perf_counter()
     try:
-        final = await _invoke_graph(graph, initial_state)
-        return (final, "", "", time.perf_counter() - t0)
+        final, trace = await _stream_or_invoke(graph, initial_state)
+        return (final, trace, "", "", time.perf_counter() - t0)
     except Exception as exc:  # noqa: BLE001 — user code, anything possible
-        return (None, type(exc).__name__, str(exc), time.perf_counter() - t0)
+        return (None, [], type(exc).__name__, str(exc), time.perf_counter() - t0)
+
+
+async def _run_judge_on_trace(
+    judge_llm: JudgeLLM,
+    user_guidelines: list[str] | None,
+    trace: list[dict],
+    state_cls: type[BaseModel],
+) -> list[dict]:
+    """Run the LLM judge over one perturbation's captured trace.
+
+    Synthesizes a drift `DetectorContext` from the trace: each super-step
+    becomes one `Action` (`kind="node:<name>"`, rationale = the node's
+    state delta) plus one snapshot in a fresh `WorldHistory`. Then fires
+    a one-shot `LLMJudgeDetector` with `every=1` so it runs immediately
+    over the full window.
+
+    Returns judge findings as a list of JSON-serializable dicts. Empty
+    list if the trace had no super-steps (e.g. graph crashed at step 0,
+    or the graph doesn't support streaming).
+    """
+    if not trace:
+        return []
+
+    actions: list[Action] = []
+    history = WorldHistory(maxlen=max(len(trace), 16))
+    for entry in trace:
+        step = int(entry["step"])
+        node = str(entry["node"])
+        update_repr = json.dumps(entry.get("update") or {}, default=str)[:400]
+        actions.append(Action(
+            timestep=step,
+            agent_name=node,
+            kind=f"node:{node}",
+            rationale=update_repr,
+        ))
+        # Snapshot the state AFTER this super-step. Wrap into the adapter's
+        # Pydantic shell so the judge's window renderer can model_dump it.
+        snap_payload = {
+            k: v for k, v in (entry.get("state_after") or {}).items() if k != "timestep"
+        }
+        snap = state_cls.model_validate(snap_payload)
+        snap.timestep = step  # type: ignore[attr-defined]
+        history.record(snap, [])  # type: ignore[arg-type]
+
+    detector = LLMJudgeDetector(
+        judge=judge_llm,
+        every=1,                      # fire on the synthetic "final" tick
+        window=len(trace),            # show the judge every super-step
+        user_guidelines=list(user_guidelines) if user_guidelines else None,
+    )
+    ctx = DetectorContext(
+        timestep=len(trace),
+        history=history,
+        actions=actions,
+        events=[],
+        already_reported=set(),
+    )
+    findings = await detector(ctx)
+    return [f.model_dump(mode="json") for f in findings]
 
 
 async def drift_test_async(
@@ -323,6 +467,8 @@ async def drift_test_async(
     auto_chaos_exclude: Iterable[str] | None = None,
     max_perturbations: int = DEFAULT_MAX_PERTURBATIONS,
     state_factory: Callable[[], dict] | None = None,
+    judge_llm: JudgeLLM | None = None,
+    user_guidelines: Iterable[str] | None = None,
 ) -> AdapterResult:
     """Async variant of drift_test. Use from inside an existing event loop.
 
@@ -339,6 +485,7 @@ async def drift_test_async(
 
     state_cls = _build_state_model(initial_state)
     level = _normalize_intensity(intensity)
+    guidelines = [g for g in (user_guidelines or []) if g and str(g).strip()]
 
     # Enumerate every applicable chaos pattern for telemetry, then schedule.
     # We schedule across _PLANNER_HORIZON synthetic steps; the timesteps are
@@ -360,7 +507,7 @@ async def drift_test_async(
     )
 
     # Clamp to the per-call ceiling so an aggressive intensity on a noisy
-    # schema doesn't silently rack up LLM cost.
+    # schema doesn't silently rack up LLM cost (plus optional judge cost).
     if len(scheduled) > max_perturbations:
         scheduled = scheduled[:max_perturbations]
 
@@ -369,7 +516,12 @@ async def drift_test_async(
     baseline_input = (
         deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
     )
-    bfinal, betype, berr, btime = await _run_one(graph, baseline_input)
+    bfinal, btrace, betype, berr, btime = await _run_one(graph, baseline_input)
+    baseline_findings: list[dict] = []
+    if judge_llm is not None and btrace:
+        baseline_findings = await _run_judge_on_trace(
+            judge_llm, guidelines, btrace, state_cls,
+        )
     baseline = BaselineResult(
         initial_state=baseline_input,
         final_state=bfinal,
@@ -377,6 +529,8 @@ async def drift_test_async(
         error=berr,
         error_type=betype,
         duration_s=btime,
+        trace=btrace,
+        judge_findings=baseline_findings,
     )
 
     perturbations: list[PerturbationResult] = []
@@ -390,8 +544,17 @@ async def drift_test_async(
         record = event.apply(world)
         post_state = _state_to_dict(world)
 
-        final, etype, err, took = await _run_one(graph, post_state)
+        final, ptrace, etype, err, took = await _run_one(graph, post_state)
         diverged, divsum = _diff_states(baseline.final_state, final)
+
+        # Judge runs even on crashes — partial traces (steps before the crash)
+        # are often the most diagnostic. Skipped only when there's literally
+        # no trace data to feed it (graph doesn't stream, or crashed at step 0).
+        pert_findings: list[dict] = []
+        if judge_llm is not None and ptrace:
+            pert_findings = await _run_judge_on_trace(
+                judge_llm, guidelines, ptrace, state_cls,
+            )
 
         perturbations.append(
             PerturbationResult(
@@ -407,6 +570,8 @@ async def drift_test_async(
                 diverged=diverged,
                 divergence_summary=divsum,
                 duration_s=took,
+                trace=ptrace,
+                judge_findings=pert_findings,
             )
         )
 
@@ -427,13 +592,17 @@ def drift_test(
     auto_chaos_exclude: Iterable[str] | None = None,
     max_perturbations: int = DEFAULT_MAX_PERTURBATIONS,
     state_factory: Callable[[], dict] | None = None,
+    judge_llm: JudgeLLM | None = None,
+    user_guidelines: Iterable[str] | None = None,
 ) -> AdapterResult:
     """Run drift's auto-chaos against a compiled graph and report results.
 
-    The minimum viable adapter: takes a user's compiled LangGraph (or
-    anything with .invoke / .ainvoke / __call__) plus an initial state
-    dict, perturbs the initial state via drift's schema-driven chaos, and
-    reports which perturbations crashed vs diverged from the baseline.
+    Takes a user's compiled LangGraph (or anything with .invoke / .ainvoke /
+    .stream / .astream / __call__) plus an initial state dict, perturbs the
+    initial state via drift's schema-driven chaos, and reports which
+    perturbations crashed, silently diverged, or were absorbed. With a judge
+    supplied, also runs drift's 6-family LLM judge over each perturbation's
+    per-super-step trace.
 
     Args:
         graph: a compiled LangGraph StateGraph, OR any object with
@@ -459,6 +628,17 @@ def drift_test(
             dict per invocation. Use when initial_state contains non-
             picklable / non-deep-copyable objects (e.g. opened connections).
             If supplied, takes precedence over deepcopy(initial_state).
+        judge_llm: optional LLM judge (built via
+            `drift.failures.judge.build_judge(...)`). When supplied, drift
+            runs the 6-family coordination-failure judge over each
+            perturbation's captured per-super-step trace and attaches
+            findings to `PerturbationResult.judge_findings`. Requires the
+            graph to support `.stream()` / `.astream()`; plain `.invoke()`-only
+            callables produce no trace and the judge silently skips them.
+        user_guidelines: optional plain-English patterns appended to the
+            judge's prompt. Matches show up under
+            `failure_type = "llm:user_guideline:<n>"`. Use to express
+            coordination rules specific to your domain.
 
     Returns:
         AdapterResult with .baseline and .perturbations; see those
@@ -467,7 +647,8 @@ def drift_test(
     Notes:
         This calls asyncio.run() internally — don't call from inside an
         already-running event loop. Use drift_test_async in that case.
-        Cost: 1 + len(scheduled_perturbations) graph invocations per call.
+        Cost: 1 + len(scheduled_perturbations) graph invocations per call,
+        plus one judge call per perturbation if judge_llm is supplied.
     """
     return asyncio.run(
         drift_test_async(
@@ -478,6 +659,8 @@ def drift_test(
             auto_chaos_exclude=auto_chaos_exclude,
             max_perturbations=max_perturbations,
             state_factory=state_factory,
+            judge_llm=judge_llm,
+            user_guidelines=user_guidelines,
         )
     )
 
