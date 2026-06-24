@@ -211,7 +211,7 @@
                 <input type="radio" name="prompt_variant" id="pv-hardened" value="hardened" />
                 <label for="pv-hardened" class="seg-opt">hardened</label>
               </div>
-              <p class="help">Naive = day-one prompts. Hardened = explicit guardrails against detected failures.</p>
+              <p class="help">Naive = day-one prompts. Hardened = explicit guardrails against detected failures. <strong>No-op when LLM = mock</strong> (mock ignores system_prompt); only meaningful with <code>openai</code>.</p>
             </div>
 
             <div class="field">
