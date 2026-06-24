@@ -24,7 +24,6 @@ from drift.failures.judge import (
     JUDGE_FAMILIES,
     JUDGE_PREFIX,
     USER_GUIDELINE_FAMILY,
-    AnthropicJudge,
     LLMJudgeDetector,
     OpenAIJudge,
     ScriptedMockJudge,
@@ -72,15 +71,11 @@ def test_build_judge_mock_returns_scripted():
     assert isinstance(j, ScriptedMockJudge)
 
 
-def test_build_judge_anthropic_returns_stub():
-    j = build_judge("anthropic", model="claude-haiku-4-5")
-    assert isinstance(j, AnthropicJudge)
-    assert j.model == "claude-haiku-4-5"
-
-
 def test_build_judge_rejects_unknown_spec():
     with pytest.raises(ValueError):
         build_judge("gemini")
+    with pytest.raises(ValueError):
+        build_judge("anthropic")
 
 
 def test_build_judge_openai_uses_default_model_without_construction(monkeypatch):

@@ -70,10 +70,7 @@ def build_llm(
     if name == "openai":
         from drift.llm.openai_adapter import OpenAILLM
         return OpenAILLM(model=model or "gpt-4o-mini")
-    if name == "anthropic":
-        from drift.llm.anthropic_adapter import AnthropicLLM
-        return AnthropicLLM(model=model or "claude-haiku-4-5")
-    raise SystemExit(f"unknown --llm {name!r}; use 'mock', 'openai', or 'anthropic'")
+    raise SystemExit(f"unknown --llm {name!r}; use 'mock' or 'openai'")
 
 
 def build_runner(args: argparse.Namespace) -> SimulationRunner:
@@ -290,7 +287,7 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--steps", type=int, default=50)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--scenario", type=Path, default=None)
-    p.add_argument("--llm", choices=["mock", "openai", "anthropic"], default="mock")
+    p.add_argument("--llm", choices=["mock", "openai"], default="mock")
     p.add_argument("--model", default=None)
     p.add_argument("--prompt-variant", choices=["naive", "hardened"], default="naive")
     p.add_argument("--runs-dir", type=Path, default=Path("runs"))
