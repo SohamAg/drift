@@ -526,16 +526,20 @@
       <div class="card">
         <h2>About drift</h2>
         <p>
-          Drift is a multi-agent stress-test simulator. It puts a small team of AI agents
-          into a fake environment that changes over time, and watches for failures that only
-          show up when agents work together — contradictions, loops, hallucinated references,
-          coordination failures across timesteps.
+          Drift is pre-deploy testing for multi-agent AI systems. It auto-generates
+          coordination-breaking scenarios from your state's schema, runs them through
+          your agent, and surfaces the crashes plus silent divergences you wouldn't
+          have written a test for because you didn't think of them.
         </p>
         <p>
-          This UI runs locally against the same Python codebase you'd use from the CLI.
-          Runs are written to <code>runs/</code> as JSONL and can be replayed or compared.
+          The headline integration is the <strong>LangGraph adapter</strong> (Adapter tab) —
+          point it at any compiled graph and get findings in 30 seconds. The native
+          simulator (New Run / Runs / Compare) is the original stack that drives drift's
+          own agents end-to-end; runs are written to <code>runs/</code> as JSONL and can
+          be replayed or compared. The Detect tab benchmarks drift's LLM judge against
+          human-annotated traces from the MAST paper.
         </p>
-        <h3>Topologies</h3>
+        <h3>Bundled topologies (for the native simulator)</h3>
         <div id="about-topologies"></div>
       </div>
     </section>
