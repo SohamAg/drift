@@ -592,3 +592,322 @@ def test_n_judge_findings_counts_across_baseline_and_perturbations():
     # Summary line should mention judge findings when there are any.
     if expected > 0:
         assert any("judge findings" in line for line in result.summary_lines())
+
+
+# ---- phase 2: tiered divergence cascade -----------------------------------
+
+
+from drift.adapters.langgraph import (   # noqa: E402
+    FieldDivergence,
+    FieldNoiseBand,
+    _analyze_field_variance,
+    _diff_states_tiered,
+    _is_within_noise,
+    _text_similarity,
+    _tier0_structural,
+    _tier1_exact,
+)
+
+
+# ---- tier 0 + 1 (free deterministic tiers) --------------------------------
+
+
+def test_tier0_detects_added_removed_keys_and_type_changes():
+    baseline = {"a": 1, "b": "x", "shared": True}
+    perturbed = {"a": 1, "shared": "now a string", "c": "new"}
+    diffs = _tier0_structural(baseline, perturbed)
+    by_name = {d.name: d for d in diffs}
+    assert "-b" in by_name["b"].summary
+    assert "+c" in by_name["c"].summary
+    assert "type" in by_name["shared"].summary
+    assert all(d.tier == 0 for d in diffs)
+
+
+def test_tier1_ignores_canonical_equality():
+    # Same dict, different key order — should not register as divergence.
+    baseline = {"x": {"a": 1, "b": 2}}
+    perturbed = {"x": {"b": 2, "a": 1}}
+    diffs = _tier1_exact(baseline, perturbed, skip_fields=set())
+    assert diffs == []
+
+
+def test_tier1_flags_actual_value_differences():
+    baseline = {"answer": "yes", "score": 0.5}
+    perturbed = {"answer": "no", "score": 0.5}
+    diffs = _tier1_exact(baseline, perturbed, skip_fields=set())
+    assert [d.name for d in diffs] == ["answer"]
+    assert diffs[0].tier == 1
+
+
+def test_tier1_skips_fields_already_handled_by_tier0():
+    baseline = {"shared": True, "other": "a"}
+    perturbed = {"shared": "now str", "other": "b"}
+    tier0 = _tier0_structural(baseline, perturbed)
+    tier1 = _tier1_exact(baseline, perturbed, skip_fields={d.name for d in tier0})
+    # "shared" handled by tier 0; tier 1 should only report "other"
+    assert [d.name for d in tier1] == ["other"]
+
+
+# ---- noise band analysis --------------------------------------------------
+
+
+def test_analyze_field_variance_for_enum_field():
+    band = _analyze_field_variance("priority", ["high", "low", "high", "normal"])
+    assert band.sample_count == 4
+    assert set(band.distinct_values) == {"high", "low", "normal"}
+    assert band.value_frequencies['"high"'] == 2
+
+
+def test_analyze_field_variance_for_numeric_field():
+    band = _analyze_field_variance("score", [0.5, 0.7, 0.9])
+    assert band.numeric_min == 0.5
+    assert band.numeric_max == 0.9
+
+
+def test_analyze_field_variance_for_text_field_records_similarity():
+    band = _analyze_field_variance("reply", [
+        "Your refund has been processed",
+        "We've refunded your order",
+        "Refund processed successfully",
+    ])
+    assert band.text_min_similarity is not None
+    assert band.text_mean_similarity is not None
+    assert 0.0 <= band.text_min_similarity <= band.text_mean_similarity <= 1.0
+
+
+def test_analyze_field_variance_skips_text_similarity_for_bool_field():
+    band = _analyze_field_variance("is_premium", [True, False, True])
+    assert band.text_min_similarity is None
+    assert band.numeric_min is None  # bool excluded from numeric path
+
+
+# ---- tier 2 noise filtering -----------------------------------------------
+
+
+def test_is_within_noise_exact_match_to_observed_value():
+    band = FieldNoiseBand(
+        name="priority", sample_count=3,
+        distinct_values=["high", "normal", "low"],
+        value_frequencies={'"high"': 1, '"normal"': 1, '"low"': 1},
+    )
+    within, sim = _is_within_noise("normal", band, similarity_threshold=0.85)
+    assert within is True
+    assert sim is None  # exact-match path doesn't compute similarity
+
+
+def test_is_within_noise_text_similar_to_baseline_passes():
+    band = _analyze_field_variance("reply", [
+        "Your refund has been processed",
+        "We've refunded your order",
+    ])
+    # Highly similar text should be within noise.
+    within, sim = _is_within_noise(
+        "Your refund was processed", band, similarity_threshold=0.5,
+    )
+    assert within is True
+    assert sim is not None and sim > 0.5
+
+
+def test_is_within_noise_substantively_different_text_fails():
+    band = _analyze_field_variance("reply", [
+        "Approved for refund of $49.99",
+        "Refund of $49.99 approved",
+    ])
+    within, sim = _is_within_noise(
+        "Cannot process refund at this time", band, similarity_threshold=0.85,
+    )
+    assert within is False
+
+
+def test_is_within_noise_numeric_in_range():
+    band = _analyze_field_variance("score", [0.5, 0.6, 0.7])
+    assert _is_within_noise(0.55, band, similarity_threshold=0.85)[0] is True
+    assert _is_within_noise(0.9, band, similarity_threshold=0.85)[0] is False
+
+
+def test_is_within_noise_no_band_means_not_within():
+    # Without a band (e.g., single-rollout baseline), we can't say "within noise".
+    within, sim = _is_within_noise("anything", None, similarity_threshold=0.85)
+    assert within is False
+    assert sim is None
+
+
+# ---- tier 3 judge equivalence + budget ------------------------------------
+
+
+def test_tiered_cascade_filters_noise_keeps_real_divergence():
+    """Field with noise should be filtered out; field that exceeds noise stays."""
+    baseline = {"reply": "Refund processed", "answer": "approved"}
+    perturbed = {"reply": "Refund has been processed", "answer": "denied"}
+    noise = {
+        "reply": _analyze_field_variance("reply", [
+            "Refund processed",
+            "Refund completed",
+            "Refund done",
+        ]),
+        "answer": _analyze_field_variance("answer", ["approved", "approved"]),
+    }
+    diverged, _summary, details, judge_used = asyncio.run(_diff_states_tiered(
+        baseline, perturbed, noise_band=noise, judge_llm=None,
+        similarity_threshold=0.5, judge_calls_remaining=0,
+    ))
+    # reply variants are similar enough to be within noise -> filtered.
+    # answer changed approved->denied (not in noise) -> retained.
+    assert diverged is True
+    names = [d.name for d in details]
+    assert "answer" in names
+    assert "reply" not in names
+    assert judge_used == 0  # no judge configured
+
+
+def test_tiered_cascade_calls_judge_for_survivors_and_respects_budget():
+    """When a judge is supplied, tier-3 fires on survivors; budget caps calls."""
+
+    # Judge that always says "not equivalent" so survivors stay reported.
+    class _JudgeNotEquiv:
+        def __init__(self):
+            self.calls = 0
+
+        async def judge(self, *, system: str, user: str) -> str:
+            self.calls += 1
+            return '{"equivalent": false, "reasoning": "different"}'
+
+    baseline = {"a": "one", "b": "two", "c": "three"}
+    perturbed = {"a": "ONE", "b": "TWO", "c": "THREE"}
+    # No noise band -> tier 2 fails closed -> tier 3 fires for each field.
+    judge = _JudgeNotEquiv()
+    diverged, _summary, details, judge_used = asyncio.run(_diff_states_tiered(
+        baseline, perturbed, noise_band={}, judge_llm=judge,
+        similarity_threshold=0.85, judge_calls_remaining=2,
+    ))
+    assert diverged is True
+    # 3 differing fields, but budget is 2 -> judge called exactly 2x; the
+    # 3rd field surfaces without a judge verdict.
+    assert judge.calls == 2
+    assert judge_used == 2
+    # All 3 fields end up in details (tier-3-judged ones marked as different,
+    # the budget-exhausted one falls through as a plain tier-1 divergence).
+    assert len(details) == 3
+
+
+def test_tiered_cascade_judge_clears_equivalent_fields():
+    """Judge saying 'equivalent' should drop the divergence from details."""
+
+    class _JudgeEquiv:
+        async def judge(self, *, system: str, user: str) -> str:
+            return '{"equivalent": true, "reasoning": "same meaning"}'
+
+    baseline = {"reply": "Approved"}
+    perturbed = {"reply": "Yes, approved."}
+    diverged, _summary, details, judge_used = asyncio.run(_diff_states_tiered(
+        baseline, perturbed, noise_band={}, judge_llm=_JudgeEquiv(),
+        similarity_threshold=0.85, judge_calls_remaining=5,
+    ))
+    assert diverged is False
+    assert details == []
+    assert judge_used == 1
+
+
+def test_tiered_cascade_judge_error_surfaces_divergence():
+    """If the judge throws, we should NOT silently drop the divergence."""
+
+    class _JudgeBroken:
+        async def judge(self, *, system: str, user: str) -> str:
+            raise RuntimeError("API down")
+
+    baseline = {"x": "a"}
+    perturbed = {"x": "b"}
+    diverged, _, details, judge_used = asyncio.run(_diff_states_tiered(
+        baseline, perturbed, noise_band={}, judge_llm=_JudgeBroken(),
+        similarity_threshold=0.85, judge_calls_remaining=5,
+    ))
+    assert diverged is True
+    assert len(details) == 1
+    assert "judge error" in details[0].summary.lower()
+    assert judge_used == 1
+
+
+def test_tiered_cascade_passes_through_tier0_structural_always():
+    """Type changes and key add/remove must be reported regardless of noise."""
+    baseline = {"x": 1, "y": "a"}
+    perturbed = {"x": "now str", "z": "added"}  # x type-changed, y removed, z added
+    # Even with a huge noise band that "permits anything," structural changes
+    # are unfilterable.
+    noise = {
+        "x": _analyze_field_variance("x", [1, "str_form", 2]),
+        "y": _analyze_field_variance("y", ["a", "a", "a"]),
+        "z": _analyze_field_variance("z", ["added", "added"]),
+    }
+    diverged, _, details, _ = asyncio.run(_diff_states_tiered(
+        baseline, perturbed, noise_band=noise, judge_llm=None,
+        similarity_threshold=0.85, judge_calls_remaining=0,
+    ))
+    assert diverged is True
+    tier0_names = {d.name for d in details if d.tier == 0}
+    assert {"x", "y", "z"}.issubset(tier0_names)
+
+
+# ---- end-to-end with divergence_mode + baseline_rollouts ------------------
+
+
+def test_divergence_mode_off_skips_divergence_detection():
+    result = drift_test(
+        graph=_DivergingGraph(),
+        initial_state={"flag": True, "items": ["x", "y"]},
+        intensity="moderate",
+        seed=4,
+        divergence_mode="off",
+    )
+    # No divergence reported even though graph clearly diverges.
+    assert all(p.diverged is False for p in result.perturbations)
+    assert all(p.divergence_details == [] for p in result.perturbations)
+
+
+def test_divergence_mode_tiered_with_rollouts_measures_noise_band():
+    """With baseline_rollouts > 1, the result carries a non-empty noise_band."""
+    result = drift_test(
+        graph=_StreamingGraph(),
+        initial_state={"text": "I want a refund", "intent": "", "reply": ""},
+        intensity="off",                  # no perturbations — just measure noise
+        seed=0,
+        divergence_mode="tiered",
+        baseline_rollouts=3,
+    )
+    assert result.divergence_mode == "tiered"
+    assert result.baseline_rollouts == 3
+    # _StreamingGraph is deterministic so each field has 1 distinct value;
+    # we still get a band recorded (just with sample_count=3, no variance).
+    assert result.noise_band  # non-empty
+    for name, band in result.noise_band.items():
+        assert band.sample_count == 3
+
+
+def test_divergence_mode_tiered_judge_budget_is_tracked():
+    """judge_calls_used reports how many tier-3 calls fired."""
+
+    class _Judge:
+        def __init__(self):
+            self.calls = 0
+
+        async def judge(self, *, system: str, user: str) -> str:
+            self.calls += 1
+            # Real coordination judge AND divergence judge use the same protocol;
+            # this judge stub answers both. We use the "failures: []" shape for
+            # the coord-judge calls and "equivalent: false" for divergence calls.
+            if '"equivalent"' in system or "semantically equivalent" in system:
+                return '{"equivalent": false, "reasoning": "different"}'
+            return '{"failures": []}'
+
+    judge = _Judge()
+    result = drift_test(
+        graph=_DivergingGraph(),
+        initial_state={"flag": True, "items": ["x", "y"]},
+        intensity="moderate",
+        seed=4,
+        divergence_mode="tiered",
+        judge_llm=judge,
+        max_judge_calls=3,
+    )
+    # Cost telemetry surfaces.
+    assert result.judge_calls_budget == 3
+    assert result.judge_calls_used <= 3
