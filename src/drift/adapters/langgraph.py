@@ -55,6 +55,9 @@ from typing import Any, Callable, Iterable, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
+from collections import Counter
+from difflib import SequenceMatcher
+
 from drift.agents.base import Action
 from drift.chaos.engine import _normalize_intensity, plan_auto_chaos
 from drift.chaos.fuzzer import discover_field_patterns
@@ -74,6 +77,21 @@ DEFAULT_MAX_PERTURBATIONS = 25
 # horizon long enough to give the planner room to pick varied events.
 _PLANNER_HORIZON = 30
 
+# Phase 2 divergence-cascade defaults.
+#
+# divergence_mode controls how baseline vs perturbed final state is compared:
+#   "exact"      — equality on the whole dict (today's behavior; fast, free,
+#                  but noisy on any LLM-driven output)
+#   "tiered"     — cascade through tiers 0 (structural) → 1 (canonical equal)
+#                  → 2 (cheap similarity gated by baseline noise) → 3 (judge,
+#                  budget-capped). Only fields surviving the cheap tiers ever
+#                  reach the judge, keeping LLM cost O(handful) per run.
+#   "off"        — skip divergence detection entirely; report crash only.
+DEFAULT_DIVERGENCE_MODE = "exact"
+DEFAULT_BASELINE_ROLLOUTS = 1            # >1 enables noise-floor measurement
+DEFAULT_MAX_JUDGE_CALLS = 10             # tier-3 hard ceiling across one drift_test run
+DEFAULT_SIMILARITY_THRESHOLD = 0.85      # tier-2 lexical cutoff (0..1, SequenceMatcher ratio)
+
 
 @runtime_checkable
 class _GraphLike(Protocol):
@@ -86,6 +104,58 @@ class _GraphLike(Protocol):
     """
 
     def invoke(self, state: dict, *args: Any, **kwargs: Any) -> dict: ...
+
+
+@dataclass
+class FieldNoiseBand:
+    """Per-field natural variance measured across N baseline rollouts.
+
+    The point of the noise band: LLM-driven graphs produce slightly different
+    output for the same input. If a field naturally takes one of {A, B, C}
+    across baseline rollouts, then seeing C in a perturbed run isn't
+    meaningful divergence — it's within noise. Comparators consult this band
+    to filter signal from natural model wobble.
+
+    For enumerated / decision-shaped fields (small distinct_values set),
+    `is_within_noise` for a perturbed value is simply membership.
+    For text fields, we record pairwise lexical similarity stats so tier-2
+    can ask: "is this perturbed-vs-baseline similarity lower than the typical
+    baseline-vs-baseline similarity I saw?"
+    For numerics, we keep min/max so tier-2 can range-check.
+    """
+
+    name: str
+    sample_count: int
+    distinct_values: list[Any] = field(default_factory=list)
+    value_frequencies: dict[str, int] = field(default_factory=dict)   # str-keyed for JSON
+    # Text-field stats — only populated when all samples are strings.
+    text_min_similarity: float | None = None  # lowest pairwise sim across baselines
+    text_mean_similarity: float | None = None
+    # Numeric stats — only when all samples are int/float (and not bool).
+    numeric_min: float | None = None
+    numeric_max: float | None = None
+
+
+@dataclass
+class FieldDivergence:
+    """One field where the perturbed final-state differs from baseline.
+
+    `tier` records which level of the cost cascade actually fired:
+      0 — structural (key added/removed/type changed): always meaningful
+      1 — exact: values differ after canonical equality, no noise consulted
+      2 — similarity: differ enough to exceed the baseline noise band
+      3 — judge: LLM judge confirmed semantically different
+    """
+
+    name: str
+    tier: int
+    baseline_value: Any
+    perturbed_value: Any
+    summary: str
+    similarity_score: float | None = None     # tier 2 (and tier 3 if computed)
+    within_noise_band: bool | None = None     # tier 2/3: were we inside variance?
+    judge_equivalent: bool | None = None      # tier 3 only
+    judge_reasoning: str = ""                 # tier 3 only
 
 
 @dataclass
@@ -116,6 +186,12 @@ class PerturbationResult:
     duration_s: float = 0.0
     trace: list[dict] = field(default_factory=list)
     judge_findings: list[dict] = field(default_factory=list)
+    # Phase 2: per-field divergences after the tiered cost cascade.
+    # Empty when divergence_mode="off" or when the perturbation crashed before
+    # producing a final_state. With divergence_mode="exact" (default), each
+    # entry is a tier-0/1 diff. With divergence_mode="tiered", entries also
+    # include tier-2 (similarity) and tier-3 (judge) outcomes.
+    divergence_details: list[FieldDivergence] = field(default_factory=list)
 
 
 @dataclass
@@ -148,6 +224,12 @@ class AdapterResult:
     perturbations: list[PerturbationResult] = field(default_factory=list)
     intensity: str = "moderate"
     patterns_total: int = 0
+    # Phase 2: divergence cascade telemetry.
+    divergence_mode: str = "exact"   # "exact" | "tiered" | "off"
+    baseline_rollouts: int = 1       # how many baseline samples informed the noise band
+    noise_band: dict[str, FieldNoiseBand] = field(default_factory=dict)
+    judge_calls_used: int = 0        # tier-3 calls actually fired (cost telemetry)
+    judge_calls_budget: int = DEFAULT_MAX_JUDGE_CALLS
 
     @property
     def n_crashed(self) -> int:
@@ -338,48 +420,108 @@ async def _stream_or_invoke(graph: Any, state: dict) -> tuple[dict | None, list[
     return (result if isinstance(result, dict) else dict(result), [])
 
 
-def _diff_states(baseline: dict | None, perturbed: dict | None) -> tuple[bool, str]:
-    """Return (diverged, summary). Compares top-level keys only — that's
-    where coordination-relevant output lives for almost every graph shape.
+def _canonical(value: Any) -> str:
+    """Deterministic JSON-y serialization for equality comparison.
 
-    For dict/list values we compare by serialized JSON to keep this honest
-    about nested changes without trying to produce a deep diff (would bloat
-    the result and most users will just glance at the summary).
+    Used by tier 1 to canonicalize dict/list values before comparing — so
+    {"a": 1, "b": 2} equals {"b": 2, "a": 1}. Falls back to repr() for
+    types JSON can't serialize (e.g. langgraph BaseMessage instances).
     """
-    if baseline is None or perturbed is None:
-        # If either side crashed we don't claim divergence here; caller
-        # uses the crashed flag separately.
-        return (False, "")
+    try:
+        return json.dumps(value, default=str, sort_keys=True)
+    except Exception:  # noqa: BLE001
+        return repr(value)
 
-    diffs: list[str] = []
-    bkeys = set(baseline.keys())
-    pkeys = set(perturbed.keys())
 
-    for k in sorted(bkeys - pkeys):
-        diffs.append(f"-{k}")
+def _shorten(s: str, limit: int = 60) -> str:
+    return s if len(s) <= limit else s[: limit - 3] + "..."
+
+
+def _tier0_structural(
+    baseline: dict, perturbed: dict
+) -> list[FieldDivergence]:
+    """Tier 0: structural changes — keys added/removed and type changes.
+
+    These are always meaningful (they can't be model wobble), so they
+    bypass the noise floor and all higher tiers.
+    """
+    out: list[FieldDivergence] = []
+    bkeys, pkeys = set(baseline.keys()), set(perturbed.keys())
+
     for k in sorted(pkeys - bkeys):
-        diffs.append(f"+{k}")
-
-    import json
-
+        out.append(FieldDivergence(
+            name=k, tier=0,
+            baseline_value=None, perturbed_value=perturbed[k],
+            summary=f"+{k} (key added)",
+        ))
+    for k in sorted(bkeys - pkeys):
+        out.append(FieldDivergence(
+            name=k, tier=0,
+            baseline_value=baseline[k], perturbed_value=None,
+            summary=f"-{k} (key removed)",
+        ))
     for k in sorted(bkeys & pkeys):
+        bt, pt = type(baseline[k]).__name__, type(perturbed[k]).__name__
+        # bool vs int — Python treats them as same type for ==, but they're
+        # semantically distinct decisions for a graph.
+        if bt != pt:
+            out.append(FieldDivergence(
+                name=k, tier=0,
+                baseline_value=baseline[k], perturbed_value=perturbed[k],
+                summary=f"{k}: type {bt} -> {pt}",
+            ))
+    return out
+
+
+def _tier1_exact(
+    baseline: dict,
+    perturbed: dict,
+    skip_fields: set[str],
+) -> list[FieldDivergence]:
+    """Tier 1: canonical equality on remaining same-typed fields.
+
+    skip_fields = names already reported by tier 0 (type-change etc.). Fields
+    that survive tier 1 (i.e. still differ) are candidates for tier 2+.
+    """
+    out: list[FieldDivergence] = []
+    for k in sorted(set(baseline.keys()) & set(perturbed.keys())):
+        if k in skip_fields:
+            continue
         bv, pv = baseline[k], perturbed[k]
         if bv == pv:
             continue
-        try:
-            bs, ps = json.dumps(bv, default=str, sort_keys=True), json.dumps(
-                pv, default=str, sort_keys=True
-            )
-        except Exception:
-            bs, ps = repr(bv), repr(pv)
-        # Truncate long values so the summary stays human-readable.
-        bs = bs if len(bs) <= 60 else bs[:57] + "..."
-        ps = ps if len(ps) <= 60 else ps[:57] + "..."
-        diffs.append(f"{k}: {bs} -> {ps}")
+        bs, ps = _canonical(bv), _canonical(pv)
+        if bs == ps:
+            continue
+        out.append(FieldDivergence(
+            name=k, tier=1,
+            baseline_value=bv, perturbed_value=pv,
+            summary=f"{k}: {_shorten(bs)} -> {_shorten(ps)}",
+        ))
+    return out
 
-    if not diffs:
-        return (False, "")
-    return (True, "; ".join(diffs))
+
+def _diff_states(
+    baseline: dict | None, perturbed: dict | None
+) -> tuple[bool, str, list[FieldDivergence]]:
+    """Backwards-compatible exact-mode comparator.
+
+    Returns (diverged, summary_string, divergence_details). The first two
+    fields preserve the legacy shape; the list lets phase-2 callers see
+    per-field detail without re-parsing the summary string.
+
+    For tiered comparison (similarity + judge), callers should use
+    `_diff_states_tiered` directly.
+    """
+    if baseline is None or perturbed is None:
+        return (False, "", [])
+    tier0 = _tier0_structural(baseline, perturbed)
+    seen = {d.name for d in tier0}
+    tier1 = _tier1_exact(baseline, perturbed, skip_fields=seen)
+    details = tier0 + tier1
+    if not details:
+        return (False, "", [])
+    return (True, "; ".join(d.summary for d in details), details)
 
 
 async def _run_one(
@@ -545,7 +687,7 @@ async def drift_test_async(
         post_state = _state_to_dict(world)
 
         final, ptrace, etype, err, took = await _run_one(graph, post_state)
-        diverged, divsum = _diff_states(baseline.final_state, final)
+        diverged, divsum, divdetails = _diff_states(baseline.final_state, final)
 
         # Judge runs even on crashes — partial traces (steps before the crash)
         # are often the most diagnostic. Skipped only when there's literally
@@ -572,6 +714,7 @@ async def drift_test_async(
                 duration_s=took,
                 trace=ptrace,
                 judge_findings=pert_findings,
+                divergence_details=divdetails,
             )
         )
 
