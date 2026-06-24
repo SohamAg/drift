@@ -1,8 +1,8 @@
 """Tests for the LangGraph adapter.
 
 We don't depend on the langgraph package — the adapter contract is
-"anything with .invoke / .ainvoke / __call__", so tests use small stub
-graphs. Coverage:
+"anything with .invoke / .ainvoke / .stream / .astream / __call__", so
+tests use small stub graphs. Coverage:
   - Baseline + perturbations actually run, and per-perturbation results
     track which chaos pattern was applied.
   - Crash detection: an exception inside the graph surfaces as
@@ -14,10 +14,14 @@ graphs. Coverage:
   - Exclusion filter passes through to plan_auto_chaos.
   - Async variant runs from inside an existing event loop.
   - state_factory hook is invoked per perturbation when supplied.
+  - Streaming graphs produce per-super-step traces; invoke-only graphs do not.
+  - Judge plumbing: supplying a judge attaches findings per perturbation;
+    user_guidelines flow through to the judge prompt.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -362,3 +366,229 @@ def test_summary_lines_describe_run():
     lines = result.summary_lines()
     assert any("perturbation" in line for line in lines)
     assert any("crashed" in line for line in lines)
+
+
+# ---- streaming / trace capture -----------------------------------------
+
+
+class _StreamingGraph:
+    """Stub graph that supports `.stream()` (sync) with langgraph-shaped chunks.
+
+    Two-node pipeline: `classify` writes intent, `respond` writes reply.
+    Each yielded chunk mimics langgraph's `stream_mode="updates"` shape:
+    `{node_name: partial_dict}`.
+    """
+
+    def stream(self, state: dict):
+        running = dict(state)
+        # node 1
+        update1 = {"intent": "refund" if "refund" in (state.get("text") or "") else "other"}
+        running.update(update1)
+        yield {"classify": update1}
+        # node 2
+        update2 = {"reply": f"handled {running['intent']}"}
+        yield {"respond": update2}
+
+    # Also expose invoke so the existing crash/diverge tests keep working
+    # if they ever pick this stub up — but the adapter prefers stream when
+    # present.
+    def invoke(self, state: dict) -> dict:
+        out = dict(state)
+        for chunk in self.stream(state):
+            for upd in chunk.values():
+                out.update(upd)
+        return out
+
+
+class _AsyncStreamingGraph:
+    """Stub graph that supports `.astream()` (async)."""
+
+    async def astream(self, state: dict):
+        await asyncio.sleep(0)
+        update1 = {"priority": "high"}
+        yield {"classify": update1}
+        await asyncio.sleep(0)
+        yield {"respond": {"reply": "ok"}}
+
+
+def test_streaming_graph_captures_per_super_step_trace():
+    result = drift_test(
+        graph=_StreamingGraph(),
+        initial_state={"text": "I want a refund", "intent": "", "reply": ""},
+        intensity="off",
+        seed=0,
+    )
+    # Baseline trace has 2 super-steps, one per node.
+    assert len(result.baseline.trace) == 2
+    nodes = [entry["node"] for entry in result.baseline.trace]
+    assert nodes == ["classify", "respond"]
+    # Each trace entry carries the update + accumulated state_after.
+    for entry in result.baseline.trace:
+        assert "update" in entry and isinstance(entry["update"], dict)
+        assert "state_after" in entry and isinstance(entry["state_after"], dict)
+        assert "step" in entry
+
+
+def test_async_streaming_graph_captures_trace():
+    result = drift_test(
+        graph=_AsyncStreamingGraph(),
+        initial_state={"priority": "", "reply": ""},
+        intensity="off",
+        seed=0,
+    )
+    assert len(result.baseline.trace) == 2
+    assert [e["node"] for e in result.baseline.trace] == ["classify", "respond"]
+    # Final state reflects both updates merged in order.
+    assert result.baseline.final_state == {"priority": "high", "reply": "ok"}
+
+
+def test_invoke_only_graph_produces_empty_trace():
+    # _PassthroughGraph has .invoke but no .stream/.astream
+    result = drift_test(
+        graph=_PassthroughGraph(),
+        initial_state={"flag": True},
+        intensity="off",
+        seed=0,
+    )
+    assert result.baseline.trace == []
+
+
+def test_perturbation_traces_independent_of_baseline():
+    result = drift_test(
+        graph=_StreamingGraph(),
+        initial_state={"text": "I want a refund", "intent": "", "reply": ""},
+        intensity="aggressive",
+        seed=3,
+    )
+    assert result.perturbations, "test needs at least one perturbation"
+    # Every non-crashed perturbation should have a 2-step trace
+    # (StreamingGraph always yields 2 chunks unless it raised).
+    for p in result.perturbations:
+        if not p.crashed:
+            assert len(p.trace) == 2, f"{p.event_name} should have 2 trace entries"
+
+
+# ---- judge plumbing ----------------------------------------------------
+
+
+class _CannedJudge:
+    """Judge stub that returns a fixed payload and records every prompt
+    it received so tests can assert what was sent.
+    """
+
+    def __init__(self, payload_obj: dict) -> None:
+        self.payload = json.dumps(payload_obj)
+        self.calls: list[dict] = []
+
+    async def judge(self, *, system: str, user: str) -> str:
+        self.calls.append({"system": system, "user": user})
+        return self.payload
+
+
+def test_judge_findings_attach_to_perturbations():
+    judge = _CannedJudge({
+        "failures": [
+            {
+                "family": "coordination_contradiction",
+                "summary": "test finding",
+                "evidence_action_ids": [],
+                "agents_involved": [],
+            }
+        ]
+    })
+    result = drift_test(
+        graph=_StreamingGraph(),
+        initial_state={"text": "I want a refund", "intent": "", "reply": ""},
+        intensity="moderate",
+        seed=5,
+        judge_llm=judge,
+    )
+    # Judge fires once for baseline + once per perturbation that has a trace.
+    runs_with_trace = 1 + sum(1 for p in result.perturbations if p.trace)
+    assert len(judge.calls) == runs_with_trace
+
+    # Findings attached: baseline + each traced perturbation.
+    assert len(result.baseline.judge_findings) == 1
+    assert result.baseline.judge_findings[0]["failure_type"] == "llm:coordination_contradiction"
+    for p in result.perturbations:
+        if p.trace:
+            assert len(p.judge_findings) == 1
+
+
+def test_judge_skipped_when_graph_has_no_stream():
+    judge = _CannedJudge({"failures": []})
+    result = drift_test(
+        graph=_PassthroughGraph(),     # invoke-only stub, no .stream
+        initial_state={"flag": True, "items": [1, 2]},
+        intensity="moderate",
+        seed=2,
+        judge_llm=judge,
+    )
+    # No trace -> no judge calls anywhere.
+    assert judge.calls == []
+    assert result.baseline.judge_findings == []
+    for p in result.perturbations:
+        assert p.judge_findings == []
+
+
+def test_user_guidelines_reach_the_judge():
+    judge = _CannedJudge({"failures": []})
+    drift_test(
+        graph=_StreamingGraph(),
+        initial_state={"text": "I want a refund", "intent": "", "reply": ""},
+        intensity="off",  # baseline only, single judge call
+        seed=0,
+        judge_llm=judge,
+        user_guidelines=[
+            "classify must not skip the refund branch",
+            "respond must echo the intent",
+        ],
+    )
+    assert len(judge.calls) == 1
+    system = judge.calls[0]["system"]
+    assert "classify must not skip the refund branch" in system
+    assert "respond must echo the intent" in system
+
+
+def test_judge_findings_skipped_for_crashed_step_zero():
+    """A graph that crashes before yielding any super-step has no trace,
+    so the judge has nothing to read and should be silently skipped."""
+
+    class _CrashOnEntry:
+        def stream(self, state: dict):
+            raise RuntimeError("nothing to see here")
+            yield  # make it a generator
+
+    judge = _CannedJudge({"failures": [{"family": "state_drift", "summary": "x"}]})
+    result = drift_test(
+        graph=_CrashOnEntry(),
+        initial_state={"flag": True},
+        intensity="off",
+        seed=0,
+        judge_llm=judge,
+    )
+    assert result.baseline.crashed is True
+    assert result.baseline.trace == []
+    assert result.baseline.judge_findings == []
+    # Judge was never called.
+    assert judge.calls == []
+
+
+def test_n_judge_findings_counts_across_baseline_and_perturbations():
+    judge = _CannedJudge({
+        "failures": [{"family": "grounding_failure", "summary": "y"}]
+    })
+    result = drift_test(
+        graph=_StreamingGraph(),
+        initial_state={"text": "x", "intent": "", "reply": ""},
+        intensity="moderate",
+        seed=7,
+        judge_llm=judge,
+    )
+    expected = len(result.baseline.judge_findings) + sum(
+        len(p.judge_findings) for p in result.perturbations
+    )
+    assert result.n_judge_findings == expected
+    # Summary line should mention judge findings when there are any.
+    if expected > 0:
+        assert any("judge findings" in line for line in result.summary_lines())
