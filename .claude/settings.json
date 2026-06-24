@@ -18,5 +18,9 @@
       "mcp__galileo__search_docs",
       "Edit(/.claude/skills/drift-context/**)"
     ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
   }
 }
