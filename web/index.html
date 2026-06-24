@@ -40,16 +40,11 @@
       <div class="card">
         <h2>Detect coordination failures in real multi-agent runs</h2>
         <p class="help">
-          Four published multi-agent runs from the
-          <a href="https://arxiv.org/abs/2503.13657" target="_blank" rel="noopener">MAST benchmark</a>
-          (Cemri et al., Berkeley, 2025). Each trace was annotated by <strong>three human raters</strong>
-          against the MAST 14-mode failure taxonomy. Click a card to see what drift's LLM judge
-          flags, side-by-side with the human ground truth.
-        </p>
-        <p class="help">
-          The default <em>Cached</em> view replays the analysis drift already ran on these traces
-          (no API spend). <em>Run live</em> re-runs the judge against the trace from scratch — costs
-          a few cents at gpt-4o-mini rates.
+          Four traces from the
+          <a href="https://arxiv.org/abs/2503.13657" target="_blank" rel="noopener">MAST benchmark</a>,
+          each annotated by three human raters across the 14-mode failure taxonomy.
+          <em>Cached</em> replays drift's prior analysis (free); <em>Run live</em> re-runs
+          the judge against the raw trace (a few cents at gpt-4o-mini rates).
         </p>
 
         <div class="field" style="margin-top: 12px;">
@@ -60,9 +55,7 @@
                     rows="3"
                     placeholder="agents must verify before producing a final answer&#10;the planner must respond to questions from worker agents within 3 steps"></textarea>
           <p class="help">
-            Plain-English patterns appended to the judge's prompt. Use these to A/B the same
-            trace with vs without your guidelines — the F1 / TP / FN numbers in the result
-            card show the delta. Cached runs ignore this field; live runs apply it.
+            Plain-English patterns appended to the judge's prompt. Live runs apply them; cached runs ignore them.
           </p>
         </div>
 
