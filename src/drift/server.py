@@ -327,6 +327,15 @@ class AdapterDemoRequest(BaseModel):
     judge_model: str | None = None
     # Plain-English patterns appended to the judge's prompt — pillar 4.
     user_guidelines: list[str] = Field(default_factory=list)
+    # Phase 2 — divergence cost cascade.
+    # "exact" (default): equality on the whole dict, fast/free but noisy on
+    # LLM-driven graphs. "tiered": structural → exact → noise-band similarity
+    # → judge equivalence; only survivors hit the judge, with a hard budget.
+    # "off": skip divergence detection entirely (crash still runs).
+    divergence_mode: str = "exact"
+    baseline_rollouts: int = Field(default=1, ge=1, le=10)
+    max_judge_calls: int = Field(default=10, ge=0, le=100)
+    similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
 
 class ForkRunRequest(BaseModel):
@@ -1087,9 +1096,26 @@ def create_app() -> FastAPI:
                 max_perturbations=req.max_perturbations,
                 judge_llm=judge_llm,
                 user_guidelines=req.user_guidelines or None,
+                divergence_mode=req.divergence_mode,
+                baseline_rollouts=req.baseline_rollouts,
+                max_judge_calls=req.max_judge_calls,
+                similarity_threshold=req.similarity_threshold,
             )
         except (TypeError, ValueError) as e:
             raise HTTPException(400, str(e))
+
+        def _divergence_dict(d: Any) -> dict[str, Any]:
+            return {
+                "name": d.name,
+                "tier": d.tier,
+                "baseline_value": d.baseline_value,
+                "perturbed_value": d.perturbed_value,
+                "summary": d.summary,
+                "similarity_score": d.similarity_score,
+                "within_noise_band": d.within_noise_band,
+                "judge_equivalent": d.judge_equivalent,
+                "judge_reasoning": d.judge_reasoning,
+            }
 
         def _baseline_dict(b: Any) -> dict[str, Any]:
             return {
@@ -1119,7 +1145,24 @@ def create_app() -> FastAPI:
                 "duration_s": round(p.duration_s, 4),
                 "trace": p.trace,
                 "judge_findings": p.judge_findings,
+                "divergence_details": [_divergence_dict(d) for d in p.divergence_details],
             }
+
+        # Render the noise band into a JSON-friendly shape. We dump as dicts
+        # because the FieldNoiseBand dataclass has non-trivial fields.
+        noise_band_dump = {
+            name: {
+                "name": band.name,
+                "sample_count": band.sample_count,
+                "distinct_values": band.distinct_values,
+                "value_frequencies": band.value_frequencies,
+                "text_min_similarity": band.text_min_similarity,
+                "text_mean_similarity": band.text_mean_similarity,
+                "numeric_min": band.numeric_min,
+                "numeric_max": band.numeric_max,
+            }
+            for name, band in result.noise_band.items()
+        }
 
         return {
             "graph_name": "ticket_triage",
@@ -1133,6 +1176,11 @@ def create_app() -> FastAPI:
             "judge": req.judge,
             "judge_model": req.judge_model,
             "n_user_guidelines": len(req.user_guidelines or []),
+            "divergence_mode": result.divergence_mode,
+            "baseline_rollouts": result.baseline_rollouts,
+            "judge_calls_used": result.judge_calls_used,
+            "judge_calls_budget": result.judge_calls_budget,
+            "noise_band": noise_band_dump,
             "patterns_total": result.patterns_total,
             "n_crashed": result.n_crashed,
             "n_diverged": result.n_diverged,
