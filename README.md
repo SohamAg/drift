@@ -1,14 +1,41 @@
 # drift
 
-> Multi-agent stress-test simulator. Puts a small team of AI agents into an
-> evolving environment and surfaces the failures that only show up when
-> multiple agents work together over time — contradictions, escalation loops,
-> hallucinated references, sentiment collapse, silent remediations,
-> coordination races.
+> Pre-deploy testing for the space between agents. Drift auto-generates
+> coordination-breaking scenarios from your state schema, runs them through
+> your compiled agent, and surfaces crashes plus silent divergences — the
+> production failure modes you wouldn't write a test for because you didn't
+> think of them.
 
 ---
 
-## How to run it
+## Use it with your LangGraph app
+
+The fastest path. Drift takes any compiled LangGraph (or anything with
+`.invoke(state) -> dict`), reads the runtime types of your state, generates
+schema-driven perturbations, and reports which ones broke your graph.
+
+```python
+from drift.adapters.langgraph import drift_test
+
+result = drift_test(
+    graph=my_compiled_graph,
+    initial_state={"messages": [...], "open_tickets": {...}, "is_premium": True},
+    intensity="moderate",
+)
+
+for p in result.perturbations:
+    if p.crashed:
+        print(f"CRASH   {p.event_name}: {p.error_type}: {p.error}")
+    elif p.diverged:
+        print(f"DIVERGE {p.event_name}: {p.divergence_summary}")
+```
+
+Worked end-to-end demo at [examples/adapters/langgraph_demo.py](examples/adapters/langgraph_demo.py).
+The same flow is also wired into the web UI under the **Adapter** tab.
+
+---
+
+## How to run the web UI / native simulator
 
 Two ways: a **web UI** (recommended) or the **CLI**. Pick one — they hit the
 same simulator.
