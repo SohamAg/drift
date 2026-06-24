@@ -320,6 +320,13 @@ class AdapterDemoRequest(BaseModel):
     seed: int = 7
     max_perturbations: int = Field(default=25, ge=1, le=100)
     auto_chaos_exclude: list[str] = Field(default_factory=list)
+    # Optional LLM judge that runs over each perturbation's per-super-step trace.
+    # "off" (default) skips it; "mock" uses the placeholder; "openai" uses
+    # OPENAI_API_KEY + judge_model. Adds one LLM call per perturbation when on.
+    judge: str = "off"
+    judge_model: str | None = None
+    # Plain-English patterns appended to the judge's prompt — pillar 4.
+    user_guidelines: list[str] = Field(default_factory=list)
 
 
 class ForkRunRequest(BaseModel):
@@ -996,6 +1003,7 @@ def create_app() -> FastAPI:
         examples/adapters/langgraph_demo.py.
         """
         from drift.adapters.langgraph import drift_test_async
+        from drift.failures.judge import build_judge
 
         def _classify(state: dict) -> dict:
             text = (state.get("text") or "").lower()
@@ -1024,18 +1032,31 @@ def create_app() -> FastAPI:
             }
 
         class _DemoGraph:
-            """Hand-rolled equivalent of the langgraph demo graph — same
-            interface (.invoke(state) -> dict). Keeps the server free of
-            a hard langgraph dependency."""
+            """Hand-rolled equivalent of the langgraph demo graph. Exposes
+            both .stream() (per-node chunks, so the adapter can capture
+            traces for the LLM judge) and .invoke() (for back-compat).
+            Keeps the server free of a hard langgraph dependency."""
+
+            def stream(self, state: dict):
+                merged = dict(state)
+                u1 = _classify(merged)
+                merged.update(u1)
+                yield {"classify": u1}
+                if merged.get("priority") == "high" or merged.get("is_premium"):
+                    u2 = _escalate(merged)
+                    merged.update(u2)
+                    yield {"escalate": u2}
+                else:
+                    u2 = _respond(merged)
+                    merged.update(u2)
+                    yield {"respond": u2}
 
             def invoke(self, state: dict) -> dict:
-                merged = dict(state)
-                merged.update(_classify(merged))
-                if merged.get("priority") == "high" or merged.get("is_premium"):
-                    merged.update(_escalate(merged))
-                else:
-                    merged.update(_respond(merged))
-                return merged
+                out = dict(state)
+                for chunk in self.stream(state):
+                    for upd in chunk.values():
+                        out.update(upd)
+                return out
 
         initial_state = {
             "ticket_id": "TKT-42",
@@ -1049,6 +1070,13 @@ def create_app() -> FastAPI:
             "priority": "",
         }
 
+        # Build the judge if the caller asked for one. Surface bad config as
+        # 400 so the UI can show it; runtime crashes mid-judge bubble up as 500.
+        try:
+            judge_llm = build_judge(req.judge, model=req.judge_model)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
         try:
             result = await drift_test_async(
                 graph=_DemoGraph(),
@@ -1057,6 +1085,8 @@ def create_app() -> FastAPI:
                 seed=req.seed,
                 auto_chaos_exclude=req.auto_chaos_exclude or None,
                 max_perturbations=req.max_perturbations,
+                judge_llm=judge_llm,
+                user_guidelines=req.user_guidelines or None,
             )
         except (TypeError, ValueError) as e:
             raise HTTPException(400, str(e))
@@ -1069,6 +1099,8 @@ def create_app() -> FastAPI:
                 "error": b.error,
                 "error_type": b.error_type,
                 "duration_s": round(b.duration_s, 4),
+                "trace": b.trace,
+                "judge_findings": b.judge_findings,
             }
 
         def _pert_dict(p: Any) -> dict[str, Any]:
@@ -1085,6 +1117,8 @@ def create_app() -> FastAPI:
                 "diverged": p.diverged,
                 "divergence_summary": p.divergence_summary,
                 "duration_s": round(p.duration_s, 4),
+                "trace": p.trace,
+                "judge_findings": p.judge_findings,
             }
 
         return {
@@ -1096,10 +1130,14 @@ def create_app() -> FastAPI:
             ),
             "intensity": result.intensity,
             "seed": req.seed,
+            "judge": req.judge,
+            "judge_model": req.judge_model,
+            "n_user_guidelines": len(req.user_guidelines or []),
             "patterns_total": result.patterns_total,
             "n_crashed": result.n_crashed,
             "n_diverged": result.n_diverged,
             "n_unchanged": result.n_unchanged,
+            "n_judge_findings": result.n_judge_findings,
             "summary_lines": result.summary_lines(),
             "baseline": _baseline_dict(result.baseline),
             "perturbations": [_pert_dict(p) for p in result.perturbations],

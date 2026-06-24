@@ -1590,18 +1590,23 @@
     const auto_chaos_exclude = excludeRaw
       ? excludeRaw.split(',').map(s => s.trim()).filter(Boolean)
       : [];
+    const judge = $('#adapter-judge').value;
+    const judge_model = ($('#adapter-judge-model').value || '').trim() || null;
+    const user_guidelines = ($('#adapter-user-guidelines').value || '')
+      .split('\n').map(s => s.trim()).filter(Boolean);
 
     btn.disabled = true;
-    status.textContent = 'running…';
+    status.textContent = judge !== 'off' ? 'running (judge on)…' : 'running…';
     try {
       const data = await api('/api/adapter-demo', {
         method: 'POST',
-        body: { intensity, seed, auto_chaos_exclude },
+        body: { intensity, seed, auto_chaos_exclude, judge, judge_model, user_guidelines },
       });
       renderAdapterResult(data);
       $('#adapter-result').classList.remove('hidden');
       $('#adapter-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
-      status.textContent = `done — ${data.perturbations.length} perturbations`;
+      const judgeNote = data.n_judge_findings ? ` · ${data.n_judge_findings} judge finding(s)` : '';
+      status.textContent = `done — ${data.perturbations.length} perturbations${judgeNote}`;
     } catch (e) {
       toast('Adapter run failed: ' + e.message, 'error');
       status.textContent = '';
@@ -1624,6 +1629,13 @@
       ['Diverged',       data.n_diverged],
       ['Unchanged',      data.n_unchanged],
     ];
+    if (data.judge && data.judge !== 'off') {
+      kvs.push(['Judge', data.judge + (data.judge_model ? ` (${data.judge_model})` : '')]);
+      kvs.push(['Judge findings', data.n_judge_findings || 0]);
+    }
+    if (data.n_user_guidelines) {
+      kvs.push(['User guidelines', data.n_user_guidelines]);
+    }
     kvs.forEach(([k, v]) => {
       summary.appendChild(el('span', { class: 'k', text: k }));
       summary.appendChild(el('span', { class: 'v', text: v == null || v === '' ? '—' : String(v) }));
@@ -1648,6 +1660,14 @@
     } else {
       const fs = b.final_state || {};
       base.appendChild(el('pre', { class: 'mono', text: JSON.stringify(fs, null, 2) }));
+    }
+    // Judge findings on baseline (if any) — useful for "is this a real
+    // coordination failure or a quirk of the baseline trace itself?"
+    if ((b.judge_findings || []).length) {
+      const jHost = el('div', { style: 'margin-top: 10px;' });
+      jHost.appendChild(el('div', { class: 'muted', text: 'Judge findings on baseline:' }));
+      b.judge_findings.forEach(f => jHost.appendChild(renderJudgeFinding(f)));
+      base.appendChild(jHost);
     }
 
     // --- perturbations ---
@@ -1692,7 +1712,22 @@
     ]);
     const sum = el('div', { class: 'muted', style: 'margin-bottom: 6px;', text: p.event_summary });
     const det = el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word;', text: detail });
-    return el('div', { class: 'failure-cell', style: 'padding: 10px 12px;' }, [head, sum, det]);
+
+    const children = [head, sum, det];
+    (p.judge_findings || []).forEach(f => {
+      children.push(renderJudgeFinding(f));
+    });
+    return el('div', { class: 'failure-cell', style: 'padding: 10px 12px;' }, children);
+  }
+
+  function renderJudgeFinding(f) {
+    return el('div', { style: 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid var(--info); background: var(--bg-elev-2); border-radius: 3px;' }, [
+      el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 2px;' }, [
+        el('span', { class: 'pill info', text: 'JUDGE' }),
+        el('code', { class: 'muted', text: f.failure_type }),
+      ]),
+      el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word;', text: f.summary || '' }),
+    ]);
   }
 
   // ---------- utils -------------------------------------------------------
