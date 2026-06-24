@@ -88,21 +88,17 @@
       <div class="card">
         <h2>LangGraph adapter — schema-driven chaos against any compiled graph</h2>
         <p class="help">
-          Drift's adapter takes a compiled LangGraph (or anything with
-          <code>.invoke(state)</code>) and runs schema-driven perturbations
-          against the initial state — flipping booleans, removing dict keys,
-          duplicating list entries, corrupting strings. Each perturbation is
-          a full graph invocation. Results bucket into <strong>crashed</strong>
-          (your graph threw), <strong>diverged</strong> (output silently
-          changed), or <strong>unchanged</strong> (graph absorbed it).
+          Drift takes a compiled LangGraph (or anything with <code>.invoke(state)</code>),
+          reads the runtime types of your state, generates type-appropriate perturbations
+          (flip bool, remove dict key, reverse list, corrupt string, etc.), and invokes
+          your graph once per perturbation. Results bucket into <strong>crashed</strong>,
+          <strong>diverged</strong> from baseline, or <strong>unchanged</strong>.
         </p>
         <p class="help">
-          The bundled demo graph is a 3-node ticket triage
-          (<code>classify → escalate | respond</code>). Both terminal nodes
-          look up <code>open_tickets[ticket_id]</code> without a defensive
-          check — exactly the kind of subtle production bug a developer
-          wouldn't write a test for. Chaos that empties or rekeys the dict
-          should reliably crash it.
+          Demo graph below is a 3-node ticket triage that looks up
+          <code>open_tickets[ticket_id]</code> in both terminal nodes without a defensive
+          check — exactly the kind of bug a developer wouldn't write a test for. Chaos
+          that empties or rekeys the dict reliably crashes it.
         </p>
 
         <form id="adapter-form">
@@ -149,7 +145,7 @@
 
         <div class="card">
           <h3>Baseline run</h3>
-          <p class="help">Graph output with no perturbations applied. This is the anchor for divergence detection.</p>
+          <p class="help">Graph output with no perturbations — the anchor for divergence detection.</p>
           <div id="adapter-baseline"></div>
         </div>
 
