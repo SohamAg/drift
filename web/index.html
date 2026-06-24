@@ -28,7 +28,6 @@
     <button class="tab"        data-tab="new"     role="tab">New Run</button>
     <button class="tab"        data-tab="runs"    role="tab">Runs <span id="runs-count" class="badge"></span></button>
     <button class="tab"        data-tab="compare" role="tab">Compare</button>
-    <button class="tab"        data-tab="analyze" role="tab">Analyze</button>
     <button class="tab"        data-tab="custom"  role="tab">Custom</button>
     <button class="tab"        data-tab="about"   role="tab">About</button>
   </nav>
@@ -349,55 +348,6 @@
       </div>
     </section>
 
-    <!-- ===================== ANALYZE ===================== -->
-    <section id="tab-analyze" class="tab-panel">
-      <div class="card">
-        <h2>Analyze an external trace</h2>
-        <p class="help">
-          Paste an action log from <em>any</em> multi-agent system in drift's JSONL trace format
-          and we'll run the topology's detectors over it. No simulation runs —
-          drift just reads the trace and reports which named coordination failures fired.
-        </p>
-
-        <div class="row two-col">
-          <div class="field">
-            <label for="analyze-topology">Topology</label>
-            <select id="analyze-topology" name="analyze-topology"></select>
-            <p class="help" id="analyze-topology-help"></p>
-          </div>
-          <div class="field">
-            <label>&nbsp;</label>
-            <div class="actions">
-              <button type="button" id="analyze-load-sample" class="ghost-btn">Load sample trace</button>
-              <button type="button" id="analyze-clear" class="ghost-btn">Clear</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="analyze-trace">Trace JSONL <span class="muted">(one record per line, each with a <code>type</code> field of snapshot / action / event)</span></label>
-          <textarea id="analyze-trace" class="mono trace-input"
-                    placeholder='{"type": "snapshot", "timestep": 1, "customer_sentiment": 0.7, ...}&#10;{"type": "action",   "timestep": 1, "agent_name": "reviewer-1", "kind": "approve_review", ...}'
-                    spellcheck="false"></textarea>
-        </div>
-
-        <div class="actions">
-          <button type="button" id="analyze-submit" class="primary">Run detectors</button>
-        </div>
-      </div>
-
-      <div id="analyze-result" class="hidden">
-        <div class="card">
-          <h3>Trace summary</h3>
-          <div id="analyze-summary" class="kv-grid"></div>
-        </div>
-        <div class="card">
-          <h3>Detected failures</h3>
-          <div id="analyze-failure-summary"></div>
-          <div class="failure-list" id="analyze-failure-list"></div>
-        </div>
-      </div>
-    </section>
 
     <!-- ===================== CUSTOM (BYOA) ===================== -->
     <section id="tab-custom" class="tab-panel">

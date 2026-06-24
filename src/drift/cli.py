@@ -342,58 +342,6 @@ def cmd_fork(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_analyze(args: argparse.Namespace) -> int:
-    """Run drift's failure detectors against a trace produced by *any* source.
-
-    The trace can be a directory containing snapshots.jsonl/actions.jsonl
-    (drift's native log format) or a single mixed-type .jsonl. See
-    TRACE_SCHEMA.md for the field-level contract.
-    """
-    from drift.analyze import analyze_trace
-    try:
-        failures, summary = analyze_trace(args.trace, topology_name=args.topology)
-    except (FileNotFoundError, ValueError, KeyError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 2
-
-    print()
-    print("=" * 72)
-    print(" DRIFT — Trace Analysis")
-    print("=" * 72)
-    print(f"  Trace      : {args.trace}")
-    print(f"  Topology   : {summary['topology']}")
-    print(f"  Steps      : {summary['first_step']} .. {summary['last_step']}  "
-          f"(snapshots={summary['n_snapshots']}, actions={summary['n_actions']}, "
-          f"events={summary['n_events']})")
-    print()
-
-    print("--- Detected failures ---")
-    if not failures:
-        print("  (no failures detected)")
-    else:
-        by_type: dict[str, list] = defaultdict(list)
-        for f in failures:
-            by_type[f.failure_type].append(f)
-        for ftype, items in sorted(by_type.items()):
-            print(f"  [{ftype}]  count={len(items)}")
-            for f in items[:5]:
-                agents = ",".join(f.agents_involved) or "-"
-                print(f"    t={f.timestep:3d}  agents={agents}  {f.summary}")
-            if len(items) > 5:
-                print(f"    ... +{len(items) - 5} more")
-    print()
-
-    if args.out:
-        out_path = Path(args.out)
-        with out_path.open("w", encoding="utf-8") as fh:
-            for f in failures:
-                fh.write(f.model_dump_json() + "\n")
-        print(f"wrote {len(failures)} failure records to {out_path}")
-        print()
-
-    return 0
-
-
 def cmd_serve(args: argparse.Namespace) -> int:
     try:
         from drift.server import serve
@@ -423,13 +371,6 @@ def main(argv: list[str] | None = None) -> int:
     srv_p.add_argument("--port", type=int, default=8765)
     srv_p.add_argument("--reload", action="store_true", help="auto-reload on code changes (dev)")
 
-    ana_p = sub.add_parser("analyze", help="run drift's detectors against an external trace (no simulation)")
-    ana_p.add_argument("trace", help="path to a run directory OR a single mixed .jsonl trace file")
-    ana_p.add_argument("--topology", default="support",
-                       help=f"which topology's detectors to apply (one of {list_topologies()}; default: support)")
-    ana_p.add_argument("--out", default=None,
-                       help="optional path to write detected failures as JSONL")
-
     fork_p = sub.add_parser("fork", help="counterfactual replay: re-run a parent run from a chosen step with overrides")
     fork_p.add_argument("--parent", required=True, help="parent run_id to fork from")
     fork_p.add_argument("--at", type=int, required=True, help="branch at this timestep (0 = from start)")
@@ -450,8 +391,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_serve(args)
     if args.cmd == "fork":
         return cmd_fork(args)
-    if args.cmd == "analyze":
-        return cmd_analyze(args)
     return cmd_run(args)
 
 
