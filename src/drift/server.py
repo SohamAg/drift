@@ -1187,32 +1187,6 @@ def create_app() -> FastAPI:
             })
         return {"traces": out, "judge_model_default": "gpt-4o-mini"}
 
-    @app.get("/api/mast-demos/{trace_id}/trace")
-    def mast_demo_trace_text(trace_id: int) -> dict[str, Any]:
-        """Return the raw MAST trace text so the demo UI can render it
-        alongside drift's analysis. Truncated to keep the response small."""
-        if not MAST_DATASET.exists():
-            raise HTTPException(404, "MAST dataset not bundled")
-        mast = json.loads(MAST_DATASET.read_text(encoding="utf-8"))
-        rec = next((r for r in mast if r["trace_id"] == trace_id), None)
-        if not rec:
-            raise HTTPException(404, f"trace_id {trace_id} not found in MAST")
-        # Cap the returned text at 50k chars so we don't blow the UI; users
-        # can see it's truncated and inspect the raw file if they want more.
-        text = rec["trace"]
-        truncated = len(text) > 50_000
-        if truncated:
-            text = text[:50_000]
-        return {
-            "trace_id": trace_id,
-            "mas_name": rec.get("mas_name"),
-            "benchmark_name": rec.get("benchmark_name"),
-            "n_chars_total": len(rec["trace"]),
-            "n_chars_returned": len(text),
-            "truncated": truncated,
-            "trace": text,
-        }
-
     @app.post("/api/mast-analyze")
     async def mast_analyze(req: MastAnalyzeRequest) -> dict[str, Any]:
         """Run (or replay cached) drift's judge against one curated MAST trace.
