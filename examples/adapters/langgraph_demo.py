@@ -152,6 +152,18 @@ def main() -> None:
     parser.add_argument("--guideline", action="append", default=[],
                         help="plain-English pattern to additionally watch for "
                              "(repeatable). Only effective with --judge.")
+    parser.add_argument("--divergence-mode", default="exact",
+                        choices=["exact", "tiered", "off"],
+                        help="exact (default): whole-dict equality. "
+                             "tiered: structural→exact→noise→judge cost cascade. "
+                             "off: skip divergence detection.")
+    parser.add_argument("--baseline-rollouts", type=int, default=1,
+                        help="N baseline runs for noise floor (tiered mode). "
+                             "Default 1 = no noise floor.")
+    parser.add_argument("--max-judge-calls", type=int, default=10,
+                        help="hard ceiling on tier-3 judge calls (tiered mode).")
+    parser.add_argument("--similarity-threshold", type=float, default=0.85,
+                        help="tier-2 lexical similarity floor (0..1).")
     args = parser.parse_args()
 
     graph = _build_graph()
@@ -176,10 +188,15 @@ def main() -> None:
         judge_llm = build_judge(args.judge, model=args.judge_model)
 
     backend = "langgraph (real)" if using_langgraph else "hand-rolled fallback (langgraph not installed)"
-    print(f"graph backend : {backend}")
-    print(f"intensity     : {args.intensity}  seed: {args.seed}")
-    print(f"judge         : {args.judge}" + (f"  ({len(args.guideline)} guideline(s))" if args.guideline else ""))
-    print(f"initial state : {initial_state}")
+    print(f"graph backend  : {backend}")
+    print(f"intensity      : {args.intensity}  seed: {args.seed}")
+    print(f"judge          : {args.judge}" + (f"  ({len(args.guideline)} guideline(s))" if args.guideline else ""))
+    print(f"divergence mode: {args.divergence_mode}", end="")
+    if args.divergence_mode == "tiered":
+        print(f"  (rollouts={args.baseline_rollouts}, max_judge={args.max_judge_calls}, sim>={args.similarity_threshold})")
+    else:
+        print()
+    print(f"initial state  : {initial_state}")
     print()
 
     result = drift_test(
@@ -189,6 +206,10 @@ def main() -> None:
         seed=args.seed,
         judge_llm=judge_llm,
         user_guidelines=args.guideline or None,
+        divergence_mode=args.divergence_mode,
+        baseline_rollouts=args.baseline_rollouts,
+        max_judge_calls=args.max_judge_calls,
+        similarity_threshold=args.similarity_threshold,
     )
 
     for line in result.summary_lines():

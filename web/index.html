@@ -148,6 +148,50 @@
             </div>
           </div>
 
+          <div class="row two-col">
+            <div class="field">
+              <label for="adapter-divergence-mode">Divergence mode</label>
+              <select id="adapter-divergence-mode">
+                <option value="exact" selected>exact — whole-dict equality (fast, free, noisy on LLM graphs)</option>
+                <option value="tiered">tiered — cost cascade (structural → exact → noise → judge)</option>
+                <option value="off">off — skip divergence detection entirely</option>
+              </select>
+              <p class="help">
+                <strong>tiered</strong> measures baseline natural variance first, then
+                filters perturbations against that noise floor. Only divergences that
+                exceed the noise band reach the LLM judge (capped by budget below).
+              </p>
+            </div>
+            <div class="field">
+              <label for="adapter-baseline-rollouts">Baseline rollouts <span class="muted">(noise floor sample size)</span></label>
+              <input type="number" id="adapter-baseline-rollouts" value="1" min="1" max="10" />
+              <p class="help">
+                For <code>tiered</code> mode: how many baseline runs to measure natural
+                variance. Each adds one graph invocation. Default 1 = no noise floor;
+                3–5 is a good range for LLM-driven graphs.
+              </p>
+            </div>
+          </div>
+
+          <div class="row two-col">
+            <div class="field">
+              <label for="adapter-max-judge-calls">Max judge calls <span class="muted">(divergence equivalence budget)</span></label>
+              <input type="number" id="adapter-max-judge-calls" value="10" min="0" max="100" />
+              <p class="help">
+                Hard ceiling on tier-3 judge calls across the whole run. Only survivors of
+                tier 0-2 ever hit the judge. <code>0</code> disables tier 3 entirely.
+              </p>
+            </div>
+            <div class="field">
+              <label for="adapter-similarity-threshold">Similarity threshold <span class="muted">(tier 2)</span></label>
+              <input type="number" id="adapter-similarity-threshold" value="0.85" min="0" max="1" step="0.05" />
+              <p class="help">
+                Text-similarity floor (0–1) for tier 2. Effective threshold is
+                <code>max(this, baseline-vs-baseline floor)</code>.
+              </p>
+            </div>
+          </div>
+
           <div class="field">
             <label for="adapter-user-guidelines">User guidelines <span class="muted">(optional, one per line)</span></label>
             <textarea id="adapter-user-guidelines" class="mono" rows="3"
@@ -185,6 +229,11 @@
             <span class="pill warning">DIVERGE</span> graph output differs from baseline.
             <span class="pill success">UNCHANGED</span> graph absorbed the perturbation; no observable effect.
             <span class="pill info">JUDGE</span> LLM-judge finding from drift's 6-family taxonomy (only when judge is on).
+          </p>
+          <p class="help">
+            Tiered mode tags each per-field divergence with the tier that surfaced it:
+            <code>t0</code> structural, <code>t1</code> exact, <code>t2</code> similarity (outside noise band),
+            <code>t3</code> judge (LLM-confirmed not equivalent).
           </p>
           <div id="adapter-perturbations" class="failure-list"></div>
         </div>

@@ -1594,19 +1594,31 @@
     const judge_model = ($('#adapter-judge-model').value || '').trim() || null;
     const user_guidelines = ($('#adapter-user-guidelines').value || '')
       .split('\n').map(s => s.trim()).filter(Boolean);
+    const divergence_mode = $('#adapter-divergence-mode').value;
+    const baseline_rollouts = parseInt($('#adapter-baseline-rollouts').value, 10) || 1;
+    const max_judge_calls = parseInt($('#adapter-max-judge-calls').value, 10);
+    const similarity_threshold = parseFloat($('#adapter-similarity-threshold').value);
 
     btn.disabled = true;
-    status.textContent = judge !== 'off' ? 'running (judge on)…' : 'running…';
+    const judgeOn = judge !== 'off' || divergence_mode === 'tiered';
+    status.textContent = judgeOn ? 'running (judge on)…' : 'running…';
     try {
       const data = await api('/api/adapter-demo', {
         method: 'POST',
-        body: { intensity, seed, auto_chaos_exclude, judge, judge_model, user_guidelines },
+        body: {
+          intensity, seed, auto_chaos_exclude, judge, judge_model, user_guidelines,
+          divergence_mode, baseline_rollouts,
+          max_judge_calls: Number.isFinite(max_judge_calls) ? max_judge_calls : 10,
+          similarity_threshold: Number.isFinite(similarity_threshold) ? similarity_threshold : 0.85,
+        },
       });
       renderAdapterResult(data);
       $('#adapter-result').classList.remove('hidden');
       $('#adapter-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
-      const judgeNote = data.n_judge_findings ? ` · ${data.n_judge_findings} judge finding(s)` : '';
-      status.textContent = `done — ${data.perturbations.length} perturbations${judgeNote}`;
+      const parts = [`${data.perturbations.length} perturbations`];
+      if (data.n_judge_findings) parts.push(`${data.n_judge_findings} judge finding(s)`);
+      if (data.judge_calls_used) parts.push(`${data.judge_calls_used}/${data.judge_calls_budget} tier-3 calls`);
+      status.textContent = `done — ${parts.join(' · ')}`;
     } catch (e) {
       toast('Adapter run failed: ' + e.message, 'error');
       status.textContent = '';
@@ -1635,6 +1647,13 @@
     }
     if (data.n_user_guidelines) {
       kvs.push(['User guidelines', data.n_user_guidelines]);
+    }
+    if (data.divergence_mode && data.divergence_mode !== 'exact') {
+      kvs.push(['Divergence mode', data.divergence_mode]);
+      if (data.baseline_rollouts > 1) {
+        kvs.push(['Baseline rollouts', data.baseline_rollouts]);
+      }
+      kvs.push(['Tier-3 judge calls', `${data.judge_calls_used} / ${data.judge_calls_budget}`]);
     }
     kvs.forEach(([k, v]) => {
       summary.appendChild(el('span', { class: 'k', text: k }));
@@ -1714,10 +1733,34 @@
     const det = el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word;', text: detail });
 
     const children = [head, sum, det];
+    // Per-field divergence detail (tiered mode populates this with tier tags).
+    (p.divergence_details || []).forEach(d => {
+      children.push(renderFieldDivergence(d));
+    });
     (p.judge_findings || []).forEach(f => {
       children.push(renderJudgeFinding(f));
     });
     return el('div', { class: 'failure-cell', style: 'padding: 10px 12px;' }, children);
+  }
+
+  function renderFieldDivergence(d) {
+    const tierLabel = `t${d.tier}`;
+    const tierClass = d.tier === 0 ? 'pill danger'
+                    : d.tier === 1 ? 'pill warning'
+                    : d.tier === 2 ? 'pill warning'
+                    : 'pill info';
+    const meta = [];
+    if (d.similarity_score != null) meta.push(`sim=${d.similarity_score.toFixed(2)}`);
+    if (d.within_noise_band != null) meta.push(`noise=${d.within_noise_band ? 'within' : 'outside'}`);
+    if (d.judge_equivalent != null) meta.push(`judge=${d.judge_equivalent ? 'equivalent' : 'different'}`);
+    return el('div', { style: 'margin-top: 4px; padding: 4px 8px; border-left: 2px solid var(--fg-muted); background: var(--bg-elev-1); border-radius: 3px;' }, [
+      el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 2px;' }, [
+        el('span', { class: tierClass, text: tierLabel }),
+        el('code', { text: d.name }),
+        meta.length ? el('span', { class: 'muted', text: meta.join(' · ') }) : null,
+      ]),
+      el('div', { class: 'mono muted', style: 'white-space: pre-wrap; word-break: break-word; font-size: 0.85em;', text: d.summary }),
+    ]);
   }
 
   function renderJudgeFinding(f) {
