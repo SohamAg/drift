@@ -25,8 +25,7 @@ Result reporting: after a run, `RunResult.auto_chaos_injected` lists every
 auto-generated EventRecord that fired. Mapping those back to failures lets
 the user see which auto-injected chaos pattern surfaced which failure.
 
-See `examples/byoa_auto_chaos.py` for a worked example, and NEXT_STEPS.md
-item 1 for the design rationale.
+See `examples/adapters/langgraph_demo.py` for a worked end-to-end example.
 """
 from drift.chaos.engine import (
     INTENSITY_FREQUENCY,
