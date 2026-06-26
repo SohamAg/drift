@@ -911,3 +911,94 @@ def test_divergence_mode_tiered_judge_budget_is_tracked():
     # Cost telemetry surfaces.
     assert result.judge_calls_budget == 3
     assert result.judge_calls_used <= 3
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: coordination-detector library integration
+# ---------------------------------------------------------------------------
+
+
+class _VerifierLoopGraph:
+    """Streams 8 super-steps of planner+verifier alternation; verifier always
+    emits verdict='approve'. With all state keys pre-seeded, no progress
+    occurs across the loop — fires both verifier_always_approves AND
+    infinite_handoff from the library."""
+
+    def stream(self, state: dict):
+        for _ in range(4):
+            u = {"rationale": "(thinking)"}
+            yield {"planner": u}
+            u = {"verdict": "approve"}
+            yield {"verifier": u}
+
+
+def test_coordination_library_fires_through_adapter():
+    result = drift_test(
+        graph=_VerifierLoopGraph(),
+        initial_state={
+            "task": "review feature x",
+            "rationale": "(thinking)",
+            "verdict": "approve",
+        },
+        intensity="off",        # baseline-only path
+        seed=1,
+    )
+    types_baseline = {f["failure_type"] for f in result.baseline.coordination_findings}
+    assert "verifier_always_approves" in types_baseline
+    assert "infinite_handoff" in types_baseline
+    # Aggregate counter tracks them.
+    assert result.n_coordination_findings >= 2
+
+
+def test_coordination_library_can_be_disabled():
+    result = drift_test(
+        graph=_VerifierLoopGraph(),
+        initial_state={
+            "task": "x",
+            "rationale": "(thinking)",
+            "verdict": "approve",
+        },
+        intensity="off",
+        seed=1,
+        run_coordination_detectors=False,
+    )
+    assert result.baseline.coordination_findings == []
+    assert result.n_coordination_findings == 0
+
+
+def test_coordination_library_empty_when_no_trace():
+    """Plain .invoke()-only graph: no trace, library has nothing to scan."""
+
+    class _NoStream:
+        def invoke(self, state: dict) -> dict:
+            return dict(state)
+
+    result = drift_test(
+        graph=_NoStream(),
+        initial_state={"x": 1, "y": "hi"},
+        intensity="off",
+        seed=1,
+    )
+    # No trace means detector library is silent — not an error.
+    assert result.baseline.coordination_findings == []
+
+
+def test_coordination_library_explicit_roles_passthrough():
+    """User-declared roles let detectors fire on agents whose names don't
+    match the default verifier regex."""
+
+    class _GenericGraph:
+        def stream(self, state: dict):
+            for _ in range(4):
+                yield {"agent_x": {"rationale": "..."}}
+                yield {"agent_y": {"verdict": "approve"}}
+
+    result = drift_test(
+        graph=_GenericGraph(),
+        initial_state={"task": "x", "rationale": "...", "verdict": "approve"},
+        intensity="off",
+        seed=1,
+        coordination_roles={"agent_y": "verifier"},
+    )
+    types = {f["failure_type"] for f in result.baseline.coordination_findings}
+    assert "verifier_always_approves" in types
