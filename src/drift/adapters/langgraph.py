@@ -63,6 +63,7 @@ from drift.chaos.engine import _normalize_intensity, plan_auto_chaos
 from drift.chaos.fuzzer import discover_field_patterns
 from drift.failures.base import DetectorContext
 from drift.failures.judge import JudgeLLM, LLMJudgeDetector
+from drift.failures.library import run_all_on_trace as _run_library_on_trace
 from drift.world import World, WorldHistory, WorldState
 
 # How many perturbations we'll run by default before clamping. Each
@@ -192,6 +193,10 @@ class PerturbationResult:
     # entry is a tier-0/1 diff. With divergence_mode="tiered", entries also
     # include tier-2 (similarity) and tier-3 (judge) outcomes.
     divergence_details: list[FieldDivergence] = field(default_factory=list)
+    # Phase 3: deterministic coordination-failure detector findings.
+    # Populated whenever the perturbation produced a trace; empty otherwise.
+    # Each entry is a FailureRecord.model_dump(mode="json") dict.
+    coordination_findings: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -206,6 +211,7 @@ class BaselineResult:
     duration_s: float = 0.0
     trace: list[dict] = field(default_factory=list)
     judge_findings: list[dict] = field(default_factory=list)
+    coordination_findings: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -254,6 +260,13 @@ class AdapterResult:
             len(p.judge_findings) for p in self.perturbations
         )
 
+    @property
+    def n_coordination_findings(self) -> int:
+        """Total library-detector findings across baseline + all perturbations."""
+        return len(self.baseline.coordination_findings) + sum(
+            len(p.coordination_findings) for p in self.perturbations
+        )
+
     def summary_lines(self) -> list[str]:
         """Human-readable one-line-per-bucket summary. Used by the example
         and any caller who wants a quick stdout report."""
@@ -266,6 +279,8 @@ class AdapterResult:
         ]
         if self.n_judge_findings:
             out.append(f"  judge findings  : {self.n_judge_findings}")
+        if self.n_coordination_findings:
+            out.append(f"  coordination    : {self.n_coordination_findings}")
         if self.baseline.crashed:
             out.append(
                 f"  ! baseline itself crashed: {self.baseline.error_type}: {self.baseline.error}"
@@ -875,6 +890,31 @@ async def _run_judge_on_trace(
     return [f.model_dump(mode="json") for f in findings]
 
 
+def _run_coordination_library(
+    trace: list[dict],
+    initial_state: dict | None,
+    baseline_state: dict | None,
+    *,
+    enabled: bool = True,
+    roles_by_agent: dict[str, str] | None = None,
+) -> list[dict]:
+    """Run the curated coordination-failure detector library over one trace.
+
+    Free + deterministic — no LLM cost. Returns FailureRecord dicts. Empty
+    when disabled, when the trace is empty (graph doesn't stream or crashed
+    at step 0), or when no detector matched.
+    """
+    if not enabled or not trace:
+        return []
+    findings = _run_library_on_trace(
+        trace,
+        initial_state=initial_state,
+        baseline_state=baseline_state,
+        roles_by_agent=roles_by_agent,
+    )
+    return [f.model_dump(mode="json") for f in findings]
+
+
 async def drift_test_async(
     *,
     graph: Any,
@@ -890,6 +930,8 @@ async def drift_test_async(
     baseline_rollouts: int = DEFAULT_BASELINE_ROLLOUTS,
     max_judge_calls: int = DEFAULT_MAX_JUDGE_CALLS,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    run_coordination_detectors: bool = True,
+    coordination_roles: dict[str, str] | None = None,
 ) -> AdapterResult:
     """Async variant of drift_test. Use from inside an existing event loop.
 
@@ -965,6 +1007,11 @@ async def drift_test_async(
         baseline_findings = await _run_judge_on_trace(
             judge_llm, guidelines, btrace, state_cls,
         )
+    baseline_coord = _run_coordination_library(
+        btrace, initial_state, bfinal,
+        enabled=run_coordination_detectors,
+        roles_by_agent=coordination_roles,
+    )
     baseline = BaselineResult(
         initial_state=baseline_input,
         final_state=bfinal,
@@ -974,6 +1021,7 @@ async def drift_test_async(
         duration_s=btime,
         trace=btrace,
         judge_findings=baseline_findings,
+        coordination_findings=baseline_coord,
     )
 
     judge_calls_used = 0
@@ -1013,6 +1061,14 @@ async def drift_test_async(
                 judge_llm, guidelines, ptrace, state_cls,
             )
 
+        # Coordination-failure detector library — deterministic, free, always
+        # runs when a trace exists (unless the user opts out).
+        pert_coord = _run_coordination_library(
+            ptrace, post_state, baseline.final_state,
+            enabled=run_coordination_detectors,
+            roles_by_agent=coordination_roles,
+        )
+
         perturbations.append(
             PerturbationResult(
                 event_name=event.name,
@@ -1030,6 +1086,7 @@ async def drift_test_async(
                 trace=ptrace,
                 judge_findings=pert_findings,
                 divergence_details=divdetails,
+                coordination_findings=pert_coord,
             )
         )
 
@@ -1061,6 +1118,8 @@ def drift_test(
     baseline_rollouts: int = DEFAULT_BASELINE_ROLLOUTS,
     max_judge_calls: int = DEFAULT_MAX_JUDGE_CALLS,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    run_coordination_detectors: bool = True,
+    coordination_roles: dict[str, str] | None = None,
 ) -> AdapterResult:
     """Run drift's auto-chaos against a compiled graph and report results.
 
@@ -1155,6 +1214,8 @@ def drift_test(
             baseline_rollouts=baseline_rollouts,
             max_judge_calls=max_judge_calls,
             similarity_threshold=similarity_threshold,
+            run_coordination_detectors=run_coordination_detectors,
+            coordination_roles=coordination_roles,
         )
     )
 
