@@ -10,6 +10,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 runs/
+results/
 *.log
 .DS_Store
 data/
