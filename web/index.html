@@ -29,6 +29,7 @@
     <button class="tab"        data-tab="runs"    role="tab">Runs <span id="runs-count" class="badge"></span></button>
     <button class="tab"        data-tab="compare" role="tab">Compare</button>
     <button class="tab"        data-tab="custom"  role="tab">Custom</button>
+    <button class="tab"        data-tab="results" role="tab">Results <span class="badge">raw</span></button>
     <button class="tab"        data-tab="about"   role="tab">About</button>
   </nav>
 
@@ -584,6 +585,30 @@
           <h3>Detected failures</h3>
           <div id="byoa-failure-summary"></div>
           <div class="failure-list" id="byoa-failure-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== RESULTS BROWSER ===================== -->
+    <section id="tab-results" class="tab-panel">
+      <div class="card">
+        <h2>Raw experiment results</h2>
+        <p class="help">
+          Every <code>--save-json</code> run from the example scripts lands in
+          <code>results/&lt;experiment&gt;/</code> and shows up here. Click a file
+          to load it in-place; download for offline inspection.
+        </p>
+        <div id="results-index" class="empty">Loading…</div>
+      </div>
+
+      <div id="results-viewer" class="hidden">
+        <div class="card">
+          <h3 id="results-viewer-title">Result</h3>
+          <div class="row" style="gap: 8px; margin-bottom: 8px;">
+            <button type="button" id="results-download" class="ghost-btn">⇩ Download JSON</button>
+            <button type="button" id="results-close" class="ghost-btn">Close</button>
+          </div>
+          <div id="results-viewer-body"></div>
         </div>
       </div>
     </section>

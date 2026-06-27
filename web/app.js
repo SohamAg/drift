@@ -116,6 +116,7 @@
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
     if (name === 'detect') initDetect();
     if (name === 'adapter') initAdapter();
+    if (name === 'results') initResults();
     if (name === 'runs') refreshRuns();
     if (name === 'compare') populateComparePickers();
     if (name === 'custom') initCustom();
@@ -2200,6 +2201,158 @@
       setTimeout(() => document.addEventListener('click', dismiss), 0);
     });
     return wrap;
+  }
+
+  // ---------- results browser tab ----------------------------------------
+
+  let _resultsWired = false;
+  async function initResults() {
+    if (_resultsWired) return;
+    _resultsWired = true;
+    $('#results-close').addEventListener('click', () => {
+      $('#results-viewer').classList.add('hidden');
+    });
+    await refreshResultsIndex();
+  }
+
+  async function refreshResultsIndex() {
+    const host = $('#results-index');
+    host.classList.remove('empty');
+    host.innerHTML = 'Loading…';
+    try {
+      const data = await api('/api/results');
+      const groups = data.groups || {};
+      host.innerHTML = '';
+      const groupNames = Object.keys(groups).sort();
+      if (!groupNames.length) {
+        host.classList.add('empty');
+        host.textContent = 'No saved results yet. Run an example script with --save-json to populate this list.';
+        return;
+      }
+      groupNames.forEach(group => {
+        const entries = groups[group];
+        const section = el('div', { style: 'margin-bottom: 16px;' }, [
+          el('h3', { style: 'margin-bottom: 6px; font-size: 14px;', text: group + ` (${entries.length})` }),
+        ]);
+        const list = el('div', { class: 'trace-list' });  // re-use the row styling
+        entries.forEach(entry => {
+          const row = el('div', {
+            class: 'trace-step',
+            style: 'cursor: pointer; grid-template-columns: 1fr auto;',
+            onclick: () => openResultsFile(entry.path),
+          }, [
+            el('div', { class: 'trace-step-body' }, [
+              el('div', { class: 'trace-step-node', text: entry.name }),
+              el('div', { class: 'trace-step-summary', text: entry.path }),
+            ]),
+            el('div', { class: 'muted', style: 'text-align: right; font-size: 11px;', text:
+              `${(entry.size_bytes / 1024).toFixed(1)} KB · ${fmt.short(new Date(entry.modified_ts * 1000).toISOString())}` }),
+          ]);
+          list.appendChild(row);
+        });
+        section.appendChild(list);
+        host.appendChild(section);
+      });
+    } catch (e) {
+      host.classList.add('empty');
+      host.textContent = 'Failed to load results: ' + e.message;
+    }
+  }
+
+  async function openResultsFile(relpath) {
+    const viewer = $('#results-viewer');
+    const title = $('#results-viewer-title');
+    const body = $('#results-viewer-body');
+    title.textContent = relpath;
+    body.textContent = 'Loading…';
+    viewer.classList.remove('hidden');
+    viewer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    try {
+      const data = await api('/api/results/' + relpath);
+      $('#results-download').onclick = () => downloadJson(data, relpath.replace(/[\\/]/g, '_'));
+      body.innerHTML = '';
+      body.appendChild(renderResultsViewerBody(data, relpath));
+    } catch (e) {
+      body.textContent = 'Failed to load: ' + e.message;
+    }
+  }
+
+  // Render a saved JSON file as readable structured HTML when we recognise
+  // the shape (adapter run, sweep, adversarial, etc.); fall back to a
+  // pretty-printed pre block for anything else.
+  function renderResultsViewerBody(data, relpath) {
+    // Adapter-style payloads: top-level has baseline + perturbations.
+    if (data && data.baseline && data.perturbations) {
+      return _renderAdapterShaped(data);
+    }
+    // Sweep payloads: aggregate + per_question / per_shape / per_fixture.
+    if (data && (data.per_question || data.per_shape || data.per_fixture)) {
+      return _renderSweepShaped(data);
+    }
+    // Generic fall-through.
+    return el('pre', {
+      class: 'mono',
+      style: 'max-height: 600px; overflow: auto; font-size: 11px;',
+      text: JSON.stringify(data, null, 2),
+    });
+  }
+
+  function _renderAdapterShaped(data) {
+    const host = el('div');
+    const kvs = [
+      ['question / topic', data.question || data.graph_name || '(unknown)'],
+      ['intensity', data.intensity || '?'],
+      ['perturbations', (data.perturbations || []).length],
+      ['crashed', data.n_crashed ?? 0],
+      ['diverged', data.n_diverged ?? 0],
+      ['unchanged', data.n_unchanged ?? 0],
+      ['judge findings', data.n_judge_findings ?? 0],
+      ['coord findings', data.n_coordination_findings ?? 0],
+    ];
+    const kv = el('div', { class: 'kv-grid' });
+    kvs.forEach(([k, v]) => {
+      kv.appendChild(el('span', { class: 'k', text: k }));
+      kv.appendChild(el('span', { class: 'v', text: String(v) }));
+    });
+    host.appendChild(kv);
+    host.appendChild(el('details', { style: 'margin-top: 12px;' }, [
+      el('summary', { class: 'help', text: 'Full JSON' }),
+      el('pre', { class: 'mono', style: 'max-height: 500px; overflow: auto; font-size: 11px;',
+                 text: JSON.stringify(data, null, 2) }),
+    ]));
+    return host;
+  }
+
+  function _renderSweepShaped(data) {
+    const host = el('div');
+    const agg = data.aggregate || {};
+    if (Object.keys(agg).length) {
+      const kv = el('div', { class: 'kv-grid' });
+      Object.entries(agg).forEach(([k, v]) => {
+        if (typeof v === 'object' && v !== null) return;  // skip nested
+        kv.appendChild(el('span', { class: 'k', text: k }));
+        kv.appendChild(el('span', { class: 'v', text: String(v) }));
+      });
+      host.appendChild(kv);
+    }
+    const arr = data.per_question || data.per_shape || data.per_fixture || [];
+    if (arr.length) {
+      host.appendChild(el('h4', { style: 'margin-top: 14px;', text: `Per-case (${arr.length}):` }));
+      arr.forEach((row, i) => {
+        const label = row.question || row.shape || row.fixture || row.category || `case ${i+1}`;
+        host.appendChild(el('details', { style: 'margin-top: 4px;' }, [
+          el('summary', { text: label.length > 80 ? label.slice(0, 77) + '…' : label }),
+          el('pre', { class: 'mono', style: 'max-height: 240px; overflow: auto; font-size: 11px;',
+                     text: JSON.stringify(row, null, 2) }),
+        ]));
+      });
+    }
+    host.appendChild(el('details', { style: 'margin-top: 12px;' }, [
+      el('summary', { class: 'help', text: 'Full JSON' }),
+      el('pre', { class: 'mono', style: 'max-height: 500px; overflow: auto; font-size: 11px;',
+                 text: JSON.stringify(data, null, 2) }),
+    ]));
+    return host;
   }
 
   // ---------- utils -------------------------------------------------------
