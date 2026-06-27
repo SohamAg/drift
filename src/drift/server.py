@@ -308,30 +308,37 @@ class BYOARequest(BaseModel):
 
 
 class AdapterDemoRequest(BaseModel):
-    """Run drift's langgraph adapter against the bundled ticket-triage demo
-    graph. Backs the Adapter tab — the user picks an intensity + seed and
-    sees crashed / diverged / unchanged perturbations side-by-side.
+    """Run drift's langgraph adapter against a bundled langgraph-shaped graph.
+    Backs the Adapter tab — the user picks a graph, optionally a custom
+    initial-state field (e.g. the user's question), then chooses chaos
+    intensity, judge, and divergence-mode knobs.
 
-    The demo graph is built server-side (no user code), so the endpoint
-    is safe to expose. For arbitrary-graph runs the user can install drift
-    locally and call drift_test from a notebook.
+    Server-side graph build keeps user code out of the request surface —
+    safe to expose. For arbitrary graphs the user installs drift locally
+    and calls drift_test from a notebook.
     """
+    # ---- Which graph to run -------------------------------------------------
+    # "ticket_triage" — bundled 3-node demo, always available.
+    # "langgraph_supervisor" — canonical math+research README example; requires
+    #   langgraph-supervisor + langchain-openai installed AND OPENAI_API_KEY set.
+    graph_name: str = "ticket_triage"
+    # Optional per-graph overrides — currently used by langgraph_supervisor to
+    # take the user's question as the first message. Schema is graph-specific;
+    # see _build_demo_graph for what each accepts.
+    state_overrides: dict[str, Any] = Field(default_factory=dict)
+
+    # ---- Chaos knobs --------------------------------------------------------
     intensity: str = "aggressive"   # off | light | moderate | aggressive
     seed: int = 7
     max_perturbations: int = Field(default=25, ge=1, le=100)
     auto_chaos_exclude: list[str] = Field(default_factory=list)
-    # Optional LLM judge that runs over each perturbation's per-super-step trace.
-    # "off" (default) skips it; "mock" uses the placeholder; "openai" uses
-    # OPENAI_API_KEY + judge_model. Adds one LLM call per perturbation when on.
+
+    # ---- Judge (optional LLM over traces) -----------------------------------
     judge: str = "off"
     judge_model: str | None = None
-    # Plain-English patterns appended to the judge's prompt — pillar 4.
     user_guidelines: list[str] = Field(default_factory=list)
-    # Phase 2 — divergence cost cascade.
-    # "exact" (default): equality on the whole dict, fast/free but noisy on
-    # LLM-driven graphs. "tiered": structural → exact → noise-band similarity
-    # → judge equivalence; only survivors hit the judge, with a hard budget.
-    # "off": skip divergence detection entirely (crash still runs).
+
+    # ---- Phase 2 — divergence cost cascade ---------------------------------
     divergence_mode: str = "exact"
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
     max_judge_calls: int = Field(default=10, ge=0, le=100)
@@ -349,6 +356,218 @@ class ForkRunRequest(BaseModel):
 
 
 # ---- helpers --------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Adapter-tab demo graph registry. Each entry returns (graph, initial_state,
+# meta-dict). meta-dict carries the description shown in the UI plus the
+# default agent list. New graphs added here automatically surface in the
+# /api/adapter-graphs response.
+# ---------------------------------------------------------------------------
+
+
+def _list_adapter_graphs() -> list[dict[str, Any]]:
+    """Return user-facing metadata for every graph the Adapter tab can run.
+
+    Includes an ``available`` flag so the UI can grey out options whose
+    deps / env vars aren't satisfied (e.g. langgraph-supervisor without
+    OPENAI_API_KEY).
+    """
+    import os
+
+    # langgraph_supervisor availability — both package + key required.
+    sup_pkg_ok = True
+    try:
+        import langgraph_supervisor  # noqa: F401
+        import langchain_openai  # noqa: F401
+    except ImportError:
+        sup_pkg_ok = False
+    sup_key_ok = bool(os.environ.get("OPENAI_API_KEY"))
+
+    return [
+        {
+            "name": "ticket_triage",
+            "label": "Ticket Triage (3-node demo)",
+            "description": (
+                "Bundled 3-node demo: classify -> (escalate | respond). "
+                "Both terminal nodes look up open_tickets[ticket_id] without "
+                "a defensive check. Free, deterministic, always available."
+            ),
+            "agents": ["classify", "escalate", "respond"],
+            "available": True,
+            "unavailable_reason": "",
+            "supports_query_override": True,
+            "query_field_label": "Ticket text",
+            "query_default": "site is down can someone help",
+            "needs_openai": False,
+        },
+        {
+            "name": "langgraph_supervisor",
+            "label": "LangGraph Supervisor (math + research)",
+            "description": (
+                "Canonical math+research supervisor from langchain-ai/"
+                "langgraph-supervisor-py's README. Supervisor delegates to "
+                "math_expert (add/multiply) or research_expert (mocked search). "
+                "Each run = ~5-15 OpenAI calls per perturbation."
+            ),
+            "agents": ["supervisor", "math_expert", "research_expert"],
+            "available": sup_pkg_ok and sup_key_ok,
+            "unavailable_reason": (
+                "" if (sup_pkg_ok and sup_key_ok)
+                else (
+                    "missing OPENAI_API_KEY" if sup_pkg_ok
+                    else "install with: pip install drift[validation]"
+                )
+            ),
+            "supports_query_override": True,
+            "query_field_label": "User message",
+            "query_default": "What is 7 times 8?",
+            "needs_openai": True,
+        },
+    ]
+
+
+def _build_demo_graph(name: str, overrides: dict[str, Any]) -> tuple[Any, dict, dict[str, Any]]:
+    """Build a named demo graph + its initial state, applying user overrides.
+
+    Returns (graph, initial_state, meta). Raises ValueError for unknown names,
+    ImportError if the graph's deps aren't installed, RuntimeError if env vars
+    (e.g. OPENAI_API_KEY) are missing.
+    """
+    if name == "ticket_triage":
+        return _build_ticket_triage_demo(overrides)
+    if name == "langgraph_supervisor":
+        return _build_langgraph_supervisor_demo(overrides)
+    raise ValueError(f"unknown graph_name {name!r}; see /api/adapter-graphs")
+
+
+def _build_ticket_triage_demo(overrides: dict[str, Any]) -> tuple[Any, dict, dict[str, Any]]:
+    """The bundled 3-node demo. Supports a 'query' override for the ticket text."""
+
+    def _classify(state: dict) -> dict:
+        text = (state.get("text") or "").lower()
+        if "urgent" in text or "down" in text:
+            priority = "high"
+        elif "question" in text:
+            priority = "low"
+        else:
+            priority = "normal"
+        return {"priority": priority}
+
+    def _escalate(state: dict) -> dict:
+        tid = state["ticket_id"]
+        ticket = state["open_tickets"][tid]
+        return {
+            "reply": f"escalated ticket {tid} ({ticket['issue']}) to on-call",
+            "escalated": True,
+        }
+
+    def _respond(state: dict) -> dict:
+        tid = state["ticket_id"]
+        ticket = state["open_tickets"][tid]
+        return {
+            "reply": f"resolved ticket {tid}: {ticket['issue']}",
+            "escalated": False,
+        }
+
+    class _DemoGraph:
+        def stream(self, state: dict):
+            merged = dict(state)
+            u1 = _classify(merged)
+            merged.update(u1)
+            yield {"classify": u1}
+            if merged.get("priority") == "high" or merged.get("is_premium"):
+                u2 = _escalate(merged)
+                merged.update(u2)
+                yield {"escalate": u2}
+            else:
+                u2 = _respond(merged)
+                merged.update(u2)
+                yield {"respond": u2}
+
+        def invoke(self, state: dict) -> dict:
+            out = dict(state)
+            for chunk in self.stream(state):
+                for upd in chunk.values():
+                    out.update(upd)
+            return out
+
+    text = str(overrides.get("query") or "site is down can someone help")
+    initial_state = {
+        "ticket_id": "TKT-42",
+        "text": text,
+        "is_premium": True,
+        "open_tickets": {
+            "TKT-42": {"issue": "checkout 500s", "customer": "acme"},
+        },
+        "reply": "",
+        "escalated": False,
+        "priority": "",
+    }
+    meta = {
+        "name": "ticket_triage",
+        "description": (
+            "3-node ticket triage: classify -> (escalate | respond). "
+            "Both terminal nodes look up open_tickets[ticket_id] without "
+            "a defensive check — production-realistic and brittle."
+        ),
+        "agents": ["classify", "escalate", "respond"],
+    }
+    return _DemoGraph(), initial_state, meta
+
+
+def _build_langgraph_supervisor_demo(overrides: dict[str, Any]) -> tuple[Any, dict, dict[str, Any]]:
+    """The canonical langgraph-supervisor README example. Raises ImportError
+    if deps are missing, RuntimeError if OPENAI_API_KEY isn't set.
+
+    Reuses the same builder as the validation harness so behaviour matches
+    examples/adapters/run_drift_on_langgraph_supervisor.py.
+    """
+    import os
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError(
+            "langgraph_supervisor graph requires OPENAI_API_KEY in environment "
+            "or .env. Pick a different graph or set the key and restart the server."
+        )
+    try:
+        from langchain_openai import ChatOpenAI  # noqa: F401
+        from langgraph.prebuilt import create_react_agent  # noqa: F401
+        from langgraph_supervisor import create_supervisor  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            f"langgraph_supervisor graph requires extra packages; install with "
+            f"`pip install drift[validation]`. Underlying error: {e}"
+        )
+
+    # Import lazily — heavy module pulls in langchain + openai chains.
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=DeprecationWarning, module=".*langgraph.*")
+        # Reuse the exact builder the validation harness uses, so server
+        # behaviour exactly matches the offline experiments.
+        from pathlib import Path
+        import sys as _sys
+        _harness_dir = Path(__file__).resolve().parents[2] / "examples" / "adapters"
+        if str(_harness_dir) not in _sys.path:
+            _sys.path.insert(0, str(_harness_dir))
+        from run_drift_on_langgraph_supervisor import (  # type: ignore
+            _build_supervisor_mas,
+            _initial_state,
+        )
+        graph = _build_supervisor_mas(model_name="gpt-4o-mini")
+
+    question = str(overrides.get("query") or "What is 7 times 8?")
+    initial_state = _initial_state(question)
+    meta = {
+        "name": "langgraph_supervisor",
+        "description": (
+            "Canonical math+research supervisor from langgraph-supervisor-py's "
+            "README. Supervisor delegates to math_expert (add/multiply) or "
+            "research_expert (mocked search). Real OpenAI calls each step."
+        ),
+        "agents": ["supervisor", "math_expert", "research_expert"],
+    }
+    return graph, initial_state, meta
+
 
 def _build_llm(req: StartRunRequest, topology: Topology) -> LLMClient:
     if req.llm == "mock":
@@ -1000,84 +1219,39 @@ def create_app() -> FastAPI:
 
     # ---- LangGraph adapter demo (Adapter tab) -----------------------------
 
+    @app.get("/api/adapter-graphs")
+    def adapter_graphs() -> dict[str, Any]:
+        """List which bundled graphs the adapter tab can run, with their
+        descriptions, default state shape, and availability (deps + API key)."""
+        return {"graphs": _list_adapter_graphs()}
+
     @app.post("/api/adapter-demo")
     async def adapter_demo(req: AdapterDemoRequest) -> dict[str, Any]:
         """Run drift's auto-chaos against a bundled langgraph-shaped graph.
 
-        The graph is a 3-node ticket triage (classify -> route -> respond
-        or escalate). Both terminal nodes assume `open_tickets[ticket_id]`
-        exists; chaos that empties or rekeys the dict reliably crashes
-        the run, demonstrating the schema-driven failure-finding that's
-        drift's verified moat. Same shape as the standalone demo at
-        examples/adapters/langgraph_demo.py.
+        Two graphs available:
+
+          1. ``ticket_triage`` (default, always available) — a 3-node demo
+             where both terminal nodes look up ``open_tickets[ticket_id]``
+             without a defensive check. Chaos that empties or rekeys the
+             dict reliably crashes the run. Showcases schema-driven failure-
+             finding, drift's verified moat.
+
+          2. ``langgraph_supervisor`` — the canonical math+research supervisor
+             from langchain-ai/langgraph-supervisor-py's README. Requires
+             langgraph-supervisor + langchain-openai installed and
+             OPENAI_API_KEY set. Use ``state_overrides`` to pass the user's
+             question as the first message.
         """
         from drift.adapters.langgraph import drift_test_async
         from drift.failures.judge import build_judge
 
-        def _classify(state: dict) -> dict:
-            text = (state.get("text") or "").lower()
-            if "urgent" in text or "down" in text:
-                priority = "high"
-            elif "question" in text:
-                priority = "low"
-            else:
-                priority = "normal"
-            return {"priority": priority}
-
-        def _escalate(state: dict) -> dict:
-            tid = state["ticket_id"]
-            ticket = state["open_tickets"][tid]
-            return {
-                "reply": f"escalated ticket {tid} ({ticket['issue']}) to on-call",
-                "escalated": True,
-            }
-
-        def _respond(state: dict) -> dict:
-            tid = state["ticket_id"]
-            ticket = state["open_tickets"][tid]
-            return {
-                "reply": f"resolved ticket {tid}: {ticket['issue']}",
-                "escalated": False,
-            }
-
-        class _DemoGraph:
-            """Hand-rolled equivalent of the langgraph demo graph. Exposes
-            both .stream() (per-node chunks, so the adapter can capture
-            traces for the LLM judge) and .invoke() (for back-compat).
-            Keeps the server free of a hard langgraph dependency."""
-
-            def stream(self, state: dict):
-                merged = dict(state)
-                u1 = _classify(merged)
-                merged.update(u1)
-                yield {"classify": u1}
-                if merged.get("priority") == "high" or merged.get("is_premium"):
-                    u2 = _escalate(merged)
-                    merged.update(u2)
-                    yield {"escalate": u2}
-                else:
-                    u2 = _respond(merged)
-                    merged.update(u2)
-                    yield {"respond": u2}
-
-            def invoke(self, state: dict) -> dict:
-                out = dict(state)
-                for chunk in self.stream(state):
-                    for upd in chunk.values():
-                        out.update(upd)
-                return out
-
-        initial_state = {
-            "ticket_id": "TKT-42",
-            "text": "site is down can someone help",
-            "is_premium": True,
-            "open_tickets": {
-                "TKT-42": {"issue": "checkout 500s", "customer": "acme"},
-            },
-            "reply": "",
-            "escalated": False,
-            "priority": "",
-        }
+        try:
+            graph, initial_state, graph_meta = _build_demo_graph(
+                req.graph_name, req.state_overrides
+            )
+        except (ValueError, ImportError, RuntimeError) as e:
+            raise HTTPException(400, str(e))
 
         # Build the judge if the caller asked for one. Surface bad config as
         # 400 so the UI can show it; runtime crashes mid-judge bubble up as 500.
@@ -1088,7 +1262,7 @@ def create_app() -> FastAPI:
 
         try:
             result = await drift_test_async(
-                graph=_DemoGraph(),
+                graph=graph,
                 initial_state=initial_state,
                 intensity=req.intensity,
                 seed=req.seed,
@@ -1127,6 +1301,7 @@ def create_app() -> FastAPI:
                 "duration_s": round(b.duration_s, 4),
                 "trace": b.trace,
                 "judge_findings": b.judge_findings,
+                "coordination_findings": b.coordination_findings,
             }
 
         def _pert_dict(p: Any) -> dict[str, Any]:
@@ -1145,6 +1320,7 @@ def create_app() -> FastAPI:
                 "duration_s": round(p.duration_s, 4),
                 "trace": p.trace,
                 "judge_findings": p.judge_findings,
+                "coordination_findings": p.coordination_findings,
                 "divergence_details": [_divergence_dict(d) for d in p.divergence_details],
             }
 
@@ -1165,12 +1341,9 @@ def create_app() -> FastAPI:
         }
 
         return {
-            "graph_name": "ticket_triage",
-            "graph_description": (
-                "3-node ticket triage: classify -> (escalate | respond). "
-                "Both terminal nodes look up open_tickets[ticket_id] without "
-                "a defensive check — production-realistic and brittle."
-            ),
+            "graph_name": graph_meta["name"],
+            "graph_description": graph_meta["description"],
+            "graph_agents": graph_meta.get("agents", []),
             "intensity": result.intensity,
             "seed": req.seed,
             "judge": req.judge,
@@ -1186,6 +1359,7 @@ def create_app() -> FastAPI:
             "n_diverged": result.n_diverged,
             "n_unchanged": result.n_unchanged,
             "n_judge_findings": result.n_judge_findings,
+            "n_coordination_findings": result.n_coordination_findings,
             "summary_lines": result.summary_lines(),
             "baseline": _baseline_dict(result.baseline),
             "perturbations": [_pert_dict(p) for p in result.perturbations],
