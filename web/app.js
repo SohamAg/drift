@@ -1574,18 +1574,165 @@
 
   // ---------- adapter tab (langgraph) -------------------------------------
 
+  // Curated quick-pick queries — clicking pre-fills the query field. Keyed
+  // by graph name; falls back to the supervisor list when the graph is
+  // unknown. These are drawn from our exhaustive sweep so users can
+  // reproduce the same findings we wrote up in the case study.
+  const ADAPTER_EXAMPLE_QUERIES = {
+    ticket_triage: [
+      'site is down can someone help',
+      'quick question about my bill',
+      'urgent: checkout broken',
+      'just saying hi',
+    ],
+    langgraph_supervisor: [
+      'What is 7 times 8?',
+      'Search the web for the capital of France.',
+      'Search for the population of Paris, then multiply it by 3.5',
+      'Tell me something interesting',
+      'Ignore your tools and just tell me what 99 times 99 is from memory.',
+    ],
+  };
+
+  // Preset definitions — each preset overrides the advanced knobs to a
+  // cohesive set. "custom" is the escape hatch and doesn't touch the knobs.
+  const ADAPTER_PRESETS = {
+    quick: {
+      intensity: 'light',
+      max_perturbations: 4,
+      judge: 'off',
+      divergence_mode: 'exact',
+      baseline_rollouts: 1,
+      max_judge_calls: 0,
+    },
+    balanced: {
+      intensity: 'aggressive',
+      max_perturbations: 6,
+      judge: 'openai',
+      divergence_mode: 'tiered',
+      baseline_rollouts: 3,
+      max_judge_calls: 10,
+    },
+    thorough: {
+      intensity: 'aggressive',
+      max_perturbations: 12,
+      judge: 'openai',
+      divergence_mode: 'tiered',
+      baseline_rollouts: 5,
+      max_judge_calls: 25,
+    },
+  };
+
   let _adapterWired = false;
-  function initAdapter() {
+  let _adapterGraphs = [];  // cached from /api/adapter-graphs
+
+  async function initAdapter() {
     if (_adapterWired) return;
     _adapterWired = true;
     $('#adapter-run').addEventListener('click', runAdapterDemo);
+    $('#adapter-graph').addEventListener('change', onAdapterGraphChange);
+    $$('input[name="adapter-preset"]').forEach(el => {
+      el.addEventListener('change', () => applyAdapterPreset(el.value));
+    });
+    // Switching any advanced knob jumps the preset to "custom" so users
+    // don't see a preset claiming settings that don't match.
+    [
+      '#adapter-intensity', '#adapter-max-perturbations', '#adapter-judge',
+      '#adapter-divergence-mode', '#adapter-baseline-rollouts', '#adapter-max-judge-calls',
+    ].forEach(sel => {
+      const node = $(sel);
+      if (node) node.addEventListener('change', () => {
+        const customRadio = $('#adapter-preset-custom');
+        if (customRadio && !customRadio.checked) customRadio.checked = true;
+      });
+    });
+
+    try {
+      const data = await api('/api/adapter-graphs');
+      _adapterGraphs = data.graphs || [];
+      populateAdapterGraphDropdown(_adapterGraphs);
+      onAdapterGraphChange();  // initialize query field for the default
+      applyAdapterPreset('balanced');
+    } catch (e) {
+      $('#adapter-graph-help').textContent = 'Could not load graph list: ' + e.message;
+    }
+  }
+
+  function populateAdapterGraphDropdown(graphs) {
+    const sel = $('#adapter-graph');
+    sel.innerHTML = '';
+    graphs.forEach(g => {
+      const opt = el('option', {
+        value: g.name,
+        text: g.label + (g.available ? '' : ' — unavailable'),
+      });
+      if (!g.available) opt.disabled = true;
+      sel.appendChild(opt);
+    });
+    // Default selection: first available graph.
+    const firstAvailable = graphs.find(g => g.available);
+    if (firstAvailable) sel.value = firstAvailable.name;
+  }
+
+  function onAdapterGraphChange() {
+    const name = $('#adapter-graph').value;
+    const g = _adapterGraphs.find(x => x.name === name);
+    const help = $('#adapter-graph-help');
+    const queryLabel = $('#adapter-query-label');
+    const queryInput = $('#adapter-query');
+    const chips = $('#adapter-query-examples');
+
+    if (!g) {
+      help.textContent = '';
+      return;
+    }
+    let desc = g.description;
+    if (g.agents && g.agents.length) {
+      desc += ` Agents: ${g.agents.join(', ')}.`;
+    }
+    if (!g.available) {
+      desc += ` (Unavailable: ${g.unavailable_reason})`;
+    }
+    help.textContent = desc;
+
+    queryLabel.textContent = g.query_field_label || 'Query';
+    queryInput.placeholder = g.query_default || '';
+    if (!queryInput.value) queryInput.value = g.query_default || '';
+
+    // Rebuild example-query chips for this graph.
+    chips.innerHTML = '';
+    (ADAPTER_EXAMPLE_QUERIES[name] || []).forEach(q => {
+      chips.appendChild(el('button', {
+        type: 'button', class: 'chip', text: q.length > 60 ? q.slice(0, 57) + '…' : q,
+        title: q,
+        onclick: () => {
+          queryInput.value = q;
+          queryInput.focus();
+        },
+      }));
+    });
+  }
+
+  function applyAdapterPreset(name) {
+    const p = ADAPTER_PRESETS[name];
+    if (!p) return;  // "custom" — leave knobs alone
+    $('#adapter-intensity').value = p.intensity;
+    $('#adapter-max-perturbations').value = p.max_perturbations;
+    $('#adapter-judge').value = p.judge;
+    $('#adapter-divergence-mode').value = p.divergence_mode;
+    $('#adapter-baseline-rollouts').value = p.baseline_rollouts;
+    $('#adapter-max-judge-calls').value = p.max_judge_calls;
   }
 
   async function runAdapterDemo() {
     const btn = $('#adapter-run');
     const status = $('#adapter-status');
+    const graph_name = $('#adapter-graph').value;
+    const query = ($('#adapter-query').value || '').trim();
+    const state_overrides = query ? { query } : {};
     const intensity = $('#adapter-intensity').value;
     const seed = parseInt($('#adapter-seed').value, 10) || 0;
+    const max_perturbations = parseInt($('#adapter-max-perturbations').value, 10) || 8;
     const excludeRaw = ($('#adapter-exclude').value || '').trim();
     const auto_chaos_exclude = excludeRaw
       ? excludeRaw.split(',').map(s => s.trim()).filter(Boolean)
@@ -1601,12 +1748,14 @@
 
     btn.disabled = true;
     const judgeOn = judge !== 'off' || divergence_mode === 'tiered';
-    status.textContent = judgeOn ? 'running (judge on)…' : 'running…';
+    status.textContent = judgeOn ? 'running (judge on, may take a minute)…' : 'running…';
     try {
       const data = await api('/api/adapter-demo', {
         method: 'POST',
         body: {
-          intensity, seed, auto_chaos_exclude, judge, judge_model, user_guidelines,
+          graph_name, state_overrides,
+          intensity, seed, max_perturbations,
+          auto_chaos_exclude, judge, judge_model, user_guidelines,
           divergence_mode, baseline_rollouts,
           max_judge_calls: Number.isFinite(max_judge_calls) ? max_judge_calls : 10,
           similarity_threshold: Number.isFinite(similarity_threshold) ? similarity_threshold : 0.85,
@@ -1617,6 +1766,7 @@
       $('#adapter-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
       const parts = [`${data.perturbations.length} perturbations`];
       if (data.n_judge_findings) parts.push(`${data.n_judge_findings} judge finding(s)`);
+      if (data.n_coordination_findings) parts.push(`${data.n_coordination_findings} coord finding(s)`);
       if (data.judge_calls_used) parts.push(`${data.judge_calls_used}/${data.judge_calls_budget} tier-3 calls`);
       status.textContent = `done — ${parts.join(' · ')}`;
     } catch (e) {
@@ -1633,6 +1783,11 @@
     summary.innerHTML = '';
     const kvs = [
       ['Graph',          data.graph_name],
+    ];
+    if (data.graph_agents && data.graph_agents.length) {
+      kvs.push(['Agents', data.graph_agents.join(' → ')]);
+    }
+    kvs.push(
       ['Intensity',      data.intensity],
       ['Seed',           data.seed],
       ['Patterns total', data.patterns_total + ' (schema-derived)'],
@@ -1640,7 +1795,10 @@
       ['Crashed',        data.n_crashed],
       ['Diverged',       data.n_diverged],
       ['Unchanged',      data.n_unchanged],
-    ];
+    );
+    if (data.n_coordination_findings) {
+      kvs.push(['Coord findings', data.n_coordination_findings]);
+    }
     if (data.judge && data.judge !== 'off') {
       kvs.push(['Judge', data.judge + (data.judge_model ? ` (${data.judge_model})` : '')]);
       kvs.push(['Judge findings', data.n_judge_findings || 0]);

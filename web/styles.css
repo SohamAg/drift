@@ -323,6 +323,27 @@ select option:hover {
 }
 [data-theme="dark"] .seg input:checked + .seg-opt { background: var(--bg-input); }
 
+/* .seg auto-sizes by child count so we can have 2, 3, or 4 options. The
+ * default grid-template-columns: 1fr 1fr only fits 2; this overrides for
+ * larger sets (e.g. the adapter preset selector with 4 options). */
+.seg { grid-auto-flow: column; grid-auto-columns: 1fr; grid-template-columns: none; }
+
+/* Chip row — small clickable badges used for example queries / quick fills. */
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.chip:hover { background: var(--bg-elev); color: var(--fg-strong); border-color: var(--fg-muted); }
+.chip:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* --------------------------------------------------------------- buttons */
 button { font: inherit; cursor: pointer; }
 .primary {
