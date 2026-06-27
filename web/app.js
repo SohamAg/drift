@@ -2042,9 +2042,9 @@
     return el('div', {
       style: 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid #a16207; background: #854d0e11; border-radius: 3px;',
     }, [
-      el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 2px;' }, [
+      el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 2px; flex-wrap: wrap;' }, [
         el('span', { class: 'pill info', style: 'background:#854d0e22;color:#a16207;', text: 'COORD' }),
-        el('code', { class: 'muted', text: f.failure_type }),
+        renderFindingTypeBadge(f.failure_type),
         (f.agents_involved && f.agents_involved.length)
           ? el('span', { class: 'muted', style: 'font-size: 11px;',
                          text: `agents: ${f.agents_involved.join(', ')}` })
@@ -2093,10 +2093,113 @@
     return el('div', { style: 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid var(--info); background: var(--bg-elev-2); border-radius: 3px;' }, [
       el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 2px;' }, [
         el('span', { class: 'pill info', text: 'JUDGE' }),
-        el('code', { class: 'muted', text: f.failure_type }),
+        renderFindingTypeBadge(f.failure_type),
       ]),
-      el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word;', text: f.summary || '' }),
+      el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word; font-size: 12px;', text: f.summary || '' }),
     ]);
+  }
+
+  // ---- finding glossary --------------------------------------------------
+  // Plain-English explanations for every failure_type drift's LLM judge or
+  // coordination library can emit. Used to power the "?" tooltip / popover
+  // on each finding so users don't have to read source to know what fired.
+  const FINDING_GLOSSARY = {
+    // LLM judge (6-family taxonomy)
+    'llm:coordination_contradiction': {
+      label: 'Coordination contradiction',
+      what: 'Agents gave conflicting or repeated requests/decisions on the same task — e.g. supervisor asked the same question twice, or two agents proposed opposite actions on the same item.',
+      source: 'Drift\'s 6-family LLM judge taxonomy',
+    },
+    'llm:grounding_failure': {
+      label: 'Grounding failure',
+      what: 'An agent referenced data, an entity, or a result that doesn\'t exist anywhere in the trace — a likely hallucination.',
+      source: 'Drift\'s 6-family LLM judge taxonomy',
+    },
+    'llm:state_drift': {
+      label: 'State drift',
+      what: 'An agent ignored or contradicted state from prior steps — e.g. acted on stale information after another agent had already updated it.',
+      source: 'Drift\'s 6-family LLM judge taxonomy',
+    },
+    'llm:emergent_decay': {
+      label: 'Emergent decay',
+      what: 'A pattern of degradation across steps — sentiment souring, quality dropping, repetition increasing. Spotted by looking at the whole trace, not any single step.',
+      source: 'Drift\'s 6-family LLM judge taxonomy',
+    },
+    'llm:gate_bypass': {
+      label: 'Gate bypass',
+      what: 'An agent skipped a required check, approval, or verification step before taking an action that should have gated on it.',
+      source: 'Drift\'s 6-family LLM judge taxonomy',
+    },
+    // Coordination library (deterministic, free, citation-backed)
+    'verifier_always_approves': {
+      label: 'Verifier always approves',
+      what: 'A verifier-role agent approved >=95% of decisions across N runs with zero rejections — it isn\'t actually verifying anything. Real-world this means the safety layer is silently disabled.',
+      source: 'MAST 3.x family + Anthropic engineering blog',
+    },
+    'infinite_handoff': {
+      label: 'Infinite handoff',
+      what: 'Two agents alternated past threshold (4+) with no state advancement — no new keys written, no new non-empty fields, no container growth. The classic "you handle it / no you handle it" loop.',
+      source: 'MAST 1.3 (Step Repetition) + Cognition open problem #2',
+    },
+    'subagent_fanout_excess': {
+      label: 'Subagent fanout excess',
+      what: 'Orchestrator spawned more subagents than the task warranted — either too many distinct subagents (hard count) or too many subagents per measurable output (ratio rule).',
+      source: 'Anthropic multi-agent research postmortem (50-subagent incident)',
+    },
+  };
+
+  function _glossaryEntry(failureType) {
+    if (FINDING_GLOSSARY[failureType]) return FINDING_GLOSSARY[failureType];
+    // user_guideline matches by prefix because the suffix is the rule index.
+    if (failureType && failureType.startsWith('llm:user_guideline')) {
+      return {
+        label: 'User guideline match',
+        what: 'A plain-English rule the user supplied was triggered. Match index in the suffix.',
+        source: 'User-supplied guideline',
+      };
+    }
+    return null;
+  }
+
+  // Render a failure_type code with a clickable "?" popover that reveals
+  // the plain-English explanation. Closes on outside click.
+  function renderFindingTypeBadge(failureType) {
+    const entry = _glossaryEntry(failureType);
+    const code = el('code', { class: 'muted', text: failureType });
+    if (!entry) return code;
+
+    const help = el('button', {
+      type: 'button',
+      class: 'finding-help',
+      title: `What is ${entry.label}?`,
+      text: '?',
+    });
+    const wrap = el('span', { class: 'finding-type-badge', style: 'display: inline-flex; align-items: center; gap: 4px;' }, [code, help]);
+
+    help.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Toggle: if already showing, hide.
+      const existing = wrap.querySelector('.finding-popover');
+      if (existing) {
+        existing.remove();
+        return;
+      }
+      const pop = el('div', { class: 'finding-popover' }, [
+        el('div', { style: 'font-weight: 600; margin-bottom: 4px;', text: entry.label }),
+        el('div', { style: 'margin-bottom: 6px;', text: entry.what }),
+        el('div', { class: 'muted', style: 'font-size: 11px;', text: 'Source: ' + entry.source }),
+      ]);
+      wrap.appendChild(pop);
+      // Outside-click to dismiss.
+      const dismiss = (ev) => {
+        if (!wrap.contains(ev.target)) {
+          pop.remove();
+          document.removeEventListener('click', dismiss);
+        }
+      };
+      setTimeout(() => document.addEventListener('click', dismiss), 0);
+    });
+    return wrap;
   }
 
   // ---------- utils -------------------------------------------------------
