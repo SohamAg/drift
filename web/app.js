@@ -1777,7 +1777,69 @@
     }
   }
 
+  // Keep the most recent run around so the "Download raw JSON" button always
+  // has something to serve, even if the user scrolls / interacts.
+  let _lastAdapterRun = null;
+
+  // ---- trace rendering helpers ------------------------------------------
+
+  // Render a single super-step as an expandable row. Click toggles a
+  // detail block showing the update + state_after as pretty JSON.
+  function renderTraceStep(step, opts = {}) {
+    const node = step.node || '(unknown)';
+    const update = step.update || {};
+    const keys = Object.keys(update);
+    const summary = keys.length === 0
+      ? '(no fields written)'
+      : keys.length === 1
+        ? `wrote ${keys[0]}`
+        : `wrote ${keys.join(', ')}`;
+
+    const detail = el('div', { class: 'trace-step-detail' }, [
+      el('div', { class: 'muted', text: 'update:' }),
+      el('pre', { class: 'mono', text: JSON.stringify(update, null, 2) }),
+      el('div', { class: 'muted', style: 'margin-top: 6px;', text: 'state after this step:' }),
+      el('pre', { class: 'mono', text: JSON.stringify(step.state_after || {}, null, 2) }),
+    ]);
+
+    const row = el('div', { class: 'trace-step' + (opts.startExpanded ? ' expanded' : '') }, [
+      el('div', { class: 'trace-step-num', text: '#' + step.step }),
+      el('div', { class: 'trace-step-body' }, [
+        el('div', { class: 'trace-step-node', text: node }),
+        el('div', { class: 'trace-step-summary', text: summary }),
+        detail,
+      ]),
+    ]);
+    row.addEventListener('click', (e) => {
+      // Avoid toggling when the user is clicking inside the detail block
+      // (e.g. selecting text from the pre).
+      if (e.target.closest && e.target.closest('.trace-step-detail')) return;
+      row.classList.toggle('expanded');
+    });
+    return row;
+  }
+
+  function renderTraceList(trace, opts = {}) {
+    if (!trace || trace.length === 0) {
+      return el('div', {
+        class: 'empty',
+        text: 'No trace captured (the graph likely supports only .invoke(), not .stream() / .astream() — drift can\'t show per-step detail without streaming).',
+      });
+    }
+    const host = el('div', { class: 'trace-list' });
+    trace.forEach(s => host.appendChild(renderTraceStep(s, opts)));
+    return host;
+  }
+
   function renderAdapterResult(data) {
+    _lastAdapterRun = data;
+    const dlBtn = $('#adapter-download-json');
+    if (dlBtn) {
+      dlBtn.onclick = () => downloadJson(
+        data,
+        `adapter_${data.graph_name}_${data.seed}_${Date.now()}.json`,
+      );
+    }
     // --- summary kv ---
     const summary = $('#adapter-summary');
     summary.innerHTML = '';
@@ -1835,16 +1897,40 @@
         el('div', { class: 'mono', style: 'margin-top: 8px;', text: `${b.error_type}: ${b.error}` }),
       ]));
     } else {
-      const fs = b.final_state || {};
-      base.appendChild(el('pre', { class: 'mono', text: JSON.stringify(fs, null, 2) }));
+      // Initial state + trace + final state.
+      base.appendChild(el('details', { style: 'margin-bottom: 10px;' }, [
+        el('summary', { class: 'help', text: `Initial state (${Object.keys(b.initial_state || {}).length} keys)` }),
+        el('pre', { class: 'mono', style: 'max-height: 200px; overflow: auto; font-size: 11px;',
+                   text: JSON.stringify(b.initial_state || {}, null, 2) }),
+      ]));
+
+      const traceHeader = el('div', { class: 'help', style: 'margin: 8px 0 4px 0;' }, [
+        document.createTextNode(`Trace — ${(b.trace || []).length} super-step(s):`),
+      ]);
+      base.appendChild(traceHeader);
+      base.appendChild(renderTraceList(b.trace));
+
+      base.appendChild(el('details', { style: 'margin-top: 10px;' }, [
+        el('summary', { class: 'help', text: `Final state (${Object.keys(b.final_state || {}).length} keys)` }),
+        el('pre', { class: 'mono', style: 'max-height: 200px; overflow: auto; font-size: 11px;',
+                   text: JSON.stringify(b.final_state || {}, null, 2) }),
+      ]));
     }
-    // Judge findings on baseline (if any) — useful for "is this a real
-    // coordination failure or a quirk of the baseline trace itself?"
+    // Judge findings on baseline (if any) — these mean the supervisor
+    // exhibits the problem in normal operation, not under chaos.
     if ((b.judge_findings || []).length) {
       const jHost = el('div', { style: 'margin-top: 10px;' });
-      jHost.appendChild(el('div', { class: 'muted', text: 'Judge findings on baseline:' }));
+      jHost.appendChild(el('div', { class: 'muted',
+        text: 'Judge findings on the unperturbed graph — bugs without chaos:' }));
       b.judge_findings.forEach(f => jHost.appendChild(renderJudgeFinding(f)));
       base.appendChild(jHost);
+    }
+    if ((b.coordination_findings || []).length) {
+      const cHost = el('div', { style: 'margin-top: 10px;' });
+      cHost.appendChild(el('div', { class: 'muted',
+        text: 'Structured coordination detectors fired on the unperturbed graph:' }));
+      b.coordination_findings.forEach(f => cHost.appendChild(renderCoordFinding(f)));
+      base.appendChild(cHost);
     }
 
     // --- perturbations ---
@@ -1863,10 +1949,10 @@
       const r = rank(p) - rank(q);
       return r !== 0 ? r : p.event_name.localeCompare(q.event_name);
     });
-    sorted.forEach(p => host.appendChild(renderPerturbation(p)));
+    sorted.forEach(p => host.appendChild(renderPerturbation(p, b)));
   }
 
-  function renderPerturbation(p) {
+  function renderPerturbation(p, baseline) {
     let pillClass, pillText, detail;
     if (p.crashed) {
       pillClass = 'pill danger';
@@ -1882,23 +1968,105 @@
       detail = 'Graph absorbed the perturbation; no observable change in final state.';
     }
 
-    const head = el('div', { class: 'row', style: 'align-items: center; gap: 10px; margin-bottom: 4px;' }, [
+    const findingBadges = [];
+    if ((p.coordination_findings || []).length) {
+      findingBadges.push(el('span', {
+        class: 'pill info',
+        style: 'background:#854d0e22;color:#a16207;',
+        text: `COORD×${p.coordination_findings.length}`,
+      }));
+    }
+    if ((p.judge_findings || []).length) {
+      findingBadges.push(el('span', { class: 'pill info', text: `JUDGE×${p.judge_findings.length}` }));
+    }
+
+    const head = el('div', { class: 'perturbation-head' }, [
       el('span', { class: pillClass, text: pillText }),
       el('code', { text: p.event_name }),
       el('span', { class: 'muted', text: `(${p.duration_s}s)` }),
+      ...findingBadges,
+      el('span', { class: 'muted', style: 'margin-left: auto; font-size: 11px;', text: '▾ click to expand' }),
     ]);
-    const sum = el('div', { class: 'muted', style: 'margin-bottom: 6px;', text: p.event_summary });
-    const det = el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word;', text: detail });
 
-    const children = [head, sum, det];
-    // Per-field divergence detail (tiered mode populates this with tier tags).
-    (p.divergence_details || []).forEach(d => {
-      children.push(renderFieldDivergence(d));
-    });
-    (p.judge_findings || []).forEach(f => {
-      children.push(renderJudgeFinding(f));
-    });
-    return el('div', { class: 'failure-cell', style: 'padding: 10px 12px;' }, children);
+    // Body — only shown when row is expanded.
+    const sum = el('div', { class: 'muted', style: 'margin-bottom: 8px; font-size: 13px;', text: p.event_summary });
+    const det = el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word; font-size: 12px; margin-bottom: 10px;', text: detail });
+
+    const bodyChildren = [sum, det];
+
+    // Coordination + judge findings, attached above the trace compare.
+    (p.coordination_findings || []).forEach(f => bodyChildren.push(renderCoordFinding(f)));
+    (p.judge_findings || []).forEach(f => bodyChildren.push(renderJudgeFinding(f)));
+    (p.divergence_details || []).forEach(d => bodyChildren.push(renderFieldDivergence(d)));
+
+    // Side-by-side trace compare: baseline left, perturbed right.
+    if ((p.trace || []).length || (baseline && (baseline.trace || []).length)) {
+      bodyChildren.push(el('div', { class: 'help', style: 'margin: 12px 0 4px 0;',
+                                    text: 'Trace compare — baseline (left) vs perturbed (right):' }));
+      bodyChildren.push(el('div', { class: 'trace-compare' }, [
+        el('div', { class: 'trace-compare-col' }, [
+          el('h4', { text: `baseline (${(baseline?.trace || []).length} step(s))` }),
+          renderTraceList(baseline?.trace || []),
+        ]),
+        el('div', { class: 'trace-compare-col' }, [
+          el('h4', { text: `perturbed (${(p.trace || []).length} step(s))` }),
+          renderTraceList(p.trace || []),
+        ]),
+      ]));
+    }
+
+    // Initial/final state expandables — useful for "what did chaos actually do".
+    bodyChildren.push(el('details', { style: 'margin-top: 12px;' }, [
+      el('summary', { class: 'help', text: 'Perturbed initial state' }),
+      el('pre', { class: 'mono', style: 'max-height: 200px; overflow: auto; font-size: 11px;',
+                 text: JSON.stringify(p.perturbed_initial_state || {}, null, 2) }),
+    ]));
+    if (p.final_state) {
+      bodyChildren.push(el('details', {}, [
+        el('summary', { class: 'help', text: 'Final state' }),
+        el('pre', { class: 'mono', style: 'max-height: 200px; overflow: auto; font-size: 11px;',
+                   text: JSON.stringify(p.final_state, null, 2) }),
+      ]));
+    }
+
+    const body = el('div', { class: 'perturbation-body' }, bodyChildren);
+
+    const row = el('div', { class: 'failure-cell perturbation-row' }, [head, body]);
+    head.addEventListener('click', () => row.classList.toggle('expanded'));
+    return row;
+  }
+
+  function renderCoordFinding(f) {
+    // Distinct styling from judge findings — these are deterministic, free,
+    // and come from the curated library, not the LLM.
+    return el('div', {
+      style: 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid #a16207; background: #854d0e11; border-radius: 3px;',
+    }, [
+      el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 2px;' }, [
+        el('span', { class: 'pill info', style: 'background:#854d0e22;color:#a16207;', text: 'COORD' }),
+        el('code', { class: 'muted', text: f.failure_type }),
+        (f.agents_involved && f.agents_involved.length)
+          ? el('span', { class: 'muted', style: 'font-size: 11px;',
+                         text: `agents: ${f.agents_involved.join(', ')}` })
+          : null,
+      ]),
+      el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word; font-size: 12px;',
+                  text: f.summary || '' }),
+    ]);
+  }
+
+  function downloadJson(data, filename) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 100);
   }
 
   function renderFieldDivergence(d) {

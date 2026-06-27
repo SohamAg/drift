@@ -236,29 +236,41 @@
 
       <div id="adapter-result" class="hidden">
         <div class="card">
-          <h3>Summary</h3>
+          <h3>
+            Summary
+            <button type="button" id="adapter-download-json" class="ghost-btn" style="float: right; font-size: 12px;">
+              ⇩ Download raw JSON
+            </button>
+          </h3>
           <div id="adapter-summary" class="kv-grid"></div>
           <div id="adapter-headline" style="margin-top: 12px;"></div>
         </div>
 
         <div class="card">
           <h3>Baseline run</h3>
-          <p class="help">Graph output with no perturbations — the anchor for divergence detection.</p>
+          <p class="help">
+            What the graph does without any chaos applied. Every step the graph took, in
+            order. Click any step to inspect the full update + running state.
+          </p>
           <div id="adapter-baseline"></div>
         </div>
 
         <div class="card">
           <h3>Perturbations</h3>
           <p class="help">
-            <span class="pill danger">CRASH</span> graph threw an exception under this chaos event.
-            <span class="pill warning">DIVERGE</span> graph output differs from baseline.
-            <span class="pill success">UNCHANGED</span> graph absorbed the perturbation; no observable effect.
-            <span class="pill info">JUDGE</span> LLM-judge finding from drift's 6-family taxonomy (only when judge is on).
+            Each row is one chaos-perturbed run of the graph, sorted by severity.
+            <span class="pill danger">CRASH</span> graph threw an exception.
+            <span class="pill warning">DIVERGE</span> output differs from baseline (post-cascade).
+            <span class="pill success">UNCHANGED</span> graph absorbed the perturbation.
+            <span class="pill info">JUDGE</span> LLM judge flagged something on the trace.
+            <span class="pill info" style="background:#854d0e22;color:#a16207;">COORD</span>
+            structured coordination detector fired.
           </p>
           <p class="help">
-            Tiered mode tags each per-field divergence with the tier that surfaced it:
-            <code>t0</code> structural, <code>t1</code> exact, <code>t2</code> similarity (outside noise band),
-            <code>t3</code> judge (LLM-confirmed not equivalent).
+            Click any perturbation to expand its trace side-by-side with the baseline.
+            In tiered mode, per-field divergences are tagged with the tier that surfaced
+            them: <code>t0</code> structural, <code>t1</code> exact, <code>t2</code>
+            similarity (outside noise band), <code>t3</code> judge (LLM-confirmed not equivalent).
           </p>
           <div id="adapter-perturbations" class="failure-list"></div>
         </div>
