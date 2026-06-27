@@ -1225,6 +1225,51 @@ def create_app() -> FastAPI:
         descriptions, default state shape, and availability (deps + API key)."""
         return {"graphs": _list_adapter_graphs()}
 
+    @app.get("/api/results")
+    def results_index() -> dict[str, Any]:
+        """List every saved experiment JSON file under results/, grouped by
+        experiment subdirectory. Powers the Results browser in the UI."""
+        results_root = Path(__file__).resolve().parents[2] / "results"
+        groups: dict[str, list[dict[str, Any]]] = {}
+        if results_root.exists():
+            for path in sorted(results_root.rglob("*.json")):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                rel = path.relative_to(results_root)
+                group = rel.parts[0] if len(rel.parts) > 1 else "(root)"
+                groups.setdefault(group, []).append({
+                    "name": rel.name,
+                    "path": str(rel).replace("\\", "/"),
+                    "size_bytes": stat.st_size,
+                    "modified_ts": stat.st_mtime,
+                })
+        # Most-recent first within each group.
+        for entries in groups.values():
+            entries.sort(key=lambda e: e["modified_ts"], reverse=True)
+        return {"groups": groups}
+
+    @app.get("/api/results/{relpath:path}")
+    def results_file(relpath: str) -> Any:
+        """Serve a single result JSON file by relative path. Restricted to
+        results/ and bare *.json to keep the surface boring."""
+        results_root = (Path(__file__).resolve().parents[2] / "results").resolve()
+        try:
+            full = (results_root / relpath).resolve()
+        except (ValueError, OSError) as e:
+            raise HTTPException(400, f"bad path: {e}")
+        if not str(full).startswith(str(results_root)):
+            raise HTTPException(403, "path escapes results/")
+        if not full.exists() or not full.is_file():
+            raise HTTPException(404, "not found")
+        if full.suffix != ".json":
+            raise HTTPException(400, "only .json supported")
+        try:
+            return json.loads(full.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            raise HTTPException(500, f"could not read: {e}")
+
     @app.post("/api/adapter-demo")
     async def adapter_demo(req: AdapterDemoRequest) -> dict[str, Any]:
         """Run drift's auto-chaos against a bundled langgraph-shaped graph.
