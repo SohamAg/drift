@@ -328,6 +328,89 @@ select option:hover {
  * larger sets (e.g. the adapter preset selector with 4 options). */
 .seg { grid-auto-flow: column; grid-auto-columns: 1fr; grid-template-columns: none; }
 
+/* Trace renderer — used by the Adapter tab to show each super-step of a graph
+ * run. Each step is a row with a tiny step-number badge, the node name, and a
+ * collapsible JSON view of the update + state_after. */
+.trace-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.trace-step {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  align-items: start;
+  cursor: pointer;
+  transition: background .12s ease;
+}
+.trace-step:hover { background: var(--bg-elev); }
+.trace-step-num {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-align: right;
+  padding-top: 2px;
+}
+.trace-step-body { min-width: 0; }
+.trace-step-node {
+  font-family: var(--mono, monospace);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.trace-step-summary {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trace-step-detail {
+  margin-top: 8px;
+  display: none;
+}
+.trace-step.expanded .trace-step-detail { display: block; }
+.trace-step-detail pre {
+  margin: 4px 0;
+  font-size: 11px;
+  background: var(--bg-elev-1);
+  padding: 6px 8px;
+  border-radius: 4px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+/* Side-by-side baseline/perturbed compare inside an expanded perturbation. */
+.trace-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 10px;
+}
+.trace-compare-col h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--fg-muted);
+  margin: 0 0 6px 0;
+}
+.trace-compare-col .trace-step { grid-template-columns: 28px 1fr; padding: 4px 8px; }
+.trace-compare-col .trace-step-num { font-size: 10px; }
+
+/* Perturbation row — collapsible. */
+.perturbation-row { padding: 0; }
+.perturbation-row > .perturbation-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
+}
+.perturbation-row.expanded > .perturbation-head { border-bottom-color: var(--border); }
+.perturbation-row .perturbation-body { display: none; padding: 10px 12px; }
+.perturbation-row.expanded .perturbation-body { display: block; }
+
 /* Chip row — small clickable badges used for example queries / quick fills. */
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
