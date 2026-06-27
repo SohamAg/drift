@@ -23,68 +23,17 @@
   </header>
 
   <nav class="tabs" role="tablist">
-    <button class="tab active" data-tab="detect"  role="tab">Detect <span class="badge">demo</span></button>
-    <button class="tab"        data-tab="adapter" role="tab">Adapter <span class="badge">new</span></button>
-    <button class="tab"        data-tab="new"     role="tab">New Run</button>
-    <button class="tab"        data-tab="runs"    role="tab">Runs <span id="runs-count" class="badge"></span></button>
-    <button class="tab"        data-tab="compare" role="tab">Compare</button>
+    <button class="tab active" data-tab="adapter" role="tab">Adapter</button>
+    <button class="tab"        data-tab="results" role="tab">Results</button>
     <button class="tab"        data-tab="custom"  role="tab">Custom</button>
-    <button class="tab"        data-tab="results" role="tab">Results <span class="badge">raw</span></button>
-    <button class="tab"        data-tab="about"   role="tab">About</button>
+    <button class="tab"        data-tab="new"     role="tab">Native sim</button>
+    <button class="tab"        data-tab="runs"    role="tab">Runs <span id="runs-count" class="badge"></span></button>
   </nav>
 
   <main>
 
-    <!-- ===================== DETECT (MAST demo) ===================== -->
-    <section id="tab-detect" class="tab-panel active">
-      <div class="card">
-        <h2>Detect coordination failures in real multi-agent runs</h2>
-        <p class="help">
-          Four traces from the
-          <a href="https://arxiv.org/abs/2503.13657" target="_blank" rel="noopener">MAST benchmark</a>,
-          each annotated by three human raters across the 14-mode failure taxonomy.
-          <em>Cached</em> replays drift's prior analysis (free); <em>Run live</em> re-runs
-          the judge against the raw trace (a few cents at gpt-4o-mini rates).
-        </p>
-
-        <div class="field" style="margin-top: 12px;">
-          <label for="mast-user-guidelines">
-            Optional guidelines for live runs <span class="muted">(one per line)</span>
-          </label>
-          <textarea id="mast-user-guidelines" class="mono"
-                    rows="3"
-                    placeholder="agents must verify before producing a final answer&#10;the planner must respond to questions from worker agents within 3 steps"></textarea>
-          <p class="help">
-            Plain-English patterns appended to the judge's prompt. Live runs apply them; cached runs ignore them.
-          </p>
-        </div>
-
-        <div id="mast-cards" class="mast-card-grid">
-          <div class="empty">Loading curated MAST traces…</div>
-        </div>
-      </div>
-
-      <div id="mast-result" class="hidden">
-        <div class="card">
-          <h3 id="mast-result-title">Analysis</h3>
-          <div id="mast-result-meta" class="kv-grid"></div>
-          <div id="mast-result-summary" style="margin-top: 12px;"></div>
-        </div>
-        <div class="card">
-          <h3>Side-by-side: human ground truth vs drift's judge</h3>
-          <p class="help">
-            <span class="pill sev-critical">TP</span> drift correctly flagged a real failure.
-            <span class="pill sev-critical">FN</span> drift missed a real failure.
-            <span class="pill warn">FP</span> drift flagged something annotators didn't.
-            <span class="pill">TN</span> both agreed: no failure of that mode.
-          </p>
-          <div id="mast-result-modes" class="failure-list"></div>
-        </div>
-      </div>
-    </section>
-
     <!-- ===================== ADAPTER ===================== -->
-    <section id="tab-adapter" class="tab-panel">
+    <section id="tab-adapter" class="tab-panel active">
       <div class="card">
         <h2>Test a multi-agent graph under chaos</h2>
         <p class="help">
@@ -421,52 +370,6 @@
       </div>
     </section>
 
-    <!-- ===================== COMPARE ===================== -->
-    <section id="tab-compare" class="tab-panel">
-      <div class="card">
-        <h2>Compare two runs</h2>
-        <div class="row two-col">
-          <div class="field">
-            <label for="cmp-a">Run A</label>
-            <select id="cmp-a"></select>
-          </div>
-          <div class="field">
-            <label for="cmp-b">Run B</label>
-            <select id="cmp-b"></select>
-          </div>
-        </div>
-        <div class="actions">
-          <button id="cmp-go" class="primary">Compare</button>
-        </div>
-      </div>
-
-      <div id="cmp-result" class="hidden">
-        <div id="cmp-relationship" class="card tight hidden"></div>
-
-        <div class="grid two-col">
-          <div class="card">
-            <h3>Failures by type</h3>
-            <div id="cmp-failures"></div>
-          </div>
-          <div class="card">
-            <h3>Final state</h3>
-            <div id="cmp-world"></div>
-          </div>
-        </div>
-
-        <div class="card">
-          <h3>Divergence timeline</h3>
-          <div id="cmp-timeline" class="divergence-timeline"></div>
-        </div>
-
-        <div class="card">
-          <h3>Action mix per agent</h3>
-          <div id="cmp-agents"></div>
-        </div>
-      </div>
-    </section>
-
-
     <!-- ===================== CUSTOM (BYOA) ===================== -->
     <section id="tab-custom" class="tab-panel">
       <div class="card">
@@ -610,29 +513,6 @@
           </div>
           <div id="results-viewer-body"></div>
         </div>
-      </div>
-    </section>
-
-    <!-- ===================== ABOUT ===================== -->
-    <section id="tab-about" class="tab-panel">
-      <div class="card">
-        <h2>About drift</h2>
-        <p>
-          Drift is pre-deploy testing for multi-agent AI systems. It auto-generates
-          coordination-breaking scenarios from your state's schema, runs them through
-          your agent, and surfaces the crashes plus silent divergences you wouldn't
-          have written a test for because you didn't think of them.
-        </p>
-        <p>
-          The headline integration is the <strong>LangGraph adapter</strong> (Adapter tab) —
-          point it at any compiled graph and get findings in 30 seconds. The native
-          simulator (New Run / Runs / Compare) is the original stack that drives drift's
-          own agents end-to-end; runs are written to <code>runs/</code> as JSONL and can
-          be replayed or compared. The Detect tab benchmarks drift's LLM judge against
-          human-annotated traces from the MAST paper.
-        </p>
-        <h3>Bundled topologies (for the native simulator)</h3>
-        <div id="about-topologies"></div>
       </div>
     </section>
 
