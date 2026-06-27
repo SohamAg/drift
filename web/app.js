@@ -114,11 +114,9 @@
   function activateTab(name) {
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
-    if (name === 'detect') initDetect();
     if (name === 'adapter') initAdapter();
     if (name === 'results') initResults();
     if (name === 'runs') refreshRuns();
-    if (name === 'compare') populateComparePickers();
     if (name === 'custom') initCustom();
   }
   $$('.tab').forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
@@ -143,14 +141,13 @@
         api('/api/scenarios'),
       ]);
       populateTopologyDropdown();
-      populateAboutTopologies();
     } catch (e) {
       toast('Could not load topologies/scenarios: ' + e.message, 'error');
     }
     await refreshRuns();
-    // Detect tab is the default landing — load its cards immediately so
-    // visitors see content without having to click anything.
-    initDetect();
+    // Adapter is now the default landing tab — initialize it immediately so
+    // the graph picker + presets are ready when the user arrives.
+    initAdapter();
   }
 
   function populateTopologyDropdown() {
@@ -195,23 +192,6 @@
       $('#scenario-help').textContent =
         `${s.scripted_count} scripted events at fixed timesteps; ${s.stochastic_count} stochastic entries.`;
     }
-  }
-
-  function populateAboutTopologies() {
-    const host = $('#about-topologies');
-    host.innerHTML = '';
-    TOPOLOGIES.forEach(t => {
-      const card = el('div', { class: `topo-card ${t.name}` }, [
-        el('h4', {}, [topoDot(t.name), t.name]),
-        el('p',  { text: t.description }),
-        el('div', { style: 'margin-bottom: 10px;' }, t.roles.map(r =>
-          el('span', { class: 'pill', text: r })
-        )),
-        el('div', { class: 'muted mono',
-                    text: `${t.detectors.length} detectors · ${t.events.length} events` }),
-      ]);
-      host.appendChild(card);
-    });
   }
 
   // ---------- new run form ------------------------------------------------
@@ -585,15 +565,7 @@
     openForkModal(CURRENT_DETAIL);
   });
   $('#detail-compare-parent-btn').addEventListener('click', () => {
-    const parent = CURRENT_DETAIL?.summary?.parent_run_id;
-    const self = CURRENT_DETAIL?.summary?.run_id;
-    if (!parent || !self) return;
-    activateTab('compare');
-    setTimeout(() => {
-      $('#cmp-a').value = parent;
-      $('#cmp-b').value = self;
-      $('#cmp-go').click();
-    }, 50);
+    toast('Compare tab was removed in the recent UI cleanup', 'error');
   });
   $$('#fork-modal .modal-close').forEach(b => b.addEventListener('click', closeForkModal));
   $('#fork-modal').addEventListener('click', (ev) => {
@@ -870,7 +842,8 @@
     paintCompare(data);
   }
 
-  $('#cmp-go').addEventListener('click', () => doCompare('auto'));
+  // Compare tab was removed from the UI but the helper functions remain
+  // — Run Detail's "compare to parent" link still calls into doCompare().
 
   function paintCompare(data) {
     $('#cmp-result').classList.remove('hidden');
