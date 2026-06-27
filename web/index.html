@@ -85,124 +85,149 @@
     <!-- ===================== ADAPTER ===================== -->
     <section id="tab-adapter" class="tab-panel">
       <div class="card">
-        <h2>LangGraph adapter — schema-driven chaos against any compiled graph</h2>
+        <h2>Test a multi-agent graph under chaos</h2>
         <p class="help">
-          Drift takes a compiled LangGraph (or anything with <code>.invoke(state)</code>),
-          reads the runtime types of your state, generates type-appropriate perturbations
-          (flip bool, remove dict key, reverse list, corrupt string, etc.), and invokes
-          your graph once per perturbation. Results bucket into <strong>crashed</strong>,
-          <strong>diverged</strong> from baseline, or <strong>unchanged</strong>.
-        </p>
-        <p class="help">
-          Demo graph below is a 3-node ticket triage that looks up
-          <code>open_tickets[ticket_id]</code> in both terminal nodes without a defensive
-          check — exactly the kind of bug a developer wouldn't write a test for. Chaos
-          that empties or rekeys the dict reliably crashes it.
+          Pick an agent system, optionally edit the user message, and drift will run it
+          once normally (the <strong>baseline</strong>), then again many times with the
+          input subtly broken in different ways. Each run lands in
+          <strong>crashed</strong>, <strong>diverged</strong> from baseline, or
+          <strong>unchanged</strong>. Findings from the deterministic coordination
+          library and the LLM judge attach to whatever step they reference.
         </p>
 
         <form id="adapter-form">
-          <div class="row two-col">
+
+          <!-- STEP 1 — pick the graph + the query you want to test ------------- -->
+          <div class="row two-col" style="margin-bottom: 4px;">
             <div class="field">
-              <label for="adapter-intensity">Chaos intensity</label>
-              <select id="adapter-intensity" name="intensity">
-                <option value="off">off (baseline only)</option>
-                <option value="light">light (~8% per step)</option>
-                <option value="moderate">moderate (~18%)</option>
-                <option value="aggressive" selected>aggressive (~35%)</option>
-              </select>
+              <label for="adapter-graph">Graph to test</label>
+              <select id="adapter-graph"></select>
+              <p class="help" id="adapter-graph-help">Loading…</p>
             </div>
             <div class="field">
-              <label for="adapter-seed">Seed</label>
-              <input type="number" id="adapter-seed" name="seed" value="7" />
+              <label for="adapter-query" id="adapter-query-label">Query</label>
+              <input type="text" id="adapter-query" placeholder="" />
+              <p class="help">
+                The user's message / task. Drift uses this as the initial state's content,
+                then perturbs around it.
+              </p>
+              <div id="adapter-query-examples" class="chip-row" style="margin-top: 6px;"></div>
             </div>
           </div>
 
-          <div class="field">
-            <label for="adapter-exclude">Exclude patterns <span class="muted">(optional, comma-separated)</span></label>
-            <input type="text" id="adapter-exclude" name="exclude"
-                   placeholder="e.g. flip_bool, corrupt_string[priority]" />
+          <!-- STEP 2 — preset selector. Sets the knobs below. ------------------ -->
+          <div class="field" style="margin-top: 8px;">
+            <label>Run preset</label>
+            <div class="seg" role="tablist">
+              <input type="radio" name="adapter-preset" id="adapter-preset-quick" value="quick" />
+              <label for="adapter-preset-quick" class="seg-opt">Quick (~5s, free)</label>
+
+              <input type="radio" name="adapter-preset" id="adapter-preset-balanced" value="balanced" checked />
+              <label for="adapter-preset-balanced" class="seg-opt">Balanced (~30s, ~$0.01)</label>
+
+              <input type="radio" name="adapter-preset" id="adapter-preset-thorough" value="thorough" />
+              <label for="adapter-preset-thorough" class="seg-opt">Thorough (~2m, ~$0.10)</label>
+
+              <input type="radio" name="adapter-preset" id="adapter-preset-custom" value="custom" />
+              <label for="adapter-preset-custom" class="seg-opt">Custom</label>
+            </div>
             <p class="help">
-              Substring match against pattern names. <code>flip_bool</code>
-              skips all bool flips; <code>open_tickets</code> skips every
-              perturbation targeting that field.
+              <strong>Quick</strong>: light chaos, no LLM judge, raw equality. Great for
+              "does it crash" smoke tests.
+              <strong>Balanced</strong>: aggressive chaos + LLM judge + tiered cascade
+              with 3 baseline rollouts. The recommended default.
+              <strong>Thorough</strong>: same as balanced but more perturbations + higher
+              judge budget.
+              <strong>Custom</strong>: edit the advanced knobs below.
             </p>
           </div>
 
-          <div class="row two-col">
-            <div class="field">
-              <label for="adapter-judge">LLM judge over traces</label>
-              <select id="adapter-judge">
-                <option value="off" selected>Off — crash + diverge only</option>
-                <option value="mock">Mock — placeholder finding (no API)</option>
-                <option value="openai">OpenAI — real judge (needs OPENAI_API_KEY)</option>
-              </select>
-              <p class="help">
-                Adds the 6-family coordination judge over each perturbation's per-super-step
-                trace. Findings prefixed <code>llm:</code> across coordination_contradiction,
-                grounding_failure, state_drift, emergent_decay, gate_bypass, user_guideline.
-              </p>
-            </div>
-            <div class="field">
-              <label for="adapter-judge-model">Judge model <span class="muted">(optional)</span></label>
-              <input type="text" id="adapter-judge-model" placeholder="gpt-4o-mini" />
-            </div>
-          </div>
+          <!-- STEP 3 — advanced knobs, collapsed by default -------------------- -->
+          <details id="adapter-advanced" style="margin-top: 12px;">
+            <summary class="help" style="cursor: pointer;">Advanced settings</summary>
 
-          <div class="row two-col">
-            <div class="field">
-              <label for="adapter-divergence-mode">Divergence mode</label>
-              <select id="adapter-divergence-mode">
-                <option value="exact" selected>exact — whole-dict equality (fast, free, noisy on LLM graphs)</option>
-                <option value="tiered">tiered — cost cascade (structural → exact → noise → judge)</option>
-                <option value="off">off — skip divergence detection entirely</option>
-              </select>
-              <p class="help">
-                <strong>tiered</strong> measures baseline natural variance first, then
-                filters perturbations against that noise floor. Only divergences that
-                exceed the noise band reach the LLM judge (capped by budget below).
-              </p>
+            <div class="row two-col" style="margin-top: 8px;">
+              <div class="field">
+                <label for="adapter-intensity">Chaos intensity</label>
+                <select id="adapter-intensity" name="intensity">
+                  <option value="off">off (baseline only)</option>
+                  <option value="light">light (~8% per step)</option>
+                  <option value="moderate">moderate (~18%)</option>
+                  <option value="aggressive" selected>aggressive (~35%)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="adapter-seed">Seed</label>
+                <input type="number" id="adapter-seed" name="seed" value="7" />
+              </div>
             </div>
-            <div class="field">
-              <label for="adapter-baseline-rollouts">Baseline rollouts <span class="muted">(noise floor sample size)</span></label>
-              <input type="number" id="adapter-baseline-rollouts" value="1" min="1" max="10" />
-              <p class="help">
-                For <code>tiered</code> mode: how many baseline runs to measure natural
-                variance. Each adds one graph invocation. Default 1 = no noise floor;
-                3–5 is a good range for LLM-driven graphs.
-              </p>
-            </div>
-          </div>
 
-          <div class="row two-col">
+            <div class="row two-col">
+              <div class="field">
+                <label for="adapter-max-perturbations">Max perturbations</label>
+                <input type="number" id="adapter-max-perturbations" value="8" min="1" max="50" />
+                <p class="help">Each perturbation = one full graph invocation. Caps cost.</p>
+              </div>
+              <div class="field">
+                <label for="adapter-exclude">Exclude patterns <span class="muted">(comma-sep)</span></label>
+                <input type="text" id="adapter-exclude" name="exclude"
+                       placeholder="e.g. flip_bool, corrupt_string[priority]" />
+              </div>
+            </div>
+
+            <div class="row two-col">
+              <div class="field">
+                <label for="adapter-judge">LLM judge over traces</label>
+                <select id="adapter-judge">
+                  <option value="off">Off — crash + diverge only</option>
+                  <option value="mock">Mock — placeholder finding</option>
+                  <option value="openai" selected>OpenAI — real judge</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="adapter-judge-model">Judge model <span class="muted">(optional)</span></label>
+                <input type="text" id="adapter-judge-model" placeholder="gpt-4o-mini" />
+              </div>
+            </div>
+
+            <div class="row two-col">
+              <div class="field">
+                <label for="adapter-divergence-mode">Divergence mode</label>
+                <select id="adapter-divergence-mode">
+                  <option value="exact">exact — whole-dict equality</option>
+                  <option value="tiered" selected>tiered — cost cascade</option>
+                  <option value="off">off — skip divergence detection</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="adapter-baseline-rollouts">Baseline rollouts</label>
+                <input type="number" id="adapter-baseline-rollouts" value="3" min="1" max="10" />
+              </div>
+            </div>
+
+            <div class="row two-col">
+              <div class="field">
+                <label for="adapter-max-judge-calls">Max judge calls (tier-3 budget)</label>
+                <input type="number" id="adapter-max-judge-calls" value="10" min="0" max="100" />
+              </div>
+              <div class="field">
+                <label for="adapter-similarity-threshold">Similarity threshold (tier 2)</label>
+                <input type="number" id="adapter-similarity-threshold" value="0.85" min="0" max="1" step="0.05" />
+              </div>
+            </div>
+
             <div class="field">
-              <label for="adapter-max-judge-calls">Max judge calls <span class="muted">(divergence equivalence budget)</span></label>
-              <input type="number" id="adapter-max-judge-calls" value="10" min="0" max="100" />
+              <label for="adapter-user-guidelines">User guidelines <span class="muted">(plain English, one per line)</span></label>
+              <textarea id="adapter-user-guidelines" class="mono" rows="3"
+                        placeholder="respond must never reply about a ticket that doesn't exist in open_tickets&#10;escalate must only fire when is_premium is true or priority == high"></textarea>
               <p class="help">
-                Hard ceiling on tier-3 judge calls across the whole run. Only survivors of
-                tier 0-2 ever hit the judge. <code>0</code> disables tier 3 entirely.
+                Additional patterns the judge enforces alongside its 6 built-in categories.
+                Matches reported under <code>llm:user_guideline:&lt;n&gt;</code>.
               </p>
             </div>
-            <div class="field">
-              <label for="adapter-similarity-threshold">Similarity threshold <span class="muted">(tier 2)</span></label>
-              <input type="number" id="adapter-similarity-threshold" value="0.85" min="0" max="1" step="0.05" />
-              <p class="help">
-                Text-similarity floor (0–1) for tier 2. Effective threshold is
-                <code>max(this, baseline-vs-baseline floor)</code>.
-              </p>
-            </div>
-          </div>
+          </details>
 
-          <div class="field">
-            <label for="adapter-user-guidelines">User guidelines <span class="muted">(optional, one per line)</span></label>
-            <textarea id="adapter-user-guidelines" class="mono" rows="3"
-                      placeholder="respond must never reply about a ticket that doesn't exist in open_tickets&#10;escalate must only fire when is_premium is true or priority == high"></textarea>
-            <p class="help">
-              Plain-English patterns the judge will additionally watch for. Matches reported
-              under <code>llm:user_guideline:&lt;n&gt;</code>. Only effective when judge is on.
-            </p>
-          </div>
-
-          <div class="row">
+          <div class="row" style="margin-top: 16px;">
             <button type="button" id="adapter-run" class="primary">Run drift_test</button>
             <span id="adapter-status" class="muted"></span>
           </div>
