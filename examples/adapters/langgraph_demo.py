@@ -141,7 +141,8 @@ def _build_graph() -> Any:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--intensity", default="aggressive",
-                        choices=["off", "light", "moderate", "aggressive"])
+                        choices=["off", "light", "moderate", "aggressive", "exhaustive"],
+                        help="'exhaustive' walks every applicable pattern in the schema once.")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--judge", default="off",
                         choices=["off", "mock", "openai"],
