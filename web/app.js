@@ -1595,6 +1595,18 @@
       baseline_rollouts: 5,
       max_judge_calls: 25,
     },
+    exhaustive: {
+      // Pre-deploy gate: every applicable chaos pattern in the schema, no
+      // sampling. The adapter auto-raises max_perturbations to catalog size
+      // when we leave it at the default, but we set a generous explicit
+      // ceiling here so users see what they're opting into.
+      intensity: 'exhaustive',
+      max_perturbations: 100,
+      judge: 'openai',
+      divergence_mode: 'tiered',
+      baseline_rollouts: 5,
+      max_judge_calls: 50,
+    },
   };
 
   let _adapterWired = false;

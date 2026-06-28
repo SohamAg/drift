@@ -62,9 +62,13 @@
               <input type="radio" name="adapter-preset" id="adapter-preset-thorough" value="thorough" />
               <label for="adapter-preset-thorough" class="seg-opt">Thorough · ~2m · ~$0.10</label>
 
+              <input type="radio" name="adapter-preset" id="adapter-preset-exhaustive" value="exhaustive" />
+              <label for="adapter-preset-exhaustive" class="seg-opt">Exhaustive · every pattern · ~$0.50+</label>
+
               <input type="radio" name="adapter-preset" id="adapter-preset-custom" value="custom" />
               <label for="adapter-preset-custom" class="seg-opt">Custom</label>
             </div>
+            <div id="adapter-preset-hint" class="muted" style="font-size: 11px; margin-top: 6px; min-height: 14px;"></div>
           </div>
 
           <details id="adapter-advanced" style="margin-top: 12px;">
@@ -78,6 +82,7 @@
                   <option value="light">light</option>
                   <option value="moderate">moderate</option>
                   <option value="aggressive" selected>aggressive</option>
+                  <option value="exhaustive">exhaustive (every pattern, no sampling)</option>
                 </select>
               </div>
               <div class="field">
