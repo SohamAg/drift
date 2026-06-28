@@ -273,6 +273,16 @@ class AdapterResult:
             len(p.coordination_findings) for p in self.perturbations
         )
 
+    @property
+    def n_filtered_divergences(self) -> int:
+        """Total tier-2/3 candidates the cascade dropped across all perturbations.
+
+        These are diffs that *occurred* but the noise band or tier-3 judge
+        cleared. A non-zero count under UNCHANGED-bucket perturbations is a
+        cue to audit — open the row to see what was filtered and why.
+        """
+        return sum(len(p.filtered_divergences) for p in self.perturbations)
+
     def summary_lines(self) -> list[str]:
         """Human-readable one-line-per-bucket summary. Used by the example
         and any caller who wants a quick stdout report."""
@@ -287,6 +297,8 @@ class AdapterResult:
             out.append(f"  judge findings  : {self.n_judge_findings}")
         if self.n_coordination_findings:
             out.append(f"  coordination    : {self.n_coordination_findings}")
+        if self.n_filtered_divergences:
+            out.append(f"  filtered (audit): {self.n_filtered_divergences}")
         if self.baseline.crashed:
             out.append(
                 f"  ! baseline itself crashed: {self.baseline.error_type}: {self.baseline.error}"
