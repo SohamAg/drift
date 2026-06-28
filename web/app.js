@@ -1955,6 +1955,7 @@
   }
 
   function renderPerturbation(p, baseline) {
+    const filtered = p.filtered_divergences || [];
     let pillClass, pillText, detail;
     if (p.crashed) {
       pillClass = 'pill danger';
@@ -1967,7 +1968,18 @@
     } else {
       pillClass = 'pill success';
       pillText  = 'UNCHANGED';
-      detail = 'Graph absorbed the perturbation; no observable change in final state.';
+      // If the cascade filtered out any divergences (tier-2 noise band or
+      // tier-3 judge-equivalent), say so up front instead of asserting a
+      // clean pass. Lets the user audit "is this really noise?"
+      if (filtered.length) {
+        const reasons = [
+          filtered.filter(d => d.tier === 2).length && `${filtered.filter(d => d.tier === 2).length} within noise band`,
+          filtered.filter(d => d.tier === 3 && d.judge_equivalent).length && `${filtered.filter(d => d.tier === 3 && d.judge_equivalent).length} judge-equivalent`,
+        ].filter(Boolean).join(', ');
+        detail = `Field-level diffs occurred but the cascade filtered them (${reasons}). Expand to audit.`;
+      } else {
+        detail = 'Graph absorbed the perturbation; no observable change in final state.';
+      }
     }
 
     const findingBadges = [];
@@ -1980,6 +1992,16 @@
     }
     if ((p.judge_findings || []).length) {
       findingBadges.push(el('span', { class: 'pill info', text: `JUDGE×${p.judge_findings.length}` }));
+    }
+    // UNCHANGED-audit chip — only show on rows that actually had something
+    // filtered. The chip count is "how many diffs were quietly cleared."
+    if (filtered.length) {
+      findingBadges.push(el('span', {
+        class: 'pill info',
+        style: 'background:var(--bg-elev-2);color:var(--fg-muted);border:1px dashed var(--fg-muted);',
+        text: `FILTERED×${filtered.length}`,
+        title: 'Tier-2/3 candidates the cascade dropped. Expand to see why.',
+      }));
     }
 
     const head = el('div', { class: 'perturbation-head' }, [
