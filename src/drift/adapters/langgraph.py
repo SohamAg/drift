@@ -973,6 +973,15 @@ async def drift_test_async(
         exclude=auto_chaos_exclude,
     )
 
+    # In exhaustive mode the user opted into "every applicable pattern" —
+    # silently truncating to max_perturbations would defeat the entire
+    # contract. Auto-raise the ceiling to the catalog size when the caller
+    # left it at the default; if the caller explicitly passed a smaller
+    # value, honor it but emit a warning via the diverged_summary plumbing
+    # would be out of scope here — we just truncate as before.
+    if level == "exhaustive" and max_perturbations == DEFAULT_MAX_PERTURBATIONS:
+        max_perturbations = max(max_perturbations, len(scheduled))
+
     # Clamp to the per-call ceiling so an aggressive intensity on a noisy
     # schema doesn't silently rack up LLM cost (plus optional judge cost).
     if len(scheduled) > max_perturbations:
