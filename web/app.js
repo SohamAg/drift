@@ -2022,6 +2022,16 @@
     (p.coordination_findings || []).forEach(f => bodyChildren.push(renderCoordFinding(f)));
     (p.judge_findings || []).forEach(f => bodyChildren.push(renderJudgeFinding(f)));
     (p.divergence_details || []).forEach(d => bodyChildren.push(renderFieldDivergence(d)));
+    // UNCHANGED-audit: render filtered candidates with a header so users
+    // know these are diffs the cascade dropped (not real divergences).
+    if (filtered.length) {
+      bodyChildren.push(el('div', {
+        class: 'help',
+        style: 'margin: 10px 0 4px 0;',
+        text: `Filtered by cascade (${filtered.length}) — diffs that occurred but the noise band or judge cleared:`,
+      }));
+      filtered.forEach(d => bodyChildren.push(renderFilteredDivergence(d)));
+    }
 
     // Side-by-side trace compare: baseline left, perturbed right.
     if ((p.trace || []).length || (baseline && (baseline.trace || []).length)) {
@@ -2110,6 +2120,45 @@
         meta.length ? el('span', { class: 'muted', text: meta.join(' · ') }) : null,
       ]),
       el('div', { class: 'mono muted', style: 'white-space: pre-wrap; word-break: break-word; font-size: 0.85em;', text: d.summary }),
+    ]);
+  }
+
+  function renderFilteredDivergence(d) {
+    // UNCHANGED-audit row. Visually distinct from confirmed divergences:
+    // muted color, "FILTERED" pill, plus the value pair and the reason
+    // (noise band similarity or judge reasoning) inline. The point is for
+    // the user to be able to scan and decide "yes that really was noise"
+    // or "no the judge missed something, let me look closer."
+    const filterReason = d.judge_equivalent
+      ? `judge: ${d.judge_reasoning || 'equivalent'}`
+      : d.within_noise_band
+        ? `noise band match${d.similarity_score != null ? ` (sim=${d.similarity_score.toFixed(2)})` : ''}`
+        : 'filtered';
+    const stringify = v => {
+      if (v == null) return String(v);
+      if (typeof v === 'string') return v.length > 200 ? v.slice(0, 197) + '…' : v;
+      try { return JSON.stringify(v); } catch { return String(v); }
+    };
+    return el('div', {
+      class: 'filtered-divergence',
+      style: 'margin-top: 4px; padding: 6px 8px; border-left: 2px dashed var(--fg-muted); background: var(--bg-elev-1); border-radius: 3px; opacity: 0.92;',
+    }, [
+      el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 4px; flex-wrap: wrap;' }, [
+        el('span', {
+          class: 'pill info',
+          style: 'background:var(--bg-elev-2);color:var(--fg-muted);border:1px dashed var(--fg-muted);',
+          text: `FILTERED t${d.tier}`,
+        }),
+        el('code', { text: d.name }),
+        el('span', { class: 'muted', style: 'font-size: 11px;', text: filterReason }),
+      ]),
+      el('div', { class: 'mono', style: 'font-size: 11px; white-space: pre-wrap; word-break: break-word;' }, [
+        el('span', { class: 'muted', text: 'baseline:  ' }),
+        el('span', { text: stringify(d.baseline_value) }),
+        el('br'),
+        el('span', { class: 'muted', text: 'perturbed: ' }),
+        el('span', { text: stringify(d.perturbed_value) }),
+      ]),
     ]);
   }
 
