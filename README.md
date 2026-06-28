@@ -15,7 +15,7 @@ from drift.adapters.langgraph import drift_test
 result = drift_test(
     graph=my_compiled_graph,
     initial_state={"messages": [...], "session_id": "abc", "is_premium": True},
-    intensity="aggressive",
+    intensity="aggressive",   # or "exhaustive" for full schema coverage
     divergence_mode="tiered",
     baseline_rollouts=3,
 )
@@ -47,6 +47,12 @@ type-appropriate perturbations: `flip_bool`, `corrupt_string`, `clear_list`,
 `duplicate_list_entry`, `remove_dict_key`, `inject_fake_dict_key`,
 `boundary_numeric`, etc. No configuration. Runs each perturbed state through
 your graph and bucket the outcomes into `crashed | diverged | unchanged`.
+
+Intensity ladder: `off` / `light` (~8%) / `moderate` (~18%) / `aggressive`
+(~35%) / `exhaustive`. Exhaustive ignores sampling and walks every
+applicable pattern in the schema exactly once — meant for pre-deploy
+gates where you want full schema coverage at the cost of one graph run
+per fuzzable pattern.
 
 ### 2. Tiered divergence cascade
 LLM outputs are non-deterministic — naive `baseline ≠ perturbed` produces
@@ -97,9 +103,10 @@ Five tabs:
 
 - **Adapter** — pick a graph (bundled ticket-triage demo or the
   langgraph-supervisor math+research demo), type a query, pick a preset
-  (Quick / Balanced / Thorough), run. Get every super-step of baseline +
-  every per-perturbation trace side-by-side, every finding with a
-  click-to-expand explanation, raw JSON download.
+  (Quick / Balanced / Thorough / Exhaustive), run. Get every super-step of
+  baseline + every per-perturbation trace side-by-side, every finding with
+  a click-to-expand explanation, raw JSON download. Exhaustive is the
+  "every applicable pattern in the schema, no sampling" pre-deploy gate.
 - **Results** — browse every saved experiment JSON from `results/`.
 - **Custom** — bring your own `@drift.agent` Python and run it through
   drift's native simulator.
