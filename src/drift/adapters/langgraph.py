@@ -193,6 +193,12 @@ class PerturbationResult:
     # entry is a tier-0/1 diff. With divergence_mode="tiered", entries also
     # include tier-2 (similarity) and tier-3 (judge) outcomes.
     divergence_details: list[FieldDivergence] = field(default_factory=list)
+    # UNCHANGED-audit: per-field divergence candidates the cascade FILTERED
+    # OUT — tier-2 within-noise-band matches and tier-3 judge-equivalent
+    # matches. Preserved so the user can audit "was this really noise or
+    # did drift quietly drop a real change?" Each entry carries the
+    # similarity score / judge reasoning that justified the filter.
+    filtered_divergences: list[FieldDivergence] = field(default_factory=list)
     # Phase 3: deterministic coordination-failure detector findings.
     # Populated whenever the perturbation produced a trace; empty otherwise.
     # Each entry is a FailureRecord.model_dump(mode="json") dict.
@@ -756,8 +762,8 @@ async def _diff_states_tiered(
     judge_llm: JudgeLLM | None,
     similarity_threshold: float,
     judge_calls_remaining: int,
-) -> tuple[bool, str, list[FieldDivergence], int]:
-    """Full cost cascade. Returns (diverged, summary, details, judge_used).
+) -> tuple[bool, str, list[FieldDivergence], list[FieldDivergence], int]:
+    """Full cost cascade. Returns (diverged, summary, confirmed, filtered, judge_used).
 
     Pipeline per field:
       tier 0 — structural change (always reported, never noise-filtered)
@@ -765,16 +771,21 @@ async def _diff_states_tiered(
       tier 2 — within noise band? (drop if within)
       tier 3 — judge equivalence (drop if judged equivalent), budget-gated.
 
-    Fields surviving all four tiers are returned as confirmed divergences.
+    Fields surviving all four tiers are returned as `confirmed` divergences.
+    Fields dropped at tier 2 (noise band) or tier 3 (judge equivalent) are
+    returned separately as `filtered` — these carry the similarity score /
+    judge reasoning that justified the filter, so the user can audit
+    UNCHANGED verdicts rather than trusting them blindly.
     """
     if baseline is None or perturbed is None:
-        return (False, "", [], 0)
+        return (False, "", [], [], 0)
 
     tier0 = _tier0_structural(baseline, perturbed)
     seen0 = {d.name for d in tier0}
     tier1_candidates = _tier1_exact(baseline, perturbed, skip_fields=seen0)
 
     confirmed: list[FieldDivergence] = list(tier0)
+    filtered: list[FieldDivergence] = []
     judge_used = 0
 
     for cand in tier1_candidates:
@@ -784,6 +795,10 @@ async def _diff_states_tiered(
         cand.within_noise_band = within
         if within:
             # Filtered by noise floor — natural variance, not divergence.
+            # Preserve the candidate so the user can audit "is this really
+            # noise?" by inspecting similarity score vs the noise band.
+            cand.tier = 2
+            filtered.append(cand)
             continue
         if judge_llm is None or judge_calls_remaining - judge_used <= 0:
             # No judge available or budget exhausted: surface the
@@ -800,16 +815,20 @@ async def _diff_states_tiered(
         cand.judge_equivalent = eq
         cand.judge_reasoning = reasoning
         if eq:
-            continue  # judge cleared it
+            # Judge cleared the field — keep the candidate around with its
+            # reasoning string so the user can audit the verdict.
+            filtered.append(cand)
+            continue
         cand.summary = f"{cand.summary}  · judge: {reasoning}"
         confirmed.append(cand)
 
     if not confirmed:
-        return (False, "", [], judge_used)
+        return (False, "", [], filtered, judge_used)
     return (
         True,
         "; ".join(d.summary for d in confirmed),
         confirmed,
+        filtered,
         judge_used,
     )
 
@@ -1048,11 +1067,14 @@ async def drift_test_async(
         final, ptrace, etype, err, took = await _run_one(graph, post_state)
 
         # Divergence detection: dispatch through the cost cascade.
+        # `divfiltered` carries tier-2/3 candidates the cascade dropped —
+        # preserved so the UI can audit UNCHANGED verdicts.
+        divfiltered: list[FieldDivergence] = []
         if divergence_mode == "off":
             diverged, divsum, divdetails = (False, "", [])
         elif divergence_mode == "tiered":
             remaining = max(0, max_judge_calls - judge_calls_used)
-            diverged, divsum, divdetails, used = await _diff_states_tiered(
+            diverged, divsum, divdetails, divfiltered, used = await _diff_states_tiered(
                 baseline.final_state, final, noise_band,
                 judge_llm if remaining > 0 else None,
                 similarity_threshold, remaining,
@@ -1095,6 +1117,7 @@ async def drift_test_async(
                 trace=ptrace,
                 judge_findings=pert_findings,
                 divergence_details=divdetails,
+                filtered_divergences=divfiltered,
                 coordination_findings=pert_coord,
             )
         )
