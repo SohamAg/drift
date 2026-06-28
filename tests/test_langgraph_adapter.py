@@ -270,6 +270,73 @@ def test_max_perturbations_clamps():
     assert len(result.perturbations) <= 2
 
 
+def test_exhaustive_runs_every_pattern_in_catalog():
+    # The contract for exhaustive: one perturbation per applicable pattern.
+    state = {
+        "flag": True,
+        "label": "active",
+        "counter": 5,
+        "items": {"a": 1, "b": 2},
+        "queue": [1, 2, 3],
+    }
+    result = drift_test(
+        graph=_PassthroughGraph(),
+        initial_state=state,
+        intensity="exhaustive",
+        seed=1,
+    )
+    # patterns_total reflects the discovered catalog. In exhaustive mode
+    # the number of perturbations must equal it (every pattern, no sampling).
+    assert result.intensity == "exhaustive"
+    assert result.patterns_total > 0
+    assert len(result.perturbations) == result.patterns_total
+    # And the set of pattern_types covered must include every supported
+    # type the schema can produce: flip_bool, corrupt_string, boundary_numeric,
+    # clear_dict / remove_dict_key / inject_fake_dict_key, clear_list /
+    # duplicate_list_entry / reverse_list.
+    pattern_types = {p.pattern_type for p in result.perturbations}
+    assert {
+        "flip_bool", "corrupt_string", "boundary_numeric",
+        "clear_dict", "remove_dict_key", "inject_fake_dict_key",
+        "clear_list", "duplicate_list_entry", "reverse_list",
+    } <= pattern_types
+
+
+def test_exhaustive_is_deterministic_across_calls():
+    # Two exhaustive runs with different seeds must produce the same
+    # pattern set (order may differ via dict iteration, but the multiset
+    # of (pattern_type, target field) must match).
+    state = {"flag": True, "items": {"a": 1}, "queue": [1, 2]}
+    a = drift_test(graph=_PassthroughGraph(), initial_state=state,
+                   intensity="exhaustive", seed=1)
+    b = drift_test(graph=_PassthroughGraph(), initial_state=state,
+                   intensity="exhaustive", seed=999)
+    key_a = sorted((p.pattern_type, p.event_name) for p in a.perturbations)
+    key_b = sorted((p.pattern_type, p.event_name) for p in b.perturbations)
+    assert key_a == key_b
+
+
+def test_exhaustive_honors_explicit_max_perturbations():
+    # If the caller passes an explicit max_perturbations smaller than the
+    # catalog, we still truncate. Auto-raise only fires when the cap is
+    # at its default value.
+    state = {
+        "f1": True, "f2": False,
+        "d1": {"a": 1}, "d2": {"b": 2}, "d3": {"c": 3},
+        "l1": [1, 2, 3], "l2": ["x", "y"],
+    }
+    result = drift_test(
+        graph=_PassthroughGraph(),
+        initial_state=state,
+        intensity="exhaustive",
+        seed=1,
+        max_perturbations=3,
+    )
+    assert len(result.perturbations) == 3
+    # patterns_total is still the unfiltered catalog count.
+    assert result.patterns_total > 3
+
+
 # ---- graph-shape compatibility ------------------------------------------
 
 
