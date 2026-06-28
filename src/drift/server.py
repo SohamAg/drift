@@ -1371,6 +1371,12 @@ def create_app() -> FastAPI:
                 "judge_findings": p.judge_findings,
                 "coordination_findings": p.coordination_findings,
                 "divergence_details": [_divergence_dict(d) for d in p.divergence_details],
+                # UNCHANGED-audit: tier-2/3 candidates the cascade dropped.
+                # Empty in exact mode (no cascade); populated under tiered
+                # mode whenever the noise band or judge cleared a field-level
+                # diff. Lets the UI show "we filtered this because X" instead
+                # of silently reporting UNCHANGED.
+                "filtered_divergences": [_divergence_dict(d) for d in p.filtered_divergences],
             }
 
         # Render the noise band into a JSON-friendly shape. We dump as dicts
