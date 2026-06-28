@@ -814,7 +814,7 @@ def test_tiered_cascade_filters_noise_keeps_real_divergence():
         ]),
         "answer": _analyze_field_variance("answer", ["approved", "approved"]),
     }
-    diverged, _summary, details, judge_used = asyncio.run(_diff_states_tiered(
+    diverged, _summary, details, filtered, judge_used = asyncio.run(_diff_states_tiered(
         baseline, perturbed, noise_band=noise, judge_llm=None,
         similarity_threshold=0.5, judge_calls_remaining=0,
     ))
@@ -824,6 +824,11 @@ def test_tiered_cascade_filters_noise_keeps_real_divergence():
     names = [d.name for d in details]
     assert "answer" in names
     assert "reply" not in names
+    # The dropped 'reply' candidate is preserved in `filtered` so the
+    # UI can show "we filtered this because it was within the noise band."
+    filtered_names = [d.name for d in filtered]
+    assert filtered_names == ["reply"]
+    assert filtered[0].within_noise_band is True
     assert judge_used == 0  # no judge configured
 
 
@@ -843,7 +848,7 @@ def test_tiered_cascade_calls_judge_for_survivors_and_respects_budget():
     perturbed = {"a": "ONE", "b": "TWO", "c": "THREE"}
     # No noise band -> tier 2 fails closed -> tier 3 fires for each field.
     judge = _JudgeNotEquiv()
-    diverged, _summary, details, judge_used = asyncio.run(_diff_states_tiered(
+    diverged, _summary, details, filtered, judge_used = asyncio.run(_diff_states_tiered(
         baseline, perturbed, noise_band={}, judge_llm=judge,
         similarity_threshold=0.85, judge_calls_remaining=2,
     ))
@@ -855,6 +860,8 @@ def test_tiered_cascade_calls_judge_for_survivors_and_respects_budget():
     # All 3 fields end up in details (tier-3-judged ones marked as different,
     # the budget-exhausted one falls through as a plain tier-1 divergence).
     assert len(details) == 3
+    # Judge said "not equivalent" for both calls -> nothing filtered.
+    assert filtered == []
 
 
 def test_tiered_cascade_judge_clears_equivalent_fields():
@@ -866,13 +873,21 @@ def test_tiered_cascade_judge_clears_equivalent_fields():
 
     baseline = {"reply": "Approved"}
     perturbed = {"reply": "Yes, approved."}
-    diverged, _summary, details, judge_used = asyncio.run(_diff_states_tiered(
+    diverged, _summary, details, filtered, judge_used = asyncio.run(_diff_states_tiered(
         baseline, perturbed, noise_band={}, judge_llm=_JudgeEquiv(),
         similarity_threshold=0.85, judge_calls_remaining=5,
     ))
     assert diverged is False
     assert details == []
     assert judge_used == 1
+    # UNCHANGED-audit contract: the cleared candidate is preserved in
+    # `filtered` with the judge's reasoning string + judge_equivalent=True
+    # so the user can see WHY drift dropped it.
+    assert len(filtered) == 1
+    assert filtered[0].name == "reply"
+    assert filtered[0].tier == 3
+    assert filtered[0].judge_equivalent is True
+    assert filtered[0].judge_reasoning == "same meaning"
 
 
 def test_tiered_cascade_judge_error_surfaces_divergence():
@@ -884,7 +899,7 @@ def test_tiered_cascade_judge_error_surfaces_divergence():
 
     baseline = {"x": "a"}
     perturbed = {"x": "b"}
-    diverged, _, details, judge_used = asyncio.run(_diff_states_tiered(
+    diverged, _, details, filtered, judge_used = asyncio.run(_diff_states_tiered(
         baseline, perturbed, noise_band={}, judge_llm=_JudgeBroken(),
         similarity_threshold=0.85, judge_calls_remaining=5,
     ))
@@ -892,6 +907,9 @@ def test_tiered_cascade_judge_error_surfaces_divergence():
     assert len(details) == 1
     assert "judge error" in details[0].summary.lower()
     assert judge_used == 1
+    # Judge error must NOT silently drop into filtered — it surfaces as a
+    # real divergence so the user can see something went wrong.
+    assert filtered == []
 
 
 def test_tiered_cascade_passes_through_tier0_structural_always():
@@ -905,7 +923,7 @@ def test_tiered_cascade_passes_through_tier0_structural_always():
         "y": _analyze_field_variance("y", ["a", "a", "a"]),
         "z": _analyze_field_variance("z", ["added", "added"]),
     }
-    diverged, _, details, _ = asyncio.run(_diff_states_tiered(
+    diverged, _, details, _filtered, _ = asyncio.run(_diff_states_tiered(
         baseline, perturbed, noise_band=noise, judge_llm=None,
         similarity_threshold=0.85, judge_calls_remaining=0,
     ))
