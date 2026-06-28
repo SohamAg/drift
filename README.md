@@ -229,7 +229,7 @@ e:\drift\
 ├── scenarios/             — YAML scenario library (native simulator)
 ├── data/external/mast/    — MAST dataset (gitignored)
 ├── results/               — Saved experiment JSON (gitignored)
-├── tests/                 — Pytest suite (175 tests)
+├── tests/                 — Pytest suite (176 tests)
 └── runs/                  — Per-run JSONL logs (native simulator, gitignored)
 ```
 
@@ -240,7 +240,7 @@ $env:PYTHONPATH = "e:\drift\src"
 python -m pytest -q
 ```
 
-175 tests cover: chaos engine + tiered divergence cascade + judge wiring,
+176 tests cover: chaos engine + tiered divergence cascade + judge wiring,
 all 3 coordination detectors with synthetic positive + negative + cross-
 specificity fixtures, LangGraph adapter integration paths, native simulator
 detectors + topology smoke tests, fork + replay, world invariants.
