@@ -226,7 +226,7 @@ e:\drift\
 ├── scenarios/             — YAML scenario library (native simulator)
 ├── data/external/mast/    — MAST dataset (gitignored)
 ├── results/               — Saved experiment JSON (gitignored)
-├── tests/                 — Pytest suite (166 tests)
+├── tests/                 — Pytest suite (175 tests)
 └── runs/                  — Per-run JSONL logs (native simulator, gitignored)
 ```
 
@@ -237,7 +237,7 @@ $env:PYTHONPATH = "e:\drift\src"
 python -m pytest -q
 ```
 
-166 tests cover: chaos engine + tiered divergence cascade + judge wiring,
+175 tests cover: chaos engine + tiered divergence cascade + judge wiring,
 all 3 coordination detectors with synthetic positive + negative + cross-
 specificity fixtures, LangGraph adapter integration paths, native simulator
 detectors + topology smoke tests, fork + replay, world invariants.
@@ -247,7 +247,9 @@ detectors + topology smoke tests, fork + replay, world invariants.
 ## Limitations to be honest about
 
 - **Initial-state chaos only.** Mid-execution perturbation (via langgraph's
-  checkpointer) is in `FUTURE_DIRECTIONS.md` as phase 4 — not built.
+  checkpointer) is in `FUTURE_DIRECTIONS.md` as phase 4 — not built. Within
+  the initial-state target, `intensity="exhaustive"` covers every applicable
+  schema pattern; what's missing is *time-axis* coverage, not schema coverage.
 - **Tier 2 noise filtering is weak on rich message structures.** When state
   contains LangChain `AIMessage` objects with metadata (IDs, timestamps,
   token counts), text-similarity scoring can't filter well — everything
