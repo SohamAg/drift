@@ -65,6 +65,9 @@ all false positives. Drift filters through 4 stages:
 - **t3 judge** — LLM equivalence check on survivors (budget-capped)
 
 Trades a few cents per run for ~zero false positives on LLM-driven graphs.
+Every drop at t2/t3 is preserved in `PerturbationResult.filtered_divergences`
+with its reasoning intact, so UNCHANGED verdicts are auditable — you can
+see exactly which diffs the noise band or the judge cleared and why.
 
 ### 3. Coordination-failure detector library
 Curated, source-cited detectors for documented multi-agent failure modes.
@@ -254,8 +257,11 @@ detectors + topology smoke tests, fork + replay, world invariants.
   contains LangChain `AIMessage` objects with metadata (IDs, timestamps,
   token counts), text-similarity scoring can't filter well — everything
   escalates to tier 3, burning judge budget. Real product limit.
-- **UNCHANGED verdicts hide the judge's reasoning.** When the judge says
-  "equivalent" and drift drops the divergence, you can't audit the call.
+- **Tier-2 noise filtering is rough on text fields with high natural
+  variance** (template-y prose, similar but not identical responses).
+  The noise floor measurement helps, but the threshold itself is one
+  number applied across all fields — a per-field comparator override
+  would be more correct.
 - **3 coordination detectors is a starting kit, not a complete library.**
   The detectors target universal patterns (auto-approving verifier, infinite
   handoff, excess fanout). Domain-specific failures need the user-guideline
