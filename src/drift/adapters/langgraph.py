@@ -1150,8 +1150,13 @@ def drift_test(
             inject, list -> clear/duplicate/reverse, str -> corrupt,
             numeric -> boundary).
         intensity: "off" | "light" (~8%) | "moderate" (~18%, default) |
-            "aggressive" (~35%). Same scale as drift.run's auto_chaos.
-            True is an alias for "moderate".
+            "aggressive" (~35%) | "exhaustive". Same scale as drift.run's
+            auto_chaos. True is an alias for "moderate". "exhaustive"
+            schedules EVERY applicable chaos pattern in the schema exactly
+            once (deterministic; ignores seed for selection). Use it for
+            pre-deploy gates where you want full schema coverage; cost
+            scales with schema breadth, so a graph that LLM-calls per
+            invocation will see one LLM call per fuzzable pattern.
         seed: RNG seed for reproducible perturbation selection.
         auto_chaos_exclude: substrings to skip when scheduling chaos.
             E.g. ["flip_bool"] disables all bool flips; ["messages"]
@@ -1159,6 +1164,9 @@ def drift_test(
         max_perturbations: hard cap on perturbation runs per call.
             Each perturbation is a full graph invocation; if your graph
             calls an LLM, this directly bounds cost. Default 25.
+            When intensity="exhaustive" AND max_perturbations is at the
+            default, the ceiling is auto-raised to the catalog size so
+            "exhaustive" actually means exhaustive. Explicit caps still win.
         state_factory: optional callable returning a fresh initial_state
             dict per invocation. Use when initial_state contains non-
             picklable / non-deep-copyable objects (e.g. opened connections).
