@@ -9,10 +9,17 @@ The intensity setting maps to a per-step injection probability:
   - light     -> 8%
   - moderate  -> 18%
   - aggressive-> 35%
+  - exhaustive-> deterministic; schedules every applicable pattern in the
+                 catalog exactly once. Use pre-deploy when you want
+                 "every chaos pattern drift can produce, no sampling."
+                 Cost scales linearly with schema breadth — expect 1
+                 perturbation per fuzzable field per pattern type.
 
 At each step the engine rolls one die per the probability; on hit, it picks
 a chaos spec from the catalog (weighted by spec type — see _weighted_pick)
-and builds a fresh event targeted at the right field.
+and builds a fresh event targeted at the right field. In exhaustive mode
+the random path is skipped entirely — every spec in the catalog is
+scheduled once, spread across the available step window.
 
 Scheduling avoids step 1 (gives agents one observation cycle to bind
 expectations) and avoids the final step (so any failures the chaos surfaces
@@ -36,6 +43,10 @@ INTENSITY_FREQUENCY: dict[str, float] = {
     "light": 0.08,
     "moderate": 0.18,
     "aggressive": 0.35,
+    # "exhaustive" is a sentinel: the scheduler ignores the frequency and
+    # walks the full catalog deterministically. We give it value 1.0 so any
+    # legacy code that multiplies by the freq still behaves sanely.
+    "exhaustive": 1.0,
 }
 
 
@@ -94,13 +105,27 @@ def plan_auto_chaos(
     if not catalog:
         return []
 
-    rng = random.Random(seed ^ 0xC4A05)  # decorrelate from agent RNGs
-    scheduled: list[tuple[int, Event]] = []
-
     # Skip step 1 (let agents see the initial state) and the very last step
     # (give detectors a chance to react).
     first_step = 2
     last_step = max(first_step, steps - 1)
+
+    if level == "exhaustive":
+        # Deterministic full-catalog walk: every applicable pattern, exactly
+        # once, in stable pattern_name order. Spread across the available
+        # step window; if the catalog is larger than the window, multiple
+        # events land on the same later step (the runner just executes them
+        # in order — order within a step is fine for the adapter, and the
+        # native simulator already tolerates multi-event ticks).
+        scheduled: list[tuple[int, Event]] = []
+        window = max(1, last_step - first_step + 1)
+        for i, spec in enumerate(sorted(catalog, key=lambda s: s.pattern_name)):
+            t = first_step + min(i, window - 1)
+            scheduled.append((t, spec.build()))
+        return scheduled
+
+    rng = random.Random(seed ^ 0xC4A05)  # decorrelate from agent RNGs
+    scheduled = []
     for t in range(first_step, last_step + 1):
         if rng.random() >= freq:
             continue
@@ -126,8 +151,10 @@ def auto_chaos_events(
     Args:
         state: a drift.WorldState instance.
         steps: total simulation steps in the planned run.
-        intensity: "off" | "light" | "moderate" | "aggressive"; True is an
-            alias for "moderate"; False / None for "off".
+        intensity: "off" | "light" | "moderate" | "aggressive" | "exhaustive";
+            True is an alias for "moderate"; False / None for "off".
+            "exhaustive" schedules every applicable pattern in the catalog
+            exactly once (no sampling); use for pre-deploy gates.
         seed: RNG seed for both pattern selection and per-event randomness.
         exclude: iterable of pattern substrings to skip. "flip_bool" excludes
             every flip_bool[<field>] event; "flip_bool[approved]" excludes
