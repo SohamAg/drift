@@ -395,6 +395,20 @@ select option:hover {
 .perturbation-row .perturbation-body { display: none; padding: 10px 12px; }
 .perturbation-row.expanded .perturbation-body { display: block; }
 
+/* UNCHANGED-audit: tier-2/3 candidates the cascade dropped (within noise
+ * band, or judge said equivalent). Lower visual weight than confirmed
+ * divergences so they don't compete with real findings, but still visible
+ * enough that the user can scan and audit. */
+.filtered-divergence {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-left: 2px dashed var(--fg-muted);
+  background: var(--bg-elev-1);
+  border-radius: 3px;
+  opacity: 0.92;
+}
+.filtered-divergence:hover { opacity: 1; }
+
 /* Finding-type "?" help button + popover. Renders next to each
  * failure_type code so users can click to get a plain-English explanation
  * without leaving the page. */
