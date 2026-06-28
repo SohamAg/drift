@@ -1231,6 +1231,13 @@ def drift_test(
         AdapterResult with .baseline and .perturbations; see those
         classes for fields. .summary_lines() gives a quick stdout report.
 
+        Each PerturbationResult carries:
+          - divergence_details   — confirmed divergences after the cascade
+          - filtered_divergences — tier-2/3 candidates the cascade dropped
+            (within-noise-band matches OR judge-equivalent matches), each
+            with the similarity score or judge_reasoning that justified
+            the filter. Use this to audit UNCHANGED verdicts.
+
     Notes:
         This calls asyncio.run() internally — don't call from inside an
         already-running event loop. Use drift_test_async in that case.
