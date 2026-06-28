@@ -967,6 +967,52 @@ def test_divergence_mode_tiered_with_rollouts_measures_noise_band():
         assert band.sample_count == 3
 
 
+def test_filtered_divergences_flow_through_drift_test_async():
+    """The UNCHANGED audit contract: when a perturbation produces a real
+    field-level diff that the tier-3 judge clears, the candidate must
+    appear in PerturbationResult.filtered_divergences with the judge's
+    reasoning preserved — even though `diverged` ends up False."""
+
+    class _EquivJudge:
+        async def judge(self, *, system: str, user: str) -> str:
+            # The same stub serves the coordination judge (failures: [])
+            # and the divergence judge (equivalent: true). Discriminate
+            # via the system prompt that the divergence judge uses.
+            if "semantically equivalent" in system or '"equivalent"' in system:
+                return '{"equivalent": true, "reasoning": "rephrased same meaning"}'
+            return '{"failures": []}'
+
+    # _DivergingGraph echoes the perturbed state under "seen", so every
+    # perturbation produces a tier-1 candidate the judge then clears.
+    result = drift_test(
+        graph=_DivergingGraph(),
+        initial_state={"flag": True, "items": ["x", "y"]},
+        intensity="moderate",
+        seed=4,
+        divergence_mode="tiered",
+        judge_llm=_EquivJudge(),
+        max_judge_calls=20,
+    )
+
+    # At least one perturbation should be UNCHANGED with a non-empty audit
+    # trail. (Structural tier-0 diffs still surface as real divergences;
+    # tier-1 diffs the judge clears land in filtered_divergences.)
+    unchanged_with_audit = [
+        p for p in result.perturbations
+        if not p.crashed and not p.diverged and p.filtered_divergences
+    ]
+    assert unchanged_with_audit, (
+        "expected at least one UNCHANGED perturbation to carry a filtered "
+        "audit trail; got "
+        f"{[(p.event_name, p.diverged, len(p.filtered_divergences)) for p in result.perturbations]}"
+    )
+
+    sample = unchanged_with_audit[0].filtered_divergences[0]
+    assert sample.tier == 3
+    assert sample.judge_equivalent is True
+    assert "rephrased" in sample.judge_reasoning
+
+
 def test_divergence_mode_tiered_judge_budget_is_tracked():
     """judge_calls_used reports how many tier-3 calls fired."""
 
