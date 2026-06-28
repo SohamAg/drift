@@ -270,6 +270,77 @@ def test_intensity_table_is_monotonic():
     assert freqs == sorted(freqs)
 
 
+def test_exhaustive_registered_in_intensity_table():
+    # Exhaustive is a sentinel, not part of the monotonic random-sampling
+    # ladder, but it must be a recognized intensity value.
+    assert "exhaustive" in INTENSITY_FREQUENCY
+    assert _normalize_intensity("exhaustive") == "exhaustive"
+    assert _normalize_intensity("EXHAUSTIVE") == "exhaustive"
+
+
+def test_exhaustive_schedules_every_pattern_exactly_once():
+    state = _DemoState()
+    catalog = discover_field_patterns(state)
+    plan = plan_auto_chaos(state=state, steps=30, intensity="exhaustive", seed=1)
+    # One scheduled event per spec in the catalog. No more, no fewer.
+    assert len(plan) == len(catalog)
+    # Every pattern_name appears in the schedule.
+    scheduled_names = [type(e).__name__ + ":" + e.field for _, e in plan]
+    # Same set of (event_class, field) pairs as the catalog produces.
+    expected = sorted(
+        type(spec.build()).__name__ + ":" + spec.field for spec in catalog
+    )
+    assert sorted(scheduled_names) == expected
+
+
+def test_exhaustive_is_deterministic_across_runs():
+    a = plan_auto_chaos(state=_DemoState(), steps=30, intensity="exhaustive", seed=1)
+    b = plan_auto_chaos(state=_DemoState(), steps=30, intensity="exhaustive", seed=999)
+    # Different seeds must produce the same schedule — exhaustive ignores RNG.
+    ka = [(t, type(e).__name__, e.field) for t, e in a]
+    kb = [(t, type(e).__name__, e.field) for t, e in b]
+    assert ka == kb
+
+
+def test_exhaustive_respects_exclude():
+    state = _DemoState()
+    full = plan_auto_chaos(state=state, steps=30, intensity="exhaustive", seed=1)
+    excluded = plan_auto_chaos(
+        state=state, steps=30, intensity="exhaustive", seed=1,
+        exclude=["flip_bool"],
+    )
+    assert len(excluded) == len(full) - 1
+    assert not any(isinstance(e, FlipBoolField) for _, e in excluded)
+
+
+def test_exhaustive_stacks_extras_on_final_step_when_catalog_wider_than_window():
+    # 5 steps -> window is steps 2..4 (3 slots). _DemoState yields many more
+    # patterns than that, so the tail must stack on the last available step.
+    state = _DemoState()
+    catalog = discover_field_patterns(state)
+    assert len(catalog) > 3  # sanity
+    plan = plan_auto_chaos(state=state, steps=5, intensity="exhaustive", seed=1)
+    assert len(plan) == len(catalog)
+    timesteps = [t for t, _ in plan]
+    assert min(timesteps) == 2
+    assert max(timesteps) == 4  # last_step = steps - 1
+
+
+def test_exhaustive_returns_empty_when_all_patterns_excluded():
+    # Exclude every pattern type the catalog produces — exhaustive should
+    # then have nothing to schedule and return [].
+    excludes = [
+        "flip_bool", "boundary_numeric", "corrupt_string",
+        "clear_dict", "inject_fake_dict_key", "remove_dict_key",
+        "clear_list", "duplicate_list_entry", "reverse_list",
+    ]
+    plan = plan_auto_chaos(
+        state=_DemoState(), steps=30, intensity="exhaustive", seed=1,
+        exclude=excludes,
+    )
+    assert plan == []
+
+
 # ---- end-to-end via drift.run --------------------------------------------
 
 
