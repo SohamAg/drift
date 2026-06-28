@@ -1629,7 +1629,11 @@
       const node = $(sel);
       if (node) node.addEventListener('change', () => {
         const customRadio = $('#adapter-preset-custom');
-        if (customRadio && !customRadio.checked) customRadio.checked = true;
+        if (customRadio && !customRadio.checked) {
+          customRadio.checked = true;
+          const hint = $('#adapter-preset-hint');
+          if (hint) hint.textContent = ADAPTER_PRESET_HINTS.custom || '';
+        }
       });
     });
 
@@ -1699,7 +1703,19 @@
     });
   }
 
+  // Plain-English hint shown under the preset seg. Lets the user see what
+  // a preset actually costs/does without expanding the Advanced section.
+  const ADAPTER_PRESET_HINTS = {
+    quick: 'Light chaos + exact-equality diff. No LLM calls, runs in seconds. Good for smoke tests.',
+    balanced: 'Aggressive chaos + judge on tiered cascade. ~$0.01 / run. Default for everyday use.',
+    thorough: 'Aggressive chaos + 5 baseline rollouts + larger judge budget. ~$0.10 / run.',
+    exhaustive: 'Every applicable chaos pattern in the schema, no sampling. Cost scales with schema breadth — wide schemas can hit $0.50+ per run. Use as a pre-deploy gate.',
+    custom: 'Tweak any knob in Advanced settings.',
+  };
+
   function applyAdapterPreset(name) {
+    const hint = $('#adapter-preset-hint');
+    if (hint) hint.textContent = ADAPTER_PRESET_HINTS[name] || '';
     const p = ADAPTER_PRESETS[name];
     if (!p) return;  // "custom" — leave knobs alone
     $('#adapter-intensity').value = p.intensity;
