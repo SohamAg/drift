@@ -1415,6 +1415,7 @@ def create_app() -> FastAPI:
             "n_unchanged": result.n_unchanged,
             "n_judge_findings": result.n_judge_findings,
             "n_coordination_findings": result.n_coordination_findings,
+            "n_filtered_divergences": result.n_filtered_divergences,
             "summary_lines": result.summary_lines(),
             "baseline": _baseline_dict(result.baseline),
             "perturbations": [_pert_dict(p) for p in result.perturbations],
