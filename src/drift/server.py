@@ -328,9 +328,13 @@ class AdapterDemoRequest(BaseModel):
     state_overrides: dict[str, Any] = Field(default_factory=dict)
 
     # ---- Chaos knobs --------------------------------------------------------
-    intensity: str = "aggressive"   # off | light | moderate | aggressive
+    # off | light | moderate | aggressive | exhaustive.
+    # exhaustive walks every applicable pattern in the schema once; for LLM-
+    # backed graphs that means one full graph invocation per fuzzable field-
+    # pattern pair, so we widen max_perturbations' upper bound to fit it.
+    intensity: str = "aggressive"
     seed: int = 7
-    max_perturbations: int = Field(default=25, ge=1, le=100)
+    max_perturbations: int = Field(default=25, ge=1, le=500)
     auto_chaos_exclude: list[str] = Field(default_factory=list)
 
     # ---- Judge (optional LLM over traces) -----------------------------------
