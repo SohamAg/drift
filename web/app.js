@@ -2139,10 +2139,7 @@
       if (typeof v === 'string') return v.length > 200 ? v.slice(0, 197) + '…' : v;
       try { return JSON.stringify(v); } catch { return String(v); }
     };
-    return el('div', {
-      class: 'filtered-divergence',
-      style: 'margin-top: 4px; padding: 6px 8px; border-left: 2px dashed var(--fg-muted); background: var(--bg-elev-1); border-radius: 3px; opacity: 0.92;',
-    }, [
+    return el('div', { class: 'filtered-divergence' }, [
       el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 4px; flex-wrap: wrap;' }, [
         el('span', {
           class: 'pill info',
