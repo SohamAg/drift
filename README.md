@@ -102,7 +102,7 @@ python -m drift serve
 
 Opens at **http://127.0.0.1:8765**.
 
-Five tabs:
+Three tabs:
 
 - **Adapter** — pick a graph (bundled ticket-triage demo or the
   langgraph-supervisor math+research demo), type a query, pick a preset
@@ -111,11 +111,8 @@ Five tabs:
   a click-to-expand explanation, raw JSON download. Exhaustive is the
   "every applicable pattern in the schema, no sampling" pre-deploy gate.
 - **Results** — browse every saved experiment JSON from `results/`.
-- **Custom** — bring your own `@drift.agent` Python and run it through
-  drift's native simulator.
-- **Native sim** — configure a topology-based simulation (legacy path,
-  predates the LangGraph adapter).
-- **Runs** — every saved native-sim run on disk.
+- **Custom** — currently paused while we re-wire `@drift.agent` to the
+  adapter path (was previously powered by the now-removed native simulator).
 
 ---
 
@@ -174,33 +171,6 @@ OPENAI_API_KEY=sk-...
 
 ---
 
-## Native simulator (legacy)
-
-Predates the LangGraph adapter. Drives 4 agents through a shared mutable
-world for N timesteps with topology-specific event scheduling and detector
-fires. Run via CLI or the **Native sim** UI tab.
-
-```powershell
-python -m drift run `
-  --topology code_review `
-  --scenario scenarios/release_pressure.yaml `
-  --steps 30 `
-  --seed 7 `
-  --llm openai `
-  --prompt-variant hardened `
-  --run-id my_run
-```
-
-Three bundled topologies (`support`, `code_review`, `ops`), each with its
-own agents + events + topology-specific detectors. Logs land in
-`runs/<run_id>/` as JSONL. The web UI's **Runs** tab reads from there.
-
-Useful for: stress-testing prompt variants over time, comparing naive vs
-hardened prompts, simulating long horizons. Less useful than the LangGraph
-adapter if you have a real graph you want to test.
-
----
-
 ## Project layout
 
 ```
@@ -208,30 +178,29 @@ e:\drift\
 ├── src/drift/
 │   ├── adapters/
 │   │   └── langgraph.py   — drift_test() + tiered cascade + judge wiring
-│   ├── agents/            — Agent base + per-topology agents
+│   ├── agents/base.py     — Action / Agent data classes (used by adapter + library)
 │   ├── chaos/             — Schema-walked auto-chaos engine
-│   ├── events/            — Event base + topology events + YAML scheduler
+│   ├── events/base.py     — Event / EventRecord (used by chaos patterns)
 │   ├── failures/
-│   │   ├── library/       — Coordination-failure detector library
-│   │   ├── detectors.py   — Topology-specific deterministic detectors
-│   │   ├── judge.py       — LLM judge over agent traces
+│   │   ├── library/       — Coordination-failure detector library (3 detectors)
+│   │   ├── judge.py       — LLM judge over agent traces (6-family taxonomy)
 │   │   └── mast_eval.py   — MAST dataset evaluation helpers
 │   ├── llm/               — Protocol + ScriptedMockLLM + OpenAI adapter
-│   ├── observability/     — JSONL logger + metrics tracker
-│   ├── topologies/        — Topology registry (support / code_review / ops)
-│   ├── world.py           — WorldState + Case + World API
-│   ├── simulation.py      — Native simulator per-tick loop
-│   ├── server.py          — FastAPI app
-│   ├── cli.py             — argparse entrypoint
-│   └── sdk.py             — @drift.agent decorator
-├── web/                   — Vanilla HTML/CSS/JS frontend, no build step
+│   ├── world.py           — WorldState data primitive
+│   ├── server.py          — FastAPI app (adapter + results + MAST endpoints)
+│   ├── cli.py             — `drift serve`
+│   └── sdk.py             — @drift.agent decorator (data shape; runtime pending re-wire)
+├── web/                   — Vanilla HTML/CSS/JS frontend (3 tabs: Adapter / Results / Custom-stub)
 ├── examples/adapters/     — drift_test runners + validation harnesses
-├── scenarios/             — YAML scenario library (native simulator)
 ├── data/external/mast/    — MAST dataset (gitignored)
 ├── results/               — Saved experiment JSON (gitignored)
-├── tests/                 — Pytest suite (176 tests)
-└── runs/                  — Per-run JSONL logs (native simulator, gitignored)
+└── tests/                 — Pytest suite (140 tests)
 ```
+
+> **2026-06-29 cleanup:** the native per-tick simulator (topologies / scenarios
+> / fork+replay / run history) was removed alongside its UI tabs. The
+> LangGraph adapter is the single supported path. The 3-detector coordination
+> library + the LLM judge are the value layer running over adapter traces.
 
 ### Tests
 
@@ -240,10 +209,11 @@ $env:PYTHONPATH = "e:\drift\src"
 python -m pytest -q
 ```
 
-176 tests cover: chaos engine + tiered divergence cascade + judge wiring,
-all 3 coordination detectors with synthetic positive + negative + cross-
-specificity fixtures, LangGraph adapter integration paths, native simulator
-detectors + topology smoke tests, fork + replay, world invariants.
+140 tests cover: chaos engine (schema-walked perturbations + intensities
+including exhaustive), tiered divergence cascade + UNCHANGED audit,
+LLM judge (6-family taxonomy + user guidelines + dedup), all 3 coordination
+detectors with synthetic positive + negative + cross-specificity fixtures,
+LangGraph adapter integration paths.
 
 ---
 
