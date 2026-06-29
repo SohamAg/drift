@@ -4,12 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "drift"
-version = "0.1.0"
-description = "Multi-agent stress-test simulator for emergent failures in evolving environments"
+version = "0.2.0"
+description = "Pre-deploy chaos testing for LangGraph multi-agent systems — schema-walked auto-chaos + curated coordination-failure detector library + LLM judge over traces"
 requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.5",
-    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
