@@ -341,60 +341,6 @@ def test_exhaustive_returns_empty_when_all_patterns_excluded():
     assert plan == []
 
 
-# ---- end-to-end via drift.run --------------------------------------------
-
-
-def test_drift_run_with_auto_chaos_populates_result_field():
-    @drift.agent(role="observer")
-    async def observer(state, memory):
-        return drift.Action(kind="no_op")
-
-    result = drift.run(
-        agents=[observer],
-        state=_DemoState(),
-        steps=20,
-        seed=42,
-        auto_chaos="aggressive",
-    )
-    assert len(result.auto_chaos_injected) > 0
-    # Every auto-chaos record's name carries the prefix; ids match a subset
-    # of the full events list.
-    for rec in result.auto_chaos_injected:
-        assert rec.name.startswith(AUTO_CHAOS_PREFIX)
-    auto_ids = {r.event_id for r in result.auto_chaos_injected}
-    all_ids = {r.event_id for r in result.events}
-    assert auto_ids.issubset(all_ids)
-
-
-def test_drift_run_without_auto_chaos_has_empty_field():
-    @drift.agent(role="observer")
-    async def observer(state, memory):
-        return drift.Action(kind="no_op")
-
-    result = drift.run(agents=[observer], state=_DemoState(), steps=10, seed=1)
-    assert result.auto_chaos_injected == []
-
-
-def test_drift_run_auto_chaos_with_user_events_merges_both():
-    from drift.events.library import RefundPolicyChange
-
-    @drift.agent(role="observer")
-    async def observer(state, memory):
-        return drift.Action(kind="no_op")
-
-    result = drift.run(
-        agents=[observer],
-        state=_DemoState(),
-        events=[(5, RefundPolicyChange())],
-        steps=20,
-        seed=7,
-        auto_chaos="moderate",
-    )
-    names = [e.name for e in result.events]
-    assert "RefundPolicyChange" in names
-    assert any(n.startswith(AUTO_CHAOS_PREFIX) for n in names)
-
-
 def test_auto_chaos_events_helper_matches_plan_auto_chaos():
     # The positional helper should produce the same schedule as the kwarg form.
     state = _DemoState()

@@ -1,32 +1,26 @@
-"""drift — chaos engineering for multi-agent AI systems.
+"""drift — pre-deploy chaos testing for LangGraph multi-agent systems.
 
-Two public surfaces:
+After the 2026-06-29 cleanup the native per-tick simulator is gone. The
+primary surface is now the LangGraph adapter:
 
-  1. The BYOA / BYOE SDK (the product) — decorate your agents, subclass
-     WorldState for your domain, optionally define chaos events, call
-     drift.run(). See drift.sdk and examples/byoa_minimal.py.
+    from drift.adapters.langgraph import drift_test
 
-  2. The shipped topologies (support / code_review / ops) — scaffolding
-     for exploring the idea via the CLI + web UI. Run them with
-     `python -m drift run --topology support`.
+    result = drift_test(
+        graph=my_compiled_graph,
+        initial_state={"messages": [...], ...},
+        intensity="aggressive",
+    )
 
-Top-level re-exports below are the BYOA SDK. Power users who need stateful
-agents (where actions mutate world state directly) should subclass
-drift.agents.base.Agent rather than using the @drift.agent decorator.
+The BYOA `@drift.agent` decorator survives but its runtime path (`drift.run`)
+was removed alongside the simulator. The decorator is preserved as a shape
+for future re-wiring against the adapter.
 """
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-from drift.sdk import (
-    Action,
-    Agent,
-    Event,
-    EventRecord,
-    World,
-    WorldState,
-    agent,
-    run,
-    run_async,
-)
+from drift.agents.base import Action, Agent
+from drift.events.base import Event, EventRecord
+from drift.sdk import agent
+from drift.world import World, WorldState
 
 __all__ = [
     "Action",
@@ -36,7 +30,5 @@ __all__ = [
     "World",
     "WorldState",
     "agent",
-    "run",
-    "run_async",
     "__version__",
 ]
