@@ -1,8 +1,9 @@
 // drift — frontend logic. No build step, no dependencies.
 //
-// Layout: tabs (New Run, Runs, Compare, About) and a hidden "detail" panel
-// that takes over when a run row is clicked. State is kept in the DOM and
-// in a tiny module-level cache; we re-fetch from /api/* whenever it matters.
+// Tabs after the 2026-06-29 cleanup: Adapter (run drift_test against a
+// bundled graph), Results (browse saved experiment JSON), Custom (paused
+// while we re-wire @drift.agent to the adapter). Native sim, Runs, Detail,
+// and Compare were removed along with the simulator runtime.
 
 (() => {
   'use strict';
@@ -37,37 +38,7 @@
         hour: '2-digit', minute: '2-digit', hour12: false,
       });
     },
-    pct(x) { return (x * 100).toFixed(1) + '%'; },
-    num(x) { return Number(x).toLocaleString(); },
-    truncNum(n, p = 3) {
-      if (typeof n !== 'number') return n;
-      return n.toFixed(p).replace(/\.?0+$/, '');
-    },
   };
-
-  // Severity classification — drives color coding for cells, ticker pills, etc.
-  // 'critical' = the system-broke kind. 'warning' = drift / silent issues.
-  // 'info' = artifacts of intra-step coordination, technically defects but lower stakes.
-  const FAILURE_SEVERITY = {
-    contradictory_refund:     'critical',
-    contradictory_review:     'critical',
-    contradictory_diagnosis:  'critical',
-    security_bypass:          'critical',
-    merge_without_approval:   'critical',
-    sentiment_collapse:       'critical',
-    escalation_loop:          'warning',
-    queue_explosion:          'warning',
-    silent_remediation:       'warning',
-    comms_lag:                'warning',
-    hallucinated_reference:   'warning',
-    policy_inconsistency:     'info',
-    stale_snapshot_reference: 'info',
-  };
-  const sev = (t) => FAILURE_SEVERITY[t] || 'info';
-
-  // Icon-free dot prefix for topology in pills.
-  const topoDot = (name) =>
-    el('span', { class: `topo-dot ${name || ''}`, title: name || '' });
 
   async function api(path, opts = {}) {
     const headers = { 'Accept': 'application/json', ...(opts.headers || {}) };
@@ -116,1442 +87,11 @@
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
     if (name === 'adapter') initAdapter();
     if (name === 'results') initResults();
-    if (name === 'runs') refreshRuns();
-    if (name === 'custom') initCustom();
   }
   $$('.tab').forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
 
-  // The detail view is a 5th panel that's not a tab; switching to it hides
-  // the active tab's panel.
-  function showDetail() {
-    $$('.tab-panel').forEach(p => p.classList.remove('active'));
-    $('#tab-detail').classList.add('active');
-  }
+  // ---------- adapter tab ------------------------------------------------
 
-  // ---------- bootstrap ---------------------------------------------------
-
-  let TOPOLOGIES = [];
-  let SCENARIOS = [];
-  let LAST_CONFIG = null;
-
-  async function bootstrap() {
-    try {
-      [TOPOLOGIES, SCENARIOS] = await Promise.all([
-        api('/api/topologies'),
-        api('/api/scenarios'),
-      ]);
-      populateTopologyDropdown();
-    } catch (e) {
-      toast('Could not load topologies/scenarios: ' + e.message, 'error');
-    }
-    await refreshRuns();
-    // Adapter is now the default landing tab — initialize it immediately so
-    // the graph picker + presets are ready when the user arrives.
-    initAdapter();
-  }
-
-  function populateTopologyDropdown() {
-    const sel = $('#topology');
-    sel.innerHTML = '';
-    TOPOLOGIES.forEach(t => sel.appendChild(el('option', { value: t.name, text: t.name })));
-    sel.addEventListener('change', onTopologyChange);
-    onTopologyChange();
-  }
-
-  function onTopologyChange() {
-    const t = TOPOLOGIES.find(x => x.name === $('#topology').value);
-    if (!t) return;
-    $('#topology-help').textContent = t.description;
-    populateScenarioDropdown(t);
-  }
-
-  function populateScenarioDropdown(topology) {
-    const sel = $('#scenario');
-    sel.innerHTML = '';
-    sel.appendChild(el('option', { value: '', text: '(empty — stochastic only)' }));
-    // Filter scenarios by whether their referenced events are in the topology's registry.
-    const supported = SCENARIOS.filter(s =>
-      s.events_used.length === 0 || s.events_used.every(ev => topology.events.includes(ev))
-    );
-    supported.forEach(s => sel.appendChild(el('option', {
-      value: s.filename,
-      text: `${s.name}  —  ${s.scripted_count} scripted, ${s.stochastic_count} stochastic`,
-    })));
-    sel.addEventListener('change', onScenarioChange);
-    onScenarioChange();
-  }
-
-  function onScenarioChange() {
-    const filename = $('#scenario').value;
-    if (!filename) {
-      $('#scenario-help').textContent = 'No scripted events; only stochastic injection (none if topology has no defaults).';
-      return;
-    }
-    const s = SCENARIOS.find(x => x.filename === filename);
-    if (s) {
-      $('#scenario-help').textContent =
-        `${s.scripted_count} scripted events at fixed timesteps; ${s.stochastic_count} stochastic entries.`;
-    }
-  }
-
-  // ---------- new run form ------------------------------------------------
-
-  $('#new-run-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const form = e.target;
-    const variant = form.querySelector('input[name="prompt_variant"]:checked').value;
-    const body = {
-      topology:        $('#topology').value,
-      scenario:        $('#scenario').value || null,
-      steps:           parseInt($('#steps').value, 10),
-      seed:            parseInt($('#seed').value, 10),
-      llm:             $('#llm').value,
-      model:           $('#model').value || null,
-      prompt_variant:  variant,
-      run_id:          $('#run-id').value || null,
-    };
-    LAST_CONFIG = body;
-
-    const submitBtn = form.querySelector('button[type=submit]');
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Starting…';
-
-    try {
-      const res = await api('/api/runs', { method: 'POST', body });
-      toast(`Run started: ${res.run_id}`, 'success');
-      pollRunStatus(res.run_id);
-    } catch (e) {
-      toast('Failed to start: ' + e.message, 'error');
-    } finally {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Start run';
-    }
-  });
-
-  $('#clone-last').addEventListener('click', () => {
-    if (!LAST_CONFIG) { toast('No previous run config in this session', 'info'); return; }
-    $('#topology').value = LAST_CONFIG.topology;
-    onTopologyChange();
-    setTimeout(() => {
-      $('#scenario').value = LAST_CONFIG.scenario || '';
-      onScenarioChange();
-    }, 0);
-    $('#steps').value = LAST_CONFIG.steps;
-    $('#seed').value  = LAST_CONFIG.seed;
-    $('#llm').value   = LAST_CONFIG.llm;
-    $('#model').value = LAST_CONFIG.model || '';
-    document.querySelector(`input[name="prompt_variant"][value="${LAST_CONFIG.prompt_variant}"]`).checked = true;
-    $('#run-id').value = '';
-    toast('Cloned config — adjust and submit', 'info');
-  });
-
-  // ---------- live status polling -----------------------------------------
-
-  let activePoll = null;
-
-  // Persistent state across polls so we can animate transitions.
-  const livePrev = { ftypeCounts: {}, eventIds: new Set() };
-
-  function pollRunStatus(runId) {
-    if (activePoll) clearInterval(activePoll);
-    const host = $('#live-status');
-    host.classList.remove('empty');
-
-    // Reset transition state for the new run.
-    livePrev.ftypeCounts = {};
-    livePrev.eventIds = new Set();
-
-    // Render scaffold once, then update fields by id on each poll. Avoids
-    // tearing down DOM (and animations) every tick.
-    host.innerHTML = '';
-    host.appendChild(el('div', { class: 'live-panel' }, [
-      el('div', { class: 'live-header' }, [
-        el('div', { class: 'left' }, [
-          el('span', { id: 'live-status-pill', class: 'pill status-queued', text: 'queued' }),
-          el('span', { id: 'live-topo' }),
-          el('span', { id: 'live-runid', class: 'run-id' }),
-        ]),
-        el('div', { id: 'live-step', class: 'step-counter', text: '0 / 0' }),
-      ]),
-      el('div', { id: 'live-progress', class: 'progress' }, el('div', { class: 'progress-bar' })),
-      el('div', { class: 'card tight' }, [
-        el('h3', { text: 'Live world state' }),
-        el('div', { id: 'live-world', class: 'world-grid' }),
-      ]),
-      el('div', { class: 'card tight' }, [
-        el('h3', { text: 'Failures detected' }),
-        el('div', { id: 'live-failures', class: 'failure-ticker empty', text: 'none yet' }),
-      ]),
-      el('div', { class: 'card tight' }, [
-        el('h3', { text: 'Recent events (most recent first)' }),
-        el('div', { id: 'live-events', class: 'event-tape empty', text: 'no events yet' }),
-      ]),
-      el('div', { class: 'card tight' }, [
-        el('h3', { text: 'Latest agent actions' }),
-        el('div', { id: 'live-actions', class: 'action-chips empty', text: 'no actions yet' }),
-      ]),
-      el('div', { id: 'live-finish' }),
-    ]));
-
-    paint({
-      run_id: runId, status: 'queued', completed_steps: 0, total_steps: 0,
-      failure_count: 0, started_at: new Date().toISOString(),
-      world_state: {}, failures_by_type: {}, recent_events: [], recent_failures: [], recent_actions: [],
-    });
-
-    activePoll = setInterval(async () => {
-      try {
-        const s = await api(`/api/runs/${encodeURIComponent(runId)}/status`);
-        paint(s);
-        if (s.status === 'done' || s.status === 'failed') {
-          clearInterval(activePoll); activePoll = null;
-          refreshRuns();
-        }
-      } catch (e) {
-        clearInterval(activePoll); activePoll = null;
-        toast('Polling failed: ' + e.message, 'error');
-      }
-    }, 700);
-
-    function paint(s) {
-      const isDone = s.status === 'done' || s.status === 'failed';
-      const pct = s.total_steps > 0 ? Math.min(100, (s.completed_steps / s.total_steps) * 100) : 0;
-
-      // header pieces
-      const pill = $('#live-status-pill');
-      pill.className = `pill status-${s.status}`;
-      pill.textContent = s.status;
-      const runIdEl = $('#live-runid');
-      runIdEl.textContent = s.run_id;
-      const topoEl = $('#live-topo');
-      topoEl.innerHTML = '';
-      if (s.topology) {
-        topoEl.appendChild(el('span', { class: `pill topo-${s.topology}` }, [
-          topoDot(s.topology),
-          s.topology,
-        ]));
-      }
-      $('#live-step').textContent = `${s.completed_steps} / ${s.total_steps}`;
-
-      const progressEl = $('#live-progress');
-      progressEl.classList.toggle('idle', isDone || s.status === 'queued');
-      progressEl.firstElementChild.style.width = pct + '%';
-
-      paintLiveWorld(s.world_state, s.topology);
-      paintLiveFailures(s.failures_by_type || {});
-      paintLiveEvents(s.recent_events || []);
-      paintLiveActions(s.recent_actions || []);
-
-      const finish = $('#live-finish');
-      finish.innerHTML = '';
-      if (s.error) {
-        finish.appendChild(el('div', { class: 'pill danger', text: s.error }));
-      }
-      if (isDone) {
-        finish.appendChild(el('div', { class: 'actions' }, [
-          el('button', {
-            class: 'primary',
-            text: 'View full result →',
-            onclick: () => openRunDetail(s.run_id),
-          }),
-          el('span', { class: 'muted', text: `Finished ${fmt.short(s.finished_at)}` }),
-        ]));
-      }
-    }
-  }
-
-  // Live world bars. Picks the metrics most relevant per topology
-  // and color-codes the bar based on whether the value is "danger" range.
-  function paintLiveWorld(world, topology) {
-    const host = $('#live-world');
-    host.innerHTML = '';
-    if (!world || !Object.keys(world).length) {
-      host.appendChild(el('div', { class: 'empty', text: 'waiting for first step…' }));
-      return;
-    }
-
-    const cell = (label, value, fill, severity) => {
-      const c = el('div', { class: `world-cell${severity ? ' ' + severity : ''}` });
-      c.appendChild(el('div', { class: 'label', text: label }));
-      c.appendChild(el('div', { class: 'value', text: value }));
-      if (fill !== undefined) {
-        const bar = el('div', { class: 'bar' });
-        bar.appendChild(el('span', { style: `width:${Math.max(0, Math.min(100, fill * 100))}%` }));
-        c.appendChild(bar);
-      }
-      return c;
-    };
-
-    const sentiment = world.customer_sentiment;
-    if (typeof sentiment === 'number') {
-      const sevCls = sentiment < 0.25 ? 'crit' : sentiment < 0.5 ? 'warn' : 'ok';
-      const label = topology === 'ops' ? 'public trust' : topology === 'code_review' ? 'team morale' : 'customer sentiment';
-      host.appendChild(cell(label, sentiment.toFixed(2), sentiment, sevCls));
-    }
-    if (typeof world.system_load === 'number') {
-      const sevCls = world.system_load > 0.85 ? 'crit' : world.system_load > 0.6 ? 'warn' : 'ok';
-      host.appendChild(cell('system load', world.system_load.toFixed(2), world.system_load, sevCls));
-    }
-    if (typeof world.refund_policy_version === 'number' && topology === 'support') {
-      host.appendChild(cell('policy version', `v${world.refund_policy_version}`));
-    }
-    if (typeof world.deadline_pressure === 'number') {
-      const sevCls = world.deadline_pressure > 0.7 ? 'crit' : world.deadline_pressure > 0.4 ? 'warn' : 'ok';
-      host.appendChild(cell('deadline pressure', world.deadline_pressure.toFixed(2), world.deadline_pressure, sevCls));
-    }
-    if (typeof world.inventory_delay_minutes === 'number' && world.inventory_delay_minutes > 0) {
-      host.appendChild(cell('inventory delay', `${world.inventory_delay_minutes}m`));
-    }
-    const openCases = world.open_cases ? Object.keys(world.open_cases).length : 0;
-    const openLabel = topology === 'code_review' ? 'open PRs' : topology === 'ops' ? 'open incidents' : 'open cases';
-    host.appendChild(cell(openLabel, fmt.num(openCases)));
-    const queued = (world.escalation_queue || []).length;
-    if (queued > 0 || topology === 'support') {
-      host.appendChild(cell('queue depth', fmt.num(queued)));
-    }
-    host.appendChild(cell('timestep', `t=${world.timestep ?? 0}`));
-  }
-
-  function paintLiveFailures(byType) {
-    const host = $('#live-failures');
-    host.classList.toggle('empty', !Object.keys(byType).length);
-    if (!Object.keys(byType).length) {
-      host.textContent = 'none yet';
-      return;
-    }
-    host.textContent = '';
-    Object.entries(byType).sort((a, b) => b[1] - a[1]).forEach(([t, c]) => {
-      const prev = livePrev.ftypeCounts[t] || 0;
-      const bumped = c > prev;
-      const pill = el('span', { class: `ticker-pill sev-${sev(t)}${bumped ? ' bump' : ''}` }, [
-        t,
-        el('span', { class: 'count', text: c }),
-      ]);
-      host.appendChild(pill);
-    });
-    livePrev.ftypeCounts = { ...byType };
-  }
-
-  function paintLiveEvents(events) {
-    const host = $('#live-events');
-    host.classList.toggle('empty', !events.length);
-    if (!events.length) { host.textContent = 'no events yet'; return; }
-    host.textContent = '';
-    // Newest first, top of list.
-    [...events].reverse().forEach(e => {
-      const isNew = !livePrev.eventIds.has(e.event_id);
-      const row = el('div', { class: 'tape-row', style: isNew ? '' : 'animation: none' }, [
-        el('div', { class: 'step', text: `t=${e.timestep}` }),
-        el('div', {}, [
-          el('div', { class: 'name', text: e.name }),
-          el('div', { class: 'summary', text: e.summary }),
-        ]),
-      ]);
-      host.appendChild(row);
-      livePrev.eventIds.add(e.event_id);
-    });
-  }
-
-  function paintLiveActions(actions) {
-    const host = $('#live-actions');
-    host.classList.toggle('empty', !actions.length);
-    if (!actions.length) { host.textContent = 'no actions yet'; return; }
-    host.textContent = '';
-    actions.forEach(a => {
-      const target = a.target_case_id ? ` ${a.target_case_id}` : '';
-      host.appendChild(el('span', { class: 'action-chip' }, [
-        el('strong', { text: a.agent_name }),
-        ` · ${a.kind}${target}`,
-      ]));
-    });
-  }
-
-  // ---------- runs list ---------------------------------------------------
-
-  let RUNS = [];
-
-  async function refreshRuns() {
-    try {
-      RUNS = await api('/api/runs');
-    } catch (e) {
-      toast('Could not load runs: ' + e.message, 'error');
-      RUNS = [];
-    }
-    $('#runs-count').textContent = RUNS.length || '';
-    paintRuns();
-  }
-
-  function paintRuns() {
-    const tbody = $('#runs-tbody');
-    tbody.innerHTML = '';
-    const q = $('#runs-search').value.trim().toLowerCase();
-    const filtered = !q ? RUNS : RUNS.filter(r =>
-      [r.run_id, r.topology, r.scenario, r.llm, r.prompt_variant].some(x =>
-        (x || '').toString().toLowerCase().includes(q)));
-    $('#runs-empty').classList.toggle('hidden', filtered.length > 0);
-
-    // Re-order so each child appears immediately after its parent. Children
-    // whose parent isn't in the visible filtered set stay where they were.
-    const byId = new Map(filtered.map(r => [r.run_id, r]));
-    const placed = new Set();
-    const ordered = [];
-    filtered.forEach(r => {
-      if (placed.has(r.run_id)) return;
-      // Walk up to the top-most visible parent so we anchor the whole chain.
-      let root = r;
-      while (root.parent_run_id && byId.has(root.parent_run_id)) {
-        root = byId.get(root.parent_run_id);
-      }
-      // Emit root + a DFS over its descendants.
-      const stack = [root];
-      while (stack.length) {
-        const n = stack.shift();
-        if (placed.has(n.run_id)) continue;
-        ordered.push(n);
-        placed.add(n.run_id);
-        const children = filtered.filter(x => x.parent_run_id === n.run_id);
-        // Process children right after this node, preserving their listing order.
-        stack.unshift(...children);
-      }
-    });
-
-    ordered.forEach(r => {
-      const failPillClass =
-        r.n_failures === 0 ? 'success' :
-        r.n_failures < 10 ? 'info' :
-        r.n_failures < 50 ? 'warning' : 'critical';
-      const isChild = !!r.parent_run_id && byId.has(r.parent_run_id);
-      const tr = el('tr', {
-        class: 'table-row-link' + (isChild ? ' is-child' : ''),
-        onclick: () => openRunDetail(r.run_id),
-      }, [
-        el('td', { class: 'mono nowrap' }, [
-          r.parent_run_id
-            ? el('span', { class: 'fork-indicator', title: `forked from ${r.parent_run_id} at t=${r.branch_at_step}` }, [
-                el('span', { class: 'branch-glyph', text: '⑂' }),
-              ])
-            : null,
-          r.run_id,
-        ]),
-        el('td', {}, r.topology
-          ? el('span', { class: `pill topo-${r.topology}` }, [topoDot(r.topology), r.topology])
-          : '—'),
-        el('td', { class: 'mono', text: r.scenario || '—' }),
-        el('td', { class: 'num', text: r.final_step }),
-        el('td', { class: 'num mono', text: (r.seed ?? '—') }),
-        el('td', {}, r.llm ? el('span', { class: 'pill', text: r.llm }) : '—'),
-        el('td', {}, r.prompt_variant ? el('span', { class: 'pill', text: r.prompt_variant }) : '—'),
-        el('td', { class: 'num' }, [
-          el('span', { class: `pill ${failPillClass}`, text: r.n_failures }),
-        ]),
-        el('td', { class: 'nowrap muted', text: fmt.short(r.started_at) }),
-        el('td', {}, el('a', { href: '#', text: 'View →', onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); openRunDetail(r.run_id); } })),
-      ]);
-      tbody.appendChild(tr);
-    });
-  }
-  $('#runs-search').addEventListener('input', paintRuns);
-  $('#runs-refresh').addEventListener('click', refreshRuns);
-
-  // ---------- run detail --------------------------------------------------
-
-  $('#detail-back').addEventListener('click', () => activateTab('runs'));
-
-  // Fork button + modal wiring is set up once. The modal pulls context from
-  // the currently-open run detail when it opens.
-  let CURRENT_DETAIL = null;  // last loaded run-detail data
-  $('#detail-fork-btn').addEventListener('click', () => {
-    if (!CURRENT_DETAIL) { toast('Open a run first', 'error'); return; }
-    openForkModal(CURRENT_DETAIL);
-  });
-  $('#detail-compare-parent-btn').addEventListener('click', () => {
-    toast('Compare tab was removed in the recent UI cleanup', 'error');
-  });
-  $$('#fork-modal .modal-close').forEach(b => b.addEventListener('click', closeForkModal));
-  $('#fork-modal').addEventListener('click', (ev) => {
-    if (ev.target.id === 'fork-modal') closeForkModal();
-  });
-  $('#fork-at-slider').addEventListener('input', (ev) => {
-    $('#fork-at').value = ev.target.value;
-  });
-  $('#fork-at').addEventListener('input', (ev) => {
-    $('#fork-at-slider').value = ev.target.value;
-  });
-  $('#fork-submit').addEventListener('click', submitFork);
-
-  async function openRunDetail(runId) {
-    showDetail();
-    $('#detail-title').textContent = runId;
-    $('#detail-meta').innerHTML = '';
-    $('#detail-lineage').classList.add('hidden');
-    $('#detail-compare-parent-btn').classList.add('hidden');
-    $('#detail-failure-summary').innerHTML = '<div class="empty">Loading…</div>';
-    $('#detail-failure-list').innerHTML = '';
-    $('#detail-events').innerHTML = '';
-    $('#detail-agents').innerHTML = '';
-    $('#detail-world').innerHTML = '';
-
-    let data;
-    try {
-      data = await api(`/api/runs/${encodeURIComponent(runId)}`);
-    } catch (e) {
-      $('#detail-failure-summary').innerHTML = '';
-      toast('Could not load run: ' + e.message, 'error');
-      return;
-    }
-
-    CURRENT_DETAIL = data;
-    paintDetailMeta(data.summary);
-    paintLineage(data.summary);
-    paintFailures(data.failures);
-    paintTimeline(data.events);
-    paintAgents(data.actions);
-    paintWorld(data.snapshots);
-  }
-
-  function paintLineage(s) {
-    const badge = $('#detail-lineage');
-    const cmpBtn = $('#detail-compare-parent-btn');
-    if (!s.parent_run_id) {
-      badge.classList.add('hidden');
-      cmpBtn.classList.add('hidden');
-      return;
-    }
-    badge.innerHTML = '';
-    badge.appendChild(el('span', { class: 'lineage-icon', text: '⑂' }));
-    badge.appendChild(el('span', {}, [
-      'Forked from ',
-      el('a', {
-        href: '#', class: 'mono',
-        text: s.parent_run_id,
-        onclick: (ev) => { ev.preventDefault(); openRunDetail(s.parent_run_id); },
-      }),
-      ' at ',
-      el('span', { class: 'mono', text: `t=${s.branch_at_step}` }),
-    ]));
-    // Summarize the override knobs that were used.
-    const o = s.fork_overrides || {};
-    const overrideBits = [];
-    if (o.seed != null) overrideBits.push(`seed=${o.seed}`);
-    if (o.prompt_variants && Object.keys(o.prompt_variants).length) {
-      overrideBits.push(Object.entries(o.prompt_variants).map(([r, v]) => `${r}:${v}`).join(', '));
-    }
-    if (o.disabled_agents && o.disabled_agents.length) {
-      overrideBits.push('disabled ' + o.disabled_agents.join(','));
-    }
-    if (overrideBits.length) {
-      badge.appendChild(el('span', { class: 'muted', text: ' · ' + overrideBits.join(' · ') }));
-    }
-    badge.classList.remove('hidden');
-    cmpBtn.classList.remove('hidden');
-  }
-
-  function paintDetailMeta(s) {
-    const meta = $('#detail-meta');
-    meta.innerHTML = '';
-    const kvs = [
-      ['Topology',  s.topology],
-      ['Scenario',  s.scenario],
-      ['Seed',      s.seed],
-      ['LLM',       s.llm],
-      ['Variant',   s.prompt_variant],
-      ['Steps',     `${s.final_step} / ${s.steps_requested ?? s.final_step}`],
-      ['Failures',  s.n_failures],
-      ['Actions',   s.n_actions],
-      ['Started',   fmt.short(s.started_at)],
-    ];
-    kvs.forEach(([k, v]) => {
-      meta.appendChild(el('span', { class: 'k', text: k }));
-      meta.appendChild(el('span', { class: 'v', text: v == null || v === '' ? '—' : String(v) }));
-    });
-  }
-
-  function paintFailures(failures) {
-    const summary = $('#detail-failure-summary');
-    const list = $('#detail-failure-list');
-    summary.innerHTML = '';
-    list.innerHTML = '';
-
-    if (!failures.length) {
-      summary.appendChild(el('div', { class: 'empty', text: 'No failures detected — clean run.' }));
-      return;
-    }
-
-    const byType = {};
-    failures.forEach(f => { byType[f.failure_type] = (byType[f.failure_type] || 0) + 1; });
-
-    const sumGrid = el('div', { class: 'failure-summary' });
-    Object.entries(byType).sort((a, b) => b[1] - a[1]).forEach(([type, count]) => {
-      sumGrid.appendChild(el('div', { class: `failure-cell sev-${sev(type)}` }, [
-        el('div', { class: 'ftype', text: type }),
-        el('div', { class: 'fcount', text: fmt.num(count) }),
-      ]));
-    });
-    summary.appendChild(sumGrid);
-
-    failures.slice(0, 200).forEach(f => {
-      list.appendChild(el('div', { class: 'failure-row' }, [
-        el('div', { class: 'step', text: `t=${f.timestep}` }),
-        el('div', {}, [
-          el('div', {}, [
-            el('span', { class: `pill ${sev(f.failure_type) === 'critical' ? 'critical' : sev(f.failure_type)}`, text: f.failure_type }),
-            ' ',
-            el('span', { class: 'muted', text: (f.agents_involved || []).join(', ') || '—' }),
-          ]),
-          el('div', { class: 'mono muted', html: escapeHtml(f.summary || '') }),
-        ]),
-      ]));
-    });
-    if (failures.length > 200) {
-      list.appendChild(el('div', { class: 'muted', text: `… and ${failures.length - 200} more.` }));
-    }
-  }
-
-  function paintTimeline(events) {
-    const host = $('#detail-events');
-    host.innerHTML = '';
-    if (!events.length) {
-      host.appendChild(el('div', { class: 'empty', text: 'No events fired in this run.' }));
-      return;
-    }
-    events.forEach(e => {
-      host.appendChild(el('div', { class: 'timeline-row' }, [
-        el('div', { class: 'step', text: `t=${e.timestep}` }),
-        el('div', { class: 'name', text: e.name }),
-        el('div', { class: 'summary', text: e.summary }),
-      ]));
-    });
-  }
-
-  // Color palette for agent action segments — derived from accent + neutrals.
-  const SEG_COLORS = [
-    '#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
-    '#06b6d4', '#84cc16', '#ec4899', '#64748b', '#14b8a6',
-  ];
-
-  function paintAgents(actions) {
-    const host = $('#detail-agents');
-    host.innerHTML = '';
-    if (!actions.length) {
-      host.appendChild(el('div', { class: 'empty', text: 'No actions emitted.' }));
-      return;
-    }
-
-    // tally per-agent x kind
-    const byAgent = {};
-    actions.forEach(a => {
-      byAgent[a.agent_name] = byAgent[a.agent_name] || {};
-      byAgent[a.agent_name][a.kind] = (byAgent[a.agent_name][a.kind] || 0) + 1;
-    });
-
-    // stable color per kind across all rows so the legend means something
-    const kindColor = {};
-    let nextColor = 0;
-    const allKinds = new Set();
-    Object.values(byAgent).forEach(kinds => Object.keys(kinds).forEach(k => allKinds.add(k)));
-    [...allKinds].sort().forEach(k => { kindColor[k] = SEG_COLORS[nextColor++ % SEG_COLORS.length]; });
-
-    Object.entries(byAgent).sort().forEach(([agent, kinds]) => {
-      const total = Object.values(kinds).reduce((a, b) => a + b, 0);
-      const stack = el('div', { class: 'bar-stack' });
-      Object.entries(kinds).sort((a, b) => b[1] - a[1]).forEach(([k, c]) => {
-        const w = (c / total) * 100;
-        if (w < 1) return;
-        stack.appendChild(el('div', {
-          class: 'bar-seg',
-          style: `flex-basis:${w}%; background:${kindColor[k]}`,
-          title: `${k}: ${c} (${fmt.pct(c / total)})`,
-          text: w >= 8 ? `${k} ${c}` : '',
-        }));
-      });
-      host.appendChild(el('div', { class: 'agent-row' }, [
-        el('div', {}, [
-          el('div', { class: 'agent-name', text: agent }),
-          el('div', { class: 'muted mono', text: `${total} actions` }),
-        ]),
-        el('div', {}, [stack, agentLegend(kinds, kindColor)]),
-      ]));
-    });
-  }
-
-  function agentLegend(kinds, kindColor) {
-    const wrap = el('div', { class: 'bar-legend' });
-    Object.entries(kinds).sort((a, b) => b[1] - a[1]).forEach(([k, c]) => {
-      wrap.appendChild(el('span', {}, [
-        el('span', { class: 'swatch', style: `background:${kindColor[k]}` }),
-        `${k} · ${c}`,
-      ]));
-    });
-    return wrap;
-  }
-
-  function paintWorld(snapshots) {
-    const host = $('#detail-world');
-    host.innerHTML = '';
-    if (!snapshots.length) {
-      host.appendChild(el('div', { class: 'empty', text: 'No snapshots.' }));
-      return;
-    }
-    const final = snapshots[snapshots.length - 1];
-    const known = ['timestep', 'customer_sentiment', 'refund_policy_version',
-                   'inventory_delay_minutes', 'system_load', 'deadline_pressure'];
-    known.forEach(k => {
-      if (k in final) {
-        host.appendChild(el('span', { class: 'k', text: k }));
-        const v = typeof final[k] === 'number' ? final[k].toFixed(3).replace(/\.?0+$/, '') : final[k];
-        host.appendChild(el('span', { class: 'v', text: v }));
-      }
-    });
-    host.appendChild(el('span', { class: 'k', text: 'open_cases' }));
-    host.appendChild(el('span', { class: 'v', text: Object.keys(final.open_cases || {}).length }));
-    host.appendChild(el('span', { class: 'k', text: 'escalation_queue' }));
-    host.appendChild(el('span', { class: 'v', text: (final.escalation_queue || []).length }));
-  }
-
-  // ---------- compare -----------------------------------------------------
-
-  function populateComparePickers() {
-    ['#cmp-a', '#cmp-b'].forEach(id => {
-      const sel = $(id);
-      const cur = sel.value;
-      sel.innerHTML = '';
-      sel.appendChild(el('option', { value: '', text: '— pick a run —' }));
-      RUNS.forEach(r => {
-        const label = `${r.run_id} (${r.topology || '?'} · ${r.n_failures} fail)`;
-        sel.appendChild(el('option', { value: r.run_id, text: label }));
-      });
-      sel.value = cur;
-    });
-  }
-
-  // Compare state — remembers the current pair and mode for the toggle.
-  let CMP_STATE = { a: null, b: null, mode: 'auto', data: null };
-
-  async function doCompare(mode) {
-    const a = $('#cmp-a').value, b = $('#cmp-b').value;
-    if (!a || !b) { toast('Pick two runs', 'error'); return; }
-    if (a === b) { toast('Pick two different runs', 'error'); return; }
-    let data;
-    try {
-      data = await api('/api/compare', { method: 'POST', body: { run_a: a, run_b: b, mode } });
-    } catch (e) {
-      toast('Compare failed: ' + e.message, 'error');
-      return;
-    }
-    CMP_STATE = { a, b, mode, data };
-    paintCompare(data);
-  }
-
-  // Compare tab was removed from the UI but the helper functions remain
-  // — Run Detail's "compare to parent" link still calls into doCompare().
-
-  function paintCompare(data) {
-    $('#cmp-result').classList.remove('hidden');
-    paintCompareRelationship(data);
-    paintCompareFailures(data);
-    paintCompareWorld(data);
-    paintCompareTimeline(data);
-    paintCompareAgents(data);
-  }
-
-  function paintCompareRelationship(data) {
-    const host = $('#cmp-relationship');
-    host.innerHTML = '';
-    host.classList.remove('hidden');
-    host.classList.add('relationship-card');
-
-    let labelHtml;
-    if (data.relationship === 'parent_child') {
-      labelHtml = el('span', { class: 'label', html:
-        `<strong>Parent–child relationship detected.</strong> ` +
-        `Runs diverge at <code>t=${data.divergence_step}</code>. ` +
-        `Comparing <em>only the divergent steps</em> by default — toggle to see whole-run totals.` });
-    } else if (data.relationship === 'siblings') {
-      labelHtml = el('span', { class: 'label', html:
-        `<strong>Sibling forks detected.</strong> ` +
-        `Both runs forked from the same parent at <code>t=${data.divergence_step}</code>. ` +
-        `Comparing the divergent steps only.` });
-    } else {
-      labelHtml = el('span', { class: 'label', html:
-        `<strong>Unrelated runs.</strong> No shared lineage; comparing totals across the whole runs.` });
-    }
-
-    const leftBlock = el('div', { class: 'left' }, [
-      el('span', { class: 'icon', text: data.relationship === 'unrelated' ? '·' : '⑂' }),
-      labelHtml,
-    ]);
-
-    const toggle = el('div', { class: 'mode-toggle' }, [
-      el('div', {
-        class: 'mode-opt' + (data.mode === 'post_branch' ? ' active' : ''),
-        text: 'Post-branch only',
-        onclick: () => { if (data.relationship !== 'unrelated') doCompare('post_branch'); },
-      }),
-      el('div', {
-        class: 'mode-opt' + (data.mode === 'total' ? ' active' : ''),
-        text: 'Whole runs',
-        onclick: () => doCompare('total'),
-      }),
-    ]);
-
-    host.appendChild(leftBlock);
-    if (data.relationship !== 'unrelated') host.appendChild(toggle);
-  }
-
-  function paintCompareTimeline(data) {
-    const host = $('#cmp-timeline');
-    host.innerHTML = '';
-    const tl = data.timeline;
-    if (!tl || !tl.steps || !tl.steps.length) {
-      host.appendChild(el('div', { class: 'empty', text: 'No timeline data.' }));
-      return;
-    }
-
-    // Header
-    host.appendChild(el('div', { class: 'dt-head' }, [
-      el('div', { text: 't' }),
-      el('div', { class: 'dt-side-a', text: `A · ${truncate(CMP_STATE.a, 28)}` }),
-      el('div', { class: 'dt-side-b', text: `B · ${truncate(CMP_STATE.b, 28)}` }),
-    ]));
-
-    const div = tl.divergence_step;
-    let markerInserted = false;
-
-    tl.steps.forEach(step => {
-      // Insert branch marker right before the first post-divergence row.
-      if (div != null && !markerInserted && step.t > div) {
-        host.appendChild(el('div', { class: 'dt-row branch-marker',
-          text: `↓ DIVERGED FROM t=${div} ↓` }));
-        markerInserted = true;
-      }
-      const isShared = (div != null && step.t <= div);
-      host.appendChild(el('div', { class: 'dt-row ' + (isShared ? 'shared' : 'diverged') }, [
-        el('div', { class: 'dt-step', text: `t=${step.t}` }),
-        renderSide(step.a),
-        renderSide(step.b),
-      ]));
-    });
-
-    function renderSide(side) {
-      const wrap = el('div', { class: 'dt-side' });
-      if (!side) {
-        wrap.appendChild(el('span', { class: 'dt-empty', text: '— no record —' }));
-        return wrap;
-      }
-      const evRow = el('div', {});
-      (side.events || []).forEach(name => {
-        evRow.appendChild(el('span', { class: 'ev-pill', text: name }));
-      });
-      const fRow = el('div', {});
-      (side.failures || []).forEach(ft => {
-        fRow.appendChild(el('span', { class: `fail-pill sev-${sev(ft)}`, text: ft }));
-      });
-      if (!(side.events || []).length && !(side.failures || []).length) {
-        wrap.appendChild(el('span', { class: 'dt-empty', text: '(quiet)' }));
-      } else {
-        if ((side.events || []).length) wrap.appendChild(evRow);
-        if ((side.failures || []).length) wrap.appendChild(fRow);
-      }
-      if (side.sentiment != null || side.open != null) {
-        const meta = [];
-        if (side.sentiment != null) meta.push(`s=${side.sentiment.toFixed(2)}`);
-        if (side.open != null) meta.push(`open=${side.open}`);
-        wrap.appendChild(el('div', { class: 'dt-meta', text: meta.join(' · ') }));
-      }
-      return wrap;
-    }
-  }
-
-  function truncate(s, n) { return (s && s.length > n) ? s.slice(0, n - 1) + '…' : (s || ''); }
-
-  function paintCompareFailures(data) {
-    const host = $('#cmp-failures');
-    host.innerHTML = '';
-    const types = new Set([...Object.keys(data.a.failures_by_type), ...Object.keys(data.b.failures_by_type)]);
-    if (!types.size) {
-      host.appendChild(el('div', { class: 'empty', text: 'No failures in either run.' }));
-      return;
-    }
-    host.appendChild(el('div', { class: 'diff-row head' }, [
-      el('div', { text: 'failure_type' }),
-      el('div', { class: 'num', text: 'A' }),
-      el('div', { class: 'num', text: 'B' }),
-      el('div', { class: 'num', text: 'Δ' }),
-    ]));
-    [...types].sort().forEach(t => {
-      const ca = data.a.failures_by_type[t] || 0;
-      const cb = data.b.failures_by_type[t] || 0;
-      const delta = cb - ca;
-      const cls = delta === 0 ? 'same' : delta > 0 ? 'up' : 'down';
-      const pillCls = sev(t) === 'critical' ? 'critical' : sev(t);
-      host.appendChild(el('div', { class: 'diff-row' }, [
-        el('div', {}, [el('span', { class: `pill ${pillCls}`, text: t })]),
-        el('div', { class: 'num', text: ca }),
-        el('div', { class: 'num', text: cb }),
-        el('div', { class: 'num' }, [el('span', { class: `pill ${cls}`, text: (delta > 0 ? '+' : '') + delta })]),
-      ]));
-    });
-  }
-
-  function paintCompareWorld(data) {
-    const host = $('#cmp-world');
-    host.innerHTML = '';
-    const fa = data.a.final || {}, fb = data.b.final || {};
-    const keys = ['customer_sentiment', 'refund_policy_version', 'inventory_delay_minutes', 'system_load', 'deadline_pressure'];
-    host.appendChild(el('div', { class: 'diff-row head' }, [
-      el('div', { text: 'field' }),
-      el('div', { class: 'num', text: 'A' }),
-      el('div', { class: 'num', text: 'B' }),
-      el('div', { class: 'num', text: 'Δ' }),
-    ]));
-    keys.forEach(k => {
-      if (!(k in fa) && !(k in fb)) return;
-      const va = fa[k], vb = fb[k];
-      let delta = null;
-      if (typeof va === 'number' && typeof vb === 'number') delta = vb - va;
-      let cls = 'same';
-      if (delta !== null) cls = delta === 0 ? 'same' : delta > 0 ? 'up' : 'down';
-      const fmtNum = (n) => typeof n === 'number' ? n.toFixed(3).replace(/\.?0+$/, '') : (n ?? '—');
-      host.appendChild(el('div', { class: 'diff-row' }, [
-        el('div', { text: k }),
-        el('div', { class: 'num mono', text: fmtNum(va) }),
-        el('div', { class: 'num mono', text: fmtNum(vb) }),
-        el('div', { class: 'num' }, [
-          delta == null ? '—' : el('span', { class: `pill ${cls}`, text: (delta > 0 ? '+' : '') + fmtNum(delta) }),
-        ]),
-      ]));
-    });
-  }
-
-  // ---------- fork modal -------------------------------------------------
-
-  function openForkModal(detail) {
-    const summary = detail.summary;
-    const topoName = summary.topology;
-    if (!topoName) { toast('This run has no topology metadata; cannot fork', 'error'); return; }
-    const topology = TOPOLOGIES.find(t => t.name === topoName);
-    if (!topology) { toast('Unknown topology in this run', 'error'); return; }
-
-    const finalStep = summary.final_step || (detail.snapshots?.length ?? 0);
-    const ctx = $('#fork-modal-context');
-    ctx.innerHTML = '';
-    ctx.appendChild(el('span', { text: 'Forking from ' }));
-    ctx.appendChild(el('span', { class: 'mono', text: summary.run_id }));
-    ctx.appendChild(el('span', { text: ` · ${finalStep} steps completed · topology ` }));
-    ctx.appendChild(el('span', { class: `pill topo-${topoName}` }, [topoDot(topoName), topoName]));
-
-    // Branch-at-step controls
-    const at = Math.max(0, Math.floor(finalStep / 2));  // default to halfway
-    $('#fork-at-slider').min = 0;
-    $('#fork-at-slider').max = finalStep;
-    $('#fork-at-slider').value = at;
-    $('#fork-at').min = 0;
-    $('#fork-at').max = finalStep;
-    $('#fork-at').value = at;
-    $('#fork-at-help').textContent = `0 = re-run from the beginning. Higher = branch later. Max ${finalStep}.`;
-
-    $('#fork-seed').value = '';
-    $('#fork-run-id').value = '';
-
-    // Prompt-variant rows per role.
-    const variantHost = $('#fork-variants');
-    variantHost.innerHTML = '';
-    const parentVariant = summary.prompt_variant || 'naive';
-    topology.roles.forEach(role => {
-      const row = el('div', { class: 'fork-variant-row' }, [
-        el('label', {}, [topoDot(topoName), role]),
-        el('select', { 'data-role': role }, [
-          el('option', { value: '', text: `inherit (${parentVariant})` }),
-          el('option', { value: 'naive', text: 'naive' }),
-          el('option', { value: 'hardened', text: 'hardened' }),
-        ]),
-      ]);
-      variantHost.appendChild(row);
-    });
-
-    // Disable-agent checkboxes per role.
-    const disableHost = $('#fork-disable');
-    disableHost.innerHTML = '';
-    topology.roles.forEach(role => {
-      const id = `fork-dis-${role}`;
-      const row = el('div', { class: 'fork-disable-row' }, [
-        el('label', { for: id, text: role }),
-        el('input', { type: 'checkbox', id, 'data-role': role }),
-      ]);
-      disableHost.appendChild(row);
-    });
-
-    const modal = $('#fork-modal');
-    modal.classList.remove('hidden');
-    modal.setAttribute('aria-hidden', 'false');
-    // Focus the timestep input for quick keyboard editing.
-    setTimeout(() => $('#fork-at').focus(), 50);
-  }
-
-  function closeForkModal() {
-    const modal = $('#fork-modal');
-    modal.classList.add('hidden');
-    modal.setAttribute('aria-hidden', 'true');
-  }
-
-  async function submitFork() {
-    if (!CURRENT_DETAIL) return;
-    const parentId = CURRENT_DETAIL.summary.run_id;
-
-    const branchAt = parseInt($('#fork-at').value, 10);
-    if (Number.isNaN(branchAt) || branchAt < 0) {
-      toast('Branch step must be a non-negative integer', 'error');
-      return;
-    }
-    const seedRaw = $('#fork-seed').value;
-    const seed = seedRaw === '' ? null : parseInt(seedRaw, 10);
-
-    // Collect variant overrides — only include roles where the user picked something.
-    const variants = {};
-    $$('#fork-variants select').forEach(sel => {
-      if (sel.value) variants[sel.dataset.role] = sel.value;
-    });
-
-    // Collect disabled agents.
-    const disabled = [];
-    $$('#fork-disable input[type=checkbox]').forEach(cb => {
-      if (cb.checked) disabled.push(cb.dataset.role);
-    });
-
-    const runIdRaw = $('#fork-run-id').value.trim();
-    const body = {
-      branch_at_step: branchAt,
-      seed,
-      prompt_variants: variants,
-      disabled_agents: disabled,
-      new_run_id: runIdRaw || null,
-    };
-
-    const submitBtn = $('#fork-submit');
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Launching…';
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(parentId)}/fork`, {
-        method: 'POST', body,
-      });
-      closeForkModal();
-      toast(`Fork started: ${res.run_id}`, 'success');
-      // Switch to the New Run tab so the live status panel is visible.
-      activateTab('new');
-      pollRunStatus(res.run_id);
-      refreshRuns();  // updates the table in the background
-    } catch (e) {
-      toast('Fork failed: ' + e.message, 'error');
-    } finally {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Launch fork';
-    }
-  }
-
-  // ---------- detect (MAST demo) -----------------------------------------
-
-  let DETECT_INITED = false;
-  let DETECT_TRACES = [];
-
-  async function initDetect() {
-    if (DETECT_INITED) return;
-    DETECT_INITED = true;
-    try {
-      const data = await api('/api/mast-demos');
-      DETECT_TRACES = data.traces || [];
-      renderDetectCards();
-    } catch (e) {
-      $('#mast-cards').innerHTML = '';
-      $('#mast-cards').appendChild(el('div', { class: 'empty', text: 'Could not load MAST demos: ' + e.message }));
-    }
-  }
-
-  function renderDetectCards() {
-    const host = $('#mast-cards');
-    host.innerHTML = '';
-    if (!DETECT_TRACES.length) {
-      host.appendChild(el('div', { class: 'empty', text: 'No MAST demo traces available.' }));
-      return;
-    }
-    DETECT_TRACES.forEach(t => {
-      const storyBadge = el('span', {
-        class: 'pill ' + (t.story === 'WIN' ? '' : t.story === 'MIXED' ? 'warn' : 'critical'),
-        text: t.story,
-      });
-      const card = el('div', { class: 'card mast-card' }, [
-        el('div', { class: 'mast-card-head' }, [
-          el('h3', { style: 'margin:0; flex:1;', text: t.title }),
-          storyBadge,
-        ]),
-        el('p', { class: 'help', text: t.task_brief }),
-        el('p', { class: 'help', text: t.story_blurb }),
-        el('div', { class: 'kv-grid', style: 'margin: 8px 0;' }, [
-          el('span', { class: 'k', text: 'Trace size' }),
-          el('span', { class: 'v', text: `${fmt.num(t.trace_chars)} chars${t.trace_truncated ? ' (truncated to 100k)' : ''}` }),
-          el('span', { class: 'k', text: 'Human-flagged modes' }),
-          el('span', { class: 'v', text: `${t.n_ground_truth_positives}` }),
-        ]),
-        t.ground_truth_modes && t.ground_truth_modes.length
-          ? el('div', { class: 'mono muted', style: 'font-size: 11px; margin-bottom: 8px;', text: t.ground_truth_modes.join(' • ') })
-          : null,
-        el('div', { class: 'actions' }, [
-          el('button', {
-            class: 'primary',
-            text: 'Run drift (cached)',
-            onclick: () => runMastDemo(t.id, 'cached'),
-          }),
-          el('button', {
-            class: 'ghost-btn',
-            text: 'Run live (≈ 5 s, costs tokens)',
-            onclick: () => runMastDemo(t.id, 'live'),
-          }),
-        ]),
-      ].filter(Boolean));
-      host.appendChild(card);
-    });
-  }
-
-  async function runMastDemo(traceId, mode) {
-    // Disable all card buttons while a request is in flight.
-    const buttons = Array.from(document.querySelectorAll('#mast-cards button'));
-    buttons.forEach(b => b.disabled = true);
-    // Pull guidelines (only meaningful for live mode; server ignores on cached).
-    const guidelinesRaw = (($('#mast-user-guidelines') || {}).value || '').split('\n');
-    const userGuidelines = guidelinesRaw.map(s => s.trim()).filter(Boolean);
-    try {
-      const data = await api('/api/mast-analyze', {
-        method: 'POST',
-        body: { trace_id: traceId, mode, user_guidelines: userGuidelines },
-      });
-      renderMastResult(data);
-      $('#mast-result').classList.remove('hidden');
-      $('#mast-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } catch (e) {
-      toast('Run failed: ' + e.message, 'error');
-    } finally {
-      buttons.forEach(b => b.disabled = false);
-    }
-  }
-
-  function renderMastResult(data) {
-    const title = `${data.demo_meta.title} — ${data.mode === 'live' ? 'live' : 'cached'} drift analysis`;
-    $('#mast-result-title').textContent = title;
-
-    const meta = $('#mast-result-meta');
-    meta.innerHTML = '';
-    const s = data.summary || {};
-    const kvs = [
-      ['MAS framework',    data.mas_name],
-      ['Benchmark',        data.benchmark_name],
-      ['Trace size',       `${fmt.num(data.n_chars)} chars${data.truncated ? ' (truncated)' : ''}`],
-      ['Mode',             data.mode + (data.latency_s ? ` (${data.latency_s}s)` : '')],
-      ['Human-flagged',    s.n_ground_truth_positives],
-      ['drift predictions', s.n_predicted_positives],
-    ];
-    kvs.forEach(([k, v]) => {
-      meta.appendChild(el('span', { class: 'k', text: k }));
-      meta.appendChild(el('span', { class: 'v', text: v == null || v === '' ? '—' : String(v) }));
-    });
-
-    // Precision / recall headline
-    const summaryHost = $('#mast-result-summary');
-    summaryHost.innerHTML = '';
-    const precStr = s.precision != null ? s.precision.toFixed(2) : '—';
-    const recStr  = s.recall    != null ? s.recall.toFixed(2)    : '—';
-    const f1Str   = s.f1        != null ? s.f1.toFixed(2)        : '—';
-    const grid = el('div', { class: 'failure-summary' }, [
-      el('div', { class: 'failure-cell' }, [
-        el('div', { class: 'ftype', text: 'TP' }),
-        el('div', { class: 'fcount', text: String(s.n_tp) }),
-      ]),
-      el('div', { class: 'failure-cell sev-warn' }, [
-        el('div', { class: 'ftype', text: 'FP' }),
-        el('div', { class: 'fcount', text: String(s.n_fp) }),
-      ]),
-      el('div', { class: 'failure-cell sev-critical' }, [
-        el('div', { class: 'ftype', text: 'FN' }),
-        el('div', { class: 'fcount', text: String(s.n_fn) }),
-      ]),
-      el('div', { class: 'failure-cell' }, [
-        el('div', { class: 'ftype', text: 'TN' }),
-        el('div', { class: 'fcount', text: String(s.n_tn) }),
-      ]),
-      el('div', { class: 'failure-cell' }, [
-        el('div', { class: 'ftype', text: 'Precision' }),
-        el('div', { class: 'fcount', text: precStr }),
-      ]),
-      el('div', { class: 'failure-cell' }, [
-        el('div', { class: 'ftype', text: 'Recall' }),
-        el('div', { class: 'fcount', text: recStr }),
-      ]),
-      el('div', { class: 'failure-cell' }, [
-        el('div', { class: 'ftype', text: 'F1' }),
-        el('div', { class: 'fcount', text: f1Str }),
-      ]),
-    ]);
-    summaryHost.appendChild(grid);
-
-    // Per-mode side-by-side
-    const modesHost = $('#mast-result-modes');
-    modesHost.innerHTML = '';
-    // Sort: TP first (wins), FN next (misses), FP, then TN
-    const order = { TP: 0, FN: 1, FP: 2, TN: 3 };
-    const sorted = (data.per_mode || []).slice().sort((a, b) =>
-      (order[a.outcome] ?? 9) - (order[b.outcome] ?? 9) || (a.mode_id || '').localeCompare(b.mode_id || '')
-    );
-    sorted.forEach(m => {
-      // Hide pure TN rows by default to keep the list focused on signal
-      if (m.outcome === 'TN') return;
-      const pillClass =
-        m.outcome === 'TP' ? '' :
-        m.outcome === 'FN' ? 'critical' :
-        m.outcome === 'FP' ? 'warn' : '';
-      const agree = m.annotator_agreement || [0, 0];
-      modesHost.appendChild(el('div', { class: 'failure-row' }, [
-        el('div', { class: 'step', text: m.outcome }),
-        el('div', {}, [
-          el('div', {}, [
-            el('span', { class: `pill ${pillClass}`, text: m.name }),
-            ' ',
-            el('span', { class: 'muted', text: `human raters: ${agree[0]}/${agree[1]}` }),
-          ]),
-          m.evidence
-            ? el('div', { class: 'mono muted', text: `drift evidence: ${m.evidence}` })
-            : (m.outcome === 'FN'
-                ? el('div', { class: 'mono muted', text: 'drift did not flag this — human raters did.' })
-                : null),
-        ].filter(Boolean)),
-      ]));
-    });
-    if (!modesHost.children.length) {
-      modesHost.appendChild(el('div', { class: 'empty', text: 'No signal vs ground truth — all modes were TN (both agreed no failure).' }));
-    }
-  }
-
-  // ---------- custom / BYOA -----------------------------------------------
-
-  let CUSTOM_INITED = false;
-
-  function initCustom() {
-    if (CUSTOM_INITED) return;
-    if (!TOPOLOGIES.length) return;  // bootstrap hasn't loaded yet; re-call will happen
-    const sel = $('#byoa-topology');
-    sel.innerHTML = '';
-    TOPOLOGIES.forEach(t => sel.appendChild(el('option', { value: t.name, text: t.name })));
-    sel.addEventListener('change', onCustomTopologyChange);
-    onCustomTopologyChange();
-
-    $('#byoa-load-example').addEventListener('click', loadCustomExample);
-    $('#byoa-clear').addEventListener('click', clearCustom);
-    $('#byoa-submit').addEventListener('click', submitCustom);
-    CUSTOM_INITED = true;
-  }
-
-  function onCustomTopologyChange() {
-    const t = TOPOLOGIES.find(x => x.name === $('#byoa-topology').value);
-    if (!t) return;
-    const det = (t.detectors || []).join(', ');
-    $('#byoa-topology-help').textContent =
-      `Layers ${t.name}-specific detectors on top of the cross-topology ones${det ? '  •  ' + det : ''}`;
-  }
-
-  async function loadCustomExample() {
-    try {
-      const ex = await api('/api/byoa-example');
-      $('#byoa-code').value = ex.code;
-      if (ex.detector_topology) {
-        $('#byoa-topology').value = ex.detector_topology;
-        onCustomTopologyChange();
-      }
-      toast('Example loaded — hit Run on my agents.', 'info');
-    } catch (e) {
-      toast('Could not load example: ' + e.message, 'error');
-    }
-  }
-
-  function clearCustom() {
-    $('#byoa-code').value = '';
-    $('#byoa-result').classList.add('hidden');
-    $('#byoa-summary').innerHTML = '';
-    $('#byoa-failure-summary').innerHTML = '';
-    $('#byoa-failure-list').innerHTML = '';
-    const acl = $('#byoa-auto-chaos-list');
-    if (acl) acl.innerHTML = '';
-    const acc = $('#byoa-auto-chaos-card');
-    if (acc) acc.hidden = true;
-  }
-
-  async function submitCustom() {
-    const code = $('#byoa-code').value;
-    if (!code.trim()) {
-      toast('Paste agent code first (or click "Load example").', 'error');
-      return;
-    }
-    const guidelinesRaw = (($('#byoa-user-guidelines') || {}).value || '').split('\n');
-    const userGuidelines = guidelinesRaw.map(s => s.trim()).filter(Boolean);
-    const body = {
-      code,
-      detector_topology: $('#byoa-topology').value,
-      steps: parseInt($('#byoa-steps').value, 10) || 10,
-      seed: parseInt($('#byoa-seed').value, 10) || 0,
-      auto_chaos: ($('#byoa-auto-chaos') || {}).value || 'off',
-      judge: ($('#byoa-judge') || {}).value || 'off',
-      judge_model: ($('#byoa-judge-model') || {}).value.trim() || null,
-      judge_every: parseInt(($('#byoa-judge-every') || {}).value, 10) || 5,
-      user_guidelines: userGuidelines,
-    };
-    const btn = $('#byoa-submit');
-    btn.disabled = true;
-    btn.textContent = 'Running…';
-    try {
-      const data = await api('/api/byoa', { method: 'POST', body });
-      renderCustomResult(data);
-      $('#byoa-result').classList.remove('hidden');
-      $('#byoa-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } catch (e) {
-      toast('Run failed: ' + e.message, 'error');
-    } finally {
-      btn.disabled = false;
-      btn.textContent = 'Run on my agents';
-    }
-  }
-
-  function renderCustomResult(data) {
-    const summary = data.summary || {};
-    const meta = $('#byoa-summary');
-    meta.innerHTML = '';
-    const agentList = (summary.agents || []).map(a => `${a.name} (${a.role})`).join(', ') || '—';
-    const acIntensity = summary.auto_chaos && summary.auto_chaos !== 'off' ? summary.auto_chaos : null;
-    const judgeSpec = summary.judge && summary.judge !== 'off' ? summary.judge : null;
-    const judgeDesc = judgeSpec
-      ? `${judgeSpec}${summary.judge_model ? ` (${summary.judge_model})` : ''} — ${summary.n_failures_llm || 0} fired`
-      : 'off';
-    const failuresDesc = (summary.n_failures_llm || 0) > 0
-      ? `${summary.n_failures} (${summary.n_failures_deterministic} deterministic + ${summary.n_failures_llm} llm-judged)`
-      : String(summary.n_failures);
-    const kvs = [
-      ['Detectors',      summary.detector_topology],
-      ['Agents',         agentList],
-      ['Steps completed', `${summary.steps_completed} / ${summary.steps_requested}`],
-      ['Actions',        summary.n_actions],
-      ['Events',         summary.n_events],
-      ['Auto-chaos',     acIntensity ? `${acIntensity} — ${summary.n_auto_chaos_injected} injected` : 'off'],
-      ['LLM judge',      judgeDesc],
-      ['Failures',       failuresDesc],
-    ];
-    kvs.forEach(([k, v]) => {
-      meta.appendChild(el('span', { class: 'k', text: k }));
-      meta.appendChild(el('span', { class: 'v', text: v == null || v === '' ? '—' : String(v) }));
-    });
-
-    // Auto-chaos card: list every injected event so the user can see what drift fired.
-    const acCard = $('#byoa-auto-chaos-card');
-    const acList = $('#byoa-auto-chaos-list');
-    if (acCard && acList) {
-      acList.innerHTML = '';
-      const injected = data.auto_chaos_injected || [];
-      if (injected.length) {
-        acCard.hidden = false;
-        injected.forEach(ev => {
-          acList.appendChild(el('div', { class: 'failure-row' }, [
-            el('div', { class: 'step', text: `t=${ev.timestep}` }),
-            el('div', {}, [
-              el('div', {}, [
-                el('span', { class: 'pill', text: ev.name }),
-              ]),
-              el('div', { class: 'mono muted', text: ev.summary || '' }),
-            ]),
-          ]));
-        });
-      } else {
-        acCard.hidden = true;
-      }
-    }
-
-    const summaryHost = $('#byoa-failure-summary');
-    const listHost = $('#byoa-failure-list');
-    summaryHost.innerHTML = '';
-    listHost.innerHTML = '';
-
-    const failures = data.failures || [];
-    if (!failures.length) {
-      summaryHost.appendChild(el('div', { class: 'empty', text: 'No failures detected — clean run.' }));
-      return;
-    }
-
-    const byType = {};
-    failures.forEach(f => { byType[f.failure_type] = (byType[f.failure_type] || 0) + 1; });
-    const sumGrid = el('div', { class: 'failure-summary' });
-    Object.entries(byType).sort((a, b) => b[1] - a[1]).forEach(([type, count]) => {
-      sumGrid.appendChild(el('div', { class: `failure-cell sev-${sev(type)}` }, [
-        el('div', { class: 'ftype', text: type }),
-        el('div', { class: 'fcount', text: fmt.num(count) }),
-      ]));
-    });
-    summaryHost.appendChild(sumGrid);
-
-    failures.slice(0, 200).forEach(f => {
-      listHost.appendChild(el('div', { class: 'failure-row' }, [
-        el('div', { class: 'step', text: `t=${f.timestep}` }),
-        el('div', {}, [
-          el('div', {}, [
-            el('span', { class: `pill ${sev(f.failure_type) === 'critical' ? 'critical' : sev(f.failure_type)}`, text: f.failure_type }),
-            ' ',
-            el('span', { class: 'muted', text: (f.agents_involved || []).join(', ') || '—' }),
-          ]),
-          el('div', { class: 'mono muted', html: escapeHtml(f.summary || '') }),
-        ]),
-      ]));
-    });
-    if (failures.length > 200) {
-      listHost.appendChild(el('div', { class: 'muted', text: `… and ${failures.length - 200} more.` }));
-    }
-  }
-
-  function paintCompareAgents(data) {
-    const host = $('#cmp-agents');
-    host.innerHTML = '';
-    const allAgents = new Set([
-      ...Object.keys(data.a.actions_by_agent_kind || {}),
-      ...Object.keys(data.b.actions_by_agent_kind || {}),
-    ]);
-    if (!allAgents.size) {
-      host.appendChild(el('div', { class: 'empty', text: 'No actions to compare.' }));
-      return;
-    }
-    [...allAgents].sort().forEach(agent => {
-      const ka = data.a.actions_by_agent_kind[agent] || {};
-      const kb = data.b.actions_by_agent_kind[agent] || {};
-      const kinds = new Set([...Object.keys(ka), ...Object.keys(kb)]);
-      const block = el('div', { class: 'card', style: 'margin-bottom: 12px;' }, [
-        el('h4', { style: 'margin: 0 0 8px; font-size: 13px;', text: agent }),
-        el('div', { class: 'diff-row head' }, [
-          el('div', { text: 'kind' }),
-          el('div', { class: 'num', text: 'A' }),
-          el('div', { class: 'num', text: 'B' }),
-          el('div', { class: 'num', text: 'Δ' }),
-        ]),
-      ]);
-      [...kinds].sort().forEach(k => {
-        const ca = ka[k] || 0, cb = kb[k] || 0, d = cb - ca;
-        const cls = d === 0 ? 'same' : d > 0 ? 'up' : 'down';
-        block.appendChild(el('div', { class: 'diff-row' }, [
-          el('div', { class: 'mono', text: k }),
-          el('div', { class: 'num', text: ca }),
-          el('div', { class: 'num', text: cb }),
-          el('div', { class: 'num' }, [el('span', { class: `pill ${cls}`, text: (d > 0 ? '+' : '') + d })]),
-        ]));
-      });
-      host.appendChild(block);
-    });
-  }
-
-  // ---------- adapter tab (langgraph) -------------------------------------
-
-  // Curated quick-pick queries — clicking pre-fills the query field. Keyed
-  // by graph name; falls back to the supervisor list when the graph is
-  // unknown. These are drawn from our exhaustive sweep so users can
-  // reproduce the same findings we wrote up in the case study.
   const ADAPTER_EXAMPLE_QUERIES = {
     ticket_triage: [
       'site is down can someone help',
@@ -1568,8 +108,6 @@
     ],
   };
 
-  // Preset definitions — each preset overrides the advanced knobs to a
-  // cohesive set. "custom" is the escape hatch and doesn't touch the knobs.
   const ADAPTER_PRESETS = {
     quick: {
       intensity: 'light',
@@ -1596,10 +134,6 @@
       max_judge_calls: 25,
     },
     exhaustive: {
-      // Pre-deploy gate: every applicable chaos pattern in the schema, no
-      // sampling. The adapter auto-raises max_perturbations to catalog size
-      // when we leave it at the default, but we set a generous explicit
-      // ceiling here so users see what they're opting into.
       intensity: 'exhaustive',
       max_perturbations: 100,
       judge: 'openai',
@@ -1609,19 +143,26 @@
     },
   };
 
+  const ADAPTER_PRESET_HINTS = {
+    quick: 'Light chaos + exact-equality diff. No LLM calls, runs in seconds. Good for smoke tests.',
+    balanced: 'Aggressive chaos + judge on tiered cascade. ~$0.01 / run. Default for everyday use.',
+    thorough: 'Aggressive chaos + 5 baseline rollouts + larger judge budget. ~$0.10 / run.',
+    exhaustive: 'Every applicable chaos pattern in the schema, no sampling. Cost scales with schema breadth — wide schemas can hit $0.50+ per run. Use as a pre-deploy gate.',
+    custom: 'Tweak any knob in Advanced settings.',
+  };
+
   let _adapterWired = false;
-  let _adapterGraphs = [];  // cached from /api/adapter-graphs
+  let _adapterGraphs = [];
+  let _lastAdapterRun = null;
 
   async function initAdapter() {
     if (_adapterWired) return;
     _adapterWired = true;
     $('#adapter-run').addEventListener('click', runAdapterDemo);
     $('#adapter-graph').addEventListener('change', onAdapterGraphChange);
-    $$('input[name="adapter-preset"]').forEach(el => {
-      el.addEventListener('change', () => applyAdapterPreset(el.value));
+    $$('input[name="adapter-preset"]').forEach(input => {
+      input.addEventListener('change', () => applyAdapterPreset(input.value));
     });
-    // Switching any advanced knob jumps the preset to "custom" so users
-    // don't see a preset claiming settings that don't match.
     [
       '#adapter-intensity', '#adapter-max-perturbations', '#adapter-judge',
       '#adapter-divergence-mode', '#adapter-baseline-rollouts', '#adapter-max-judge-calls',
@@ -1641,7 +182,7 @@
       const data = await api('/api/adapter-graphs');
       _adapterGraphs = data.graphs || [];
       populateAdapterGraphDropdown(_adapterGraphs);
-      onAdapterGraphChange();  // initialize query field for the default
+      onAdapterGraphChange();
       applyAdapterPreset('balanced');
     } catch (e) {
       $('#adapter-graph-help').textContent = 'Could not load graph list: ' + e.message;
@@ -1659,7 +200,6 @@
       if (!g.available) opt.disabled = true;
       sel.appendChild(opt);
     });
-    // Default selection: first available graph.
     const firstAvailable = graphs.find(g => g.available);
     if (firstAvailable) sel.value = firstAvailable.name;
   }
@@ -1689,7 +229,6 @@
     queryInput.placeholder = g.query_default || '';
     if (!queryInput.value) queryInput.value = g.query_default || '';
 
-    // Rebuild example-query chips for this graph.
     chips.innerHTML = '';
     (ADAPTER_EXAMPLE_QUERIES[name] || []).forEach(q => {
       chips.appendChild(el('button', {
@@ -1703,21 +242,11 @@
     });
   }
 
-  // Plain-English hint shown under the preset seg. Lets the user see what
-  // a preset actually costs/does without expanding the Advanced section.
-  const ADAPTER_PRESET_HINTS = {
-    quick: 'Light chaos + exact-equality diff. No LLM calls, runs in seconds. Good for smoke tests.',
-    balanced: 'Aggressive chaos + judge on tiered cascade. ~$0.01 / run. Default for everyday use.',
-    thorough: 'Aggressive chaos + 5 baseline rollouts + larger judge budget. ~$0.10 / run.',
-    exhaustive: 'Every applicable chaos pattern in the schema, no sampling. Cost scales with schema breadth — wide schemas can hit $0.50+ per run. Use as a pre-deploy gate.',
-    custom: 'Tweak any knob in Advanced settings.',
-  };
-
   function applyAdapterPreset(name) {
     const hint = $('#adapter-preset-hint');
     if (hint) hint.textContent = ADAPTER_PRESET_HINTS[name] || '';
     const p = ADAPTER_PRESETS[name];
-    if (!p) return;  // "custom" — leave knobs alone
+    if (!p) return;
     $('#adapter-intensity').value = p.intensity;
     $('#adapter-max-perturbations').value = p.max_perturbations;
     $('#adapter-judge').value = p.judge;
@@ -1779,14 +308,8 @@
     }
   }
 
-  // Keep the most recent run around so the "Download raw JSON" button always
-  // has something to serve, even if the user scrolls / interacts.
-  let _lastAdapterRun = null;
-
   // ---- trace rendering helpers ------------------------------------------
 
-  // Render a single super-step as an expandable row. Click toggles a
-  // detail block showing the update + state_after as pretty JSON.
   function renderTraceStep(step, opts = {}) {
     const node = step.node || '(unknown)';
     const update = step.update || {};
@@ -1813,8 +336,6 @@
       ]),
     ]);
     row.addEventListener('click', (e) => {
-      // Avoid toggling when the user is clicking inside the detail block
-      // (e.g. selecting text from the pre).
       if (e.target.closest && e.target.closest('.trace-step-detail')) return;
       row.classList.toggle('expanded');
     });
@@ -1877,20 +398,16 @@
       }
       kvs.push(['Tier-3 judge calls', `${data.judge_calls_used} / ${data.judge_calls_budget}`]);
     }
+    if (data.n_filtered_divergences) {
+      kvs.push(['Filtered (audit)', data.n_filtered_divergences]);
+    }
     kvs.forEach(([k, v]) => {
       summary.appendChild(el('span', { class: 'k', text: k }));
       summary.appendChild(el('span', { class: 'v', text: v == null || v === '' ? '—' : String(v) }));
     });
 
-    const headline = $('#adapter-headline');
-    headline.innerHTML = '';
-    headline.appendChild(el('p', {
-      class: 'help',
-      text: data.graph_description,
-    }));
-
-    // --- baseline ---
-    const base = $('#adapter-baseline');
+    // --- baseline trace ---
+    const base = $('#adapter-baseline-trace');
     base.innerHTML = '';
     const b = data.baseline;
     if (b.crashed) {
@@ -1899,17 +416,14 @@
         el('div', { class: 'mono', style: 'margin-top: 8px;', text: `${b.error_type}: ${b.error}` }),
       ]));
     } else {
-      // Initial state + trace + final state.
       base.appendChild(el('details', { style: 'margin-bottom: 10px;' }, [
         el('summary', { class: 'help', text: `Initial state (${Object.keys(b.initial_state || {}).length} keys)` }),
         el('pre', { class: 'mono', style: 'max-height: 200px; overflow: auto; font-size: 11px;',
                    text: JSON.stringify(b.initial_state || {}, null, 2) }),
       ]));
 
-      const traceHeader = el('div', { class: 'help', style: 'margin: 8px 0 4px 0;' }, [
-        document.createTextNode(`Trace — ${(b.trace || []).length} super-step(s):`),
-      ]);
-      base.appendChild(traceHeader);
+      base.appendChild(el('div', { class: 'help', style: 'margin: 8px 0 4px 0;',
+                                   text: `Trace — ${(b.trace || []).length} super-step(s):` }));
       base.appendChild(renderTraceList(b.trace));
 
       base.appendChild(el('details', { style: 'margin-top: 10px;' }, [
@@ -1918,8 +432,6 @@
                    text: JSON.stringify(b.final_state || {}, null, 2) }),
       ]));
     }
-    // Judge findings on baseline (if any) — these mean the supervisor
-    // exhibits the problem in normal operation, not under chaos.
     if ((b.judge_findings || []).length) {
       const jHost = el('div', { style: 'margin-top: 10px;' });
       jHost.appendChild(el('div', { class: 'muted',
@@ -1945,7 +457,6 @@
       }));
       return;
     }
-    // Sort: crashes -> diverges -> unchanged. Highest-signal first.
     const sorted = data.perturbations.slice().sort((p, q) => {
       const rank = (x) => x.crashed ? 0 : x.diverged ? 1 : 2;
       const r = rank(p) - rank(q);
@@ -1968,9 +479,6 @@
     } else {
       pillClass = 'pill success';
       pillText  = 'UNCHANGED';
-      // If the cascade filtered out any divergences (tier-2 noise band or
-      // tier-3 judge-equivalent), say so up front instead of asserting a
-      // clean pass. Lets the user audit "is this really noise?"
       if (filtered.length) {
         const reasons = [
           filtered.filter(d => d.tier === 2).length && `${filtered.filter(d => d.tier === 2).length} within noise band`,
@@ -1993,8 +501,6 @@
     if ((p.judge_findings || []).length) {
       findingBadges.push(el('span', { class: 'pill info', text: `JUDGE×${p.judge_findings.length}` }));
     }
-    // UNCHANGED-audit chip — only show on rows that actually had something
-    // filtered. The chip count is "how many diffs were quietly cleared."
     if (filtered.length) {
       findingBadges.push(el('span', {
         class: 'pill info',
@@ -2012,18 +518,14 @@
       el('span', { class: 'muted', style: 'margin-left: auto; font-size: 11px;', text: '▾ click to expand' }),
     ]);
 
-    // Body — only shown when row is expanded.
     const sum = el('div', { class: 'muted', style: 'margin-bottom: 8px; font-size: 13px;', text: p.event_summary });
     const det = el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word; font-size: 12px; margin-bottom: 10px;', text: detail });
 
     const bodyChildren = [sum, det];
 
-    // Coordination + judge findings, attached above the trace compare.
     (p.coordination_findings || []).forEach(f => bodyChildren.push(renderCoordFinding(f)));
     (p.judge_findings || []).forEach(f => bodyChildren.push(renderJudgeFinding(f)));
     (p.divergence_details || []).forEach(d => bodyChildren.push(renderFieldDivergence(d)));
-    // UNCHANGED-audit: render filtered candidates with a header so users
-    // know these are diffs the cascade dropped (not real divergences).
     if (filtered.length) {
       bodyChildren.push(el('div', {
         class: 'help',
@@ -2033,7 +535,6 @@
       filtered.forEach(d => bodyChildren.push(renderFilteredDivergence(d)));
     }
 
-    // Side-by-side trace compare: baseline left, perturbed right.
     if ((p.trace || []).length || (baseline && (baseline.trace || []).length)) {
       bodyChildren.push(el('div', { class: 'help', style: 'margin: 12px 0 4px 0;',
                                     text: 'Trace compare — baseline (left) vs perturbed (right):' }));
@@ -2049,7 +550,6 @@
       ]));
     }
 
-    // Initial/final state expandables — useful for "what did chaos actually do".
     bodyChildren.push(el('details', { style: 'margin-top: 12px;' }, [
       el('summary', { class: 'help', text: 'Perturbed initial state' }),
       el('pre', { class: 'mono', style: 'max-height: 200px; overflow: auto; font-size: 11px;',
@@ -2071,8 +571,6 @@
   }
 
   function renderCoordFinding(f) {
-    // Distinct styling from judge findings — these are deterministic, free,
-    // and come from the curated library, not the LLM.
     return el('div', {
       style: 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid #a16207; background: #854d0e11; border-radius: 3px;',
     }, [
@@ -2124,11 +622,6 @@
   }
 
   function renderFilteredDivergence(d) {
-    // UNCHANGED-audit row. Visually distinct from confirmed divergences:
-    // muted color, "FILTERED" pill, plus the value pair and the reason
-    // (noise band similarity or judge reasoning) inline. The point is for
-    // the user to be able to scan and decide "yes that really was noise"
-    // or "no the judge missed something, let me look closer."
     const filterReason = d.judge_equivalent
       ? `judge: ${d.judge_reasoning || 'equivalent'}`
       : d.within_noise_band
@@ -2170,11 +663,8 @@
   }
 
   // ---- finding glossary --------------------------------------------------
-  // Plain-English explanations for every failure_type drift's LLM judge or
-  // coordination library can emit. Used to power the "?" tooltip / popover
-  // on each finding so users don't have to read source to know what fired.
+
   const FINDING_GLOSSARY = {
-    // LLM judge (6-family taxonomy)
     'llm:coordination_contradiction': {
       label: 'Coordination contradiction',
       what: 'Agents gave conflicting or repeated requests/decisions on the same task — e.g. supervisor asked the same question twice, or two agents proposed opposite actions on the same item.',
@@ -2200,7 +690,6 @@
       what: 'An agent skipped a required check, approval, or verification step before taking an action that should have gated on it.',
       source: 'Drift\'s 6-family LLM judge taxonomy',
     },
-    // Coordination library (deterministic, free, citation-backed)
     'verifier_always_approves': {
       label: 'Verifier always approves',
       what: 'A verifier-role agent approved >=95% of decisions across N runs with zero rejections — it isn\'t actually verifying anything. Real-world this means the safety layer is silently disabled.',
@@ -2220,7 +709,6 @@
 
   function _glossaryEntry(failureType) {
     if (FINDING_GLOSSARY[failureType]) return FINDING_GLOSSARY[failureType];
-    // user_guideline matches by prefix because the suffix is the rule index.
     if (failureType && failureType.startsWith('llm:user_guideline')) {
       return {
         label: 'User guideline match',
@@ -2231,8 +719,6 @@
     return null;
   }
 
-  // Render a failure_type code with a clickable "?" popover that reveals
-  // the plain-English explanation. Closes on outside click.
   function renderFindingTypeBadge(failureType) {
     const entry = _glossaryEntry(failureType);
     const code = el('code', { class: 'muted', text: failureType });
@@ -2248,7 +734,6 @@
 
     help.addEventListener('click', (e) => {
       e.stopPropagation();
-      // Toggle: if already showing, hide.
       const existing = wrap.querySelector('.finding-popover');
       if (existing) {
         existing.remove();
@@ -2260,7 +745,6 @@
         el('div', { class: 'muted', style: 'font-size: 11px;', text: 'Source: ' + entry.source }),
       ]);
       wrap.appendChild(pop);
-      // Outside-click to dismiss.
       const dismiss = (ev) => {
         if (!wrap.contains(ev.target)) {
           pop.remove();
@@ -2303,7 +787,7 @@
         const section = el('div', { style: 'margin-bottom: 16px;' }, [
           el('h3', { style: 'margin-bottom: 6px; font-size: 14px;', text: group + ` (${entries.length})` }),
         ]);
-        const list = el('div', { class: 'trace-list' });  // re-use the row styling
+        const list = el('div', { class: 'trace-list' });
         entries.forEach(entry => {
           const row = el('div', {
             class: 'trace-step',
@@ -2346,19 +830,13 @@
     }
   }
 
-  // Render a saved JSON file as readable structured HTML when we recognise
-  // the shape (adapter run, sweep, adversarial, etc.); fall back to a
-  // pretty-printed pre block for anything else.
   function renderResultsViewerBody(data, relpath) {
-    // Adapter-style payloads: top-level has baseline + perturbations.
     if (data && data.baseline && data.perturbations) {
       return _renderAdapterShaped(data);
     }
-    // Sweep payloads: aggregate + per_question / per_shape / per_fixture.
     if (data && (data.per_question || data.per_shape || data.per_fixture)) {
       return _renderSweepShaped(data);
     }
-    // Generic fall-through.
     return el('pre', {
       class: 'mono',
       style: 'max-height: 600px; overflow: auto; font-size: 11px;',
@@ -2398,7 +876,7 @@
     if (Object.keys(agg).length) {
       const kv = el('div', { class: 'kv-grid' });
       Object.entries(agg).forEach(([k, v]) => {
-        if (typeof v === 'object' && v !== null) return;  // skip nested
+        if (typeof v === 'object' && v !== null) return;
         kv.appendChild(el('span', { class: 'k', text: k }));
         kv.appendChild(el('span', { class: 'v', text: String(v) }));
       });
@@ -2424,15 +902,7 @@
     return host;
   }
 
-  // ---------- utils -------------------------------------------------------
-
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
   // ---------- start -------------------------------------------------------
 
-  bootstrap();
+  initAdapter();
 })();
