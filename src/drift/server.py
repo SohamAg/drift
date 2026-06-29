@@ -1,25 +1,22 @@
 """drift web server — FastAPI backend for the local UI.
 
-Endpoints:
-  GET  /api/topologies                   — list registered topologies + their roles/detectors
-  GET  /api/scenarios                    — list YAML scenarios on disk
-  GET  /api/runs                         — summary list of runs in the runs dir
-  GET  /api/runs/{run_id}                — full detail (events/actions/snapshots/failures)
-  POST /api/runs                         — start a new run (returns immediately; runs in background)
-  GET  /api/runs/{run_id}/status         — poll progress of a still-running simulation
-  POST /api/compare                      — diff two completed runs
+After the 2026-06-29 cleanup all native-simulator endpoints (/api/runs,
+/api/compare, /api/byoa, /api/topologies, /api/scenarios) were removed
+along with the simulator. The server now exposes only adapter-shaped
+endpoints:
+
+  GET  /api/adapter-graphs           — list bundled graphs the Adapter tab can run
+  POST /api/adapter-demo             — run drift_test against a chosen graph
+  GET  /api/results                  — list saved experiment JSON under results/
+  GET  /api/results/{relpath:path}   — fetch one saved result by path
+  GET  /api/mast-demos               — list curated MAST demo traces
+  POST /api/mast-analyze             — judge one MAST trace (cached or live)
 
 The HTML/CSS/JS frontend is served from /web/.
 """
 from __future__ import annotations
 
-import asyncio
-import datetime as dt
 import json
-import os
-import threading
-import traceback
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -28,30 +25,20 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from drift.events.scheduler import EventScheduler
-from drift.llm import ScriptedMockLLM
-from drift.llm.base import LLMClient
-from drift.observability.logger import RunLogger
-from drift.simulation import SimulationRunner
-from drift.testing import reset_all_counters
-from drift.topologies import Topology, get_topology, list_topologies
 
-
-# Resolved at startup so endpoints can find the right paths regardless of CWD.
-PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]  # e:\drift
-RUNS_DIR: Path = PROJECT_ROOT / "runs"
-SCENARIOS_DIR: Path = PROJECT_ROOT / "scenarios"
+# Resolved at import so endpoints find paths regardless of CWD.
+PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 WEB_DIR: Path = PROJECT_ROOT / "web"
+RESULTS_DIR: Path = PROJECT_ROOT / "results"
 MAST_DATASET: Path = PROJECT_ROOT / "data" / "external" / "mast" / "MAD_human_labelled_dataset.json"
 MAST_CACHED_RESULTS_DIR: Path = PROJECT_ROOT / "results" / "mast_judge" / "full"
 
 
-# Curated MAST traces for the "Detect" demo tab. Each entry pairs one
-# MAST trace_id with a short human-readable narrative so the demo can show
+# Curated MAST traces for the "MAST" demo. Each entry pairs one MAST
+# trace_id with a short human-readable narrative so the demo can show
 # "real published multi-agent run X had these human-flagged failures —
-# here is what drift's judge sees." Picked to span MAS frameworks and
-# represent a mix of outcomes (clean win, mixed, hard miss) so the demo
-# is honest about where drift works and where it doesn't.
+# here is what drift's judge sees." Picked to span frameworks + outcomes
+# (clean win, mixed, hard miss) so the demo is honest about scope.
 MAST_DEMO_TRACES: list[dict[str, Any]] = [
     {
         "id": 2,
@@ -88,297 +75,59 @@ MAST_DEMO_TRACES: list[dict[str, Any]] = [
 ]
 
 
-# Starter snippet for the Custom (BYOA) tab. Demonstrates the full
-# bring-your-own pattern: custom WorldState subclass with extra domain
-# fields, custom chaos Event subclass that mutates state, initial_state()
-# and events() callables, plus four decorated agents. Designed to trigger
-# multiple detectors (contradictory_review, hallucinated_reference,
-# security_bypass) so the user sees immediate signal across families.
-_BYOA_EXAMPLE_CODE = '''\
-# ──────────────────────────────────────────────────────────────────────
-# 1. Define your environment.  Subclass drift.WorldState to add the fields
-# your domain needs. drift's general detectors read `open_cases`; the
-# code-review topology adds attention to `security_status`.
-# ──────────────────────────────────────────────────────────────────────
-from drift.world import Case
-
-
-class CodeReviewState(drift.WorldState):
-    repository: str = "demo/repo"
-    security_status: dict = {}   # PR id -> "blocked" | "clear"
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 2. Define chaos events.  Each Event subclass has an apply(world) method
-# that mutates the world state. Drift calls apply() at the scheduled step.
-# ──────────────────────────────────────────────────────────────────────
-class SecurityFinding(drift.Event):
-    name = "SecurityFinding"
-
-    def __init__(self, pr_id):
-        super().__init__()
-        self.pr_id = pr_id
-
-    def apply(self, world):
-        world.state.security_status[self.pr_id] = "blocked"
-        return drift.EventRecord(
-            event_id=self.event_id,
-            timestep=world.state.timestep,
-            name=self.name,
-            summary=f"security blocked {self.pr_id}",
-        )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 3. Pre-populate the world and schedule events.
-# ──────────────────────────────────────────────────────────────────────
-def initial_state():
-    return CodeReviewState(
-        open_cases={
-            "PR-1": Case(case_id="PR-1", customer_id="alice",
-                         issue="add dark mode toggle", opened_at_step=0),
-        },
-    )
-
-
-def events():
-    """Return [(timestep, event_instance), ...] — drift fires each at its step."""
-    return [
-        (3, SecurityFinding("PR-1")),
-    ]
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 4. Define your agents.  Replace the bodies with your own LLM / RAG /
-# tool / framework calls — drift only needs the structured Action back.
-# ──────────────────────────────────────────────────────────────────────
-@drift.agent(role="reviewer", name="reviewer_a")
-async def reviewer_a(state, memory):
-    if state.open_cases:
-        target = sorted(state.open_cases)[0]
-        return drift.Action(
-            kind="approve_review",
-            target_case_id=target,
-            rationale=f"reviewer_a approves {target}",
-        )
-    return drift.Action(kind="no_op")
-
-
-@drift.agent(role="reviewer", name="reviewer_b")
-async def reviewer_b(state, memory):
-    # At t=4, deliberately reference a PR that doesn't exist — triggers
-    # hallucinated_reference.
-    if state.timestep == 4:
-        return drift.Action(
-            kind="reject_review",
-            target_case_id="PR-PHANTOM",
-            rationale="reviewer_b rejects a PR that doesn't exist",
-        )
-    if state.open_cases:
-        target = sorted(state.open_cases)[0]
-        return drift.Action(
-            kind="reject_review",
-            target_case_id=target,
-            rationale=f"reviewer_b disagrees about {target}",
-        )
-    return drift.Action(kind="no_op")
-
-
-@drift.agent(role="security")
-async def security(state, memory):
-    # Reads state.security_status — the SecurityFinding event sets it at t=3.
-    for pr_id, status in state.security_status.items():
-        if status == "blocked":
-            return drift.Action(
-                kind="security_block",
-                target_case_id=pr_id,
-                rationale=f"security has findings on {pr_id}",
-            )
-    return drift.Action(kind="no_op")
-
-
-@drift.agent(role="merger")
-async def merger(state, memory):
-    # A simple merger that always tries to merge PR-1. Once security has
-    # blocked it (from t=3 onward) this should trigger security_bypass.
-    return drift.Action(
-        kind="merge",
-        target_case_id="PR-1",
-        rationale="merger always merges",
-    )
-'''
-
-
-# ---- in-memory tracker for in-flight runs --------------------------------
-
-class _RunState:
-    """Lifecycle of one simulation. Stored in a process-local dict so the
-    frontend can poll progress while the background task makes progress."""
-
-    def __init__(self, run_id: str, total_steps: int, request: dict[str, Any]) -> None:
-        self.run_id = run_id
-        self.total_steps = total_steps
-        self.completed_steps = 0
-        self.status: str = "queued"   # queued | running | done | failed
-        self.error: str | None = None
-        self.started_at: str = dt.datetime.now().isoformat(timespec="seconds")
-        self.finished_at: str | None = None
-        self.request = request
-        self.failure_count = 0
-        # Live snapshot data — updated each tick so the UI can render motion.
-        self.world_state: dict[str, Any] = {}
-        self.failures_by_type: dict[str, int] = {}
-        self.recent_events: list[dict[str, Any]] = []
-        self.recent_failures: list[dict[str, Any]] = []
-        self.recent_actions: list[dict[str, Any]] = []
-        self.last_step_event_count = 0
-        self.last_step_failure_count = 0
-
-
-_RUNS: dict[str, _RunState] = {}
-_RUNS_LOCK = threading.Lock()
-
-
-# ---- request/response models ---------------------------------------------
-
-class StartRunRequest(BaseModel):
-    topology: str
-    scenario: str | None = None     # filename in scenarios/, or None for empty scenario
-    steps: int = Field(default=30, ge=1, le=500)
-    seed: int = 42
-    llm: str = "mock"               # mock | openai
-    model: str | None = None
-    prompt_variant: str = "naive"   # naive | hardened
-    run_id: str | None = None       # optional human-friendly label; otherwise auto-generated
-
-
-class CompareRequest(BaseModel):
-    run_a: str
-    run_b: str
-    mode: str = "auto"   # "total" | "post_branch" | "auto" — auto picks post_branch when a relationship exists
-
+# ---- request models -------------------------------------------------------
 
 class MastAnalyzeRequest(BaseModel):
-    """Run drift's judge on one curated MAST trace and compare with human
-    ground truth. Backs the Detect tab.
-
-    `trace_id` selects from MAST_DEMO_TRACES. `mode` chooses cached results
-    (instant, no API spend) or live re-run (~5-30s + token cost). When live,
-    `user_guidelines` is appended to the judge's prompt so users can A/B the
-    same trace with vs without their domain-specific patterns.
-    """
+    """Judge one curated MAST trace, either via cached result or a live call."""
     trace_id: int
-    mode: str = "cached"   # "cached" | "live"
+    mode: str = "cached"  # cached | live
     judge_model: str = "gpt-4o-mini"
     user_guidelines: list[str] = Field(default_factory=list)
 
 
-class BYOARequest(BaseModel):
-    """Run drift on user-supplied agent code. Backs the Custom (BYOA) tab.
-
-    The code is executed as Python in the server process. Drift is pre-
-    imported into the namespace. The user defines @drift.agent-decorated
-    async functions; optionally an `initial_state()` callable returning a
-    WorldState; optionally an `events()` callable returning a list of
-    (timestep, Event) pairs.
-
-    Note: this is `exec()` over arbitrary user code. Safe for local
-    development; would need sandboxing for a hosted deployment.
-    """
-    code: str
-    detector_topology: str = "support"   # which topology's detectors to layer on top of the general ones
-    steps: int = Field(default=20, ge=1, le=200)
-    seed: int = 42
-    # Auto-chaos: drift generates chaos events from the user's WorldState
-    # schema. "off" disables; "light"/"moderate"/"aggressive" scale density.
-    # The auto-generated events run alongside any events() the user code defines.
-    auto_chaos: str = "off"
-    auto_chaos_exclude: list[str] = Field(default_factory=list)
-    # LLM-judged detection: drift adds an LLM-judge detector that fires on
-    # coordination failures using natural-language reasoning. "off" disables;
-    # "mock" runs a placeholder (no network); "openai" uses a real
-    # judge. judge_model overrides the default model for the chosen provider.
-    judge: str = "off"
-    judge_model: str | None = None
-    judge_every: int = Field(default=5, ge=1, le=50)
-    # User guidelines — pillar 4. Each line becomes an additional pattern the
-    # judge watches for; matches are reported under `llm:user_guideline:<n>`.
-    # Empty list = current behaviour (the generic 5-family taxonomy only).
-    user_guidelines: list[str] = Field(default_factory=list)
-
-
 class AdapterDemoRequest(BaseModel):
-    """Run drift's langgraph adapter against a bundled langgraph-shaped graph.
-    Backs the Adapter tab — the user picks a graph, optionally a custom
-    initial-state field (e.g. the user's question), then chooses chaos
-    intensity, judge, and divergence-mode knobs.
+    """Run drift's langgraph adapter against a bundled graph.
 
-    Server-side graph build keeps user code out of the request surface —
-    safe to expose. For arbitrary graphs the user installs drift locally
-    and calls drift_test from a notebook.
+    Backs the Adapter tab. Server-side graph build keeps user code out of
+    the request surface — safe to expose. For arbitrary graphs the user
+    installs drift locally and calls drift_test from a notebook.
     """
-    # ---- Which graph to run -------------------------------------------------
+    # Which graph to run.
     # "ticket_triage" — bundled 3-node demo, always available.
-    # "langgraph_supervisor" — canonical math+research README example; requires
-    #   langgraph-supervisor + langchain-openai installed AND OPENAI_API_KEY set.
+    # "langgraph_supervisor" — requires langgraph-supervisor + OPENAI_API_KEY.
     graph_name: str = "ticket_triage"
-    # Optional per-graph overrides — currently used by langgraph_supervisor to
-    # take the user's question as the first message. Schema is graph-specific;
-    # see _build_demo_graph for what each accepts.
+    # Per-graph overrides; currently used to pass the user's question.
     state_overrides: dict[str, Any] = Field(default_factory=dict)
 
-    # ---- Chaos knobs --------------------------------------------------------
+    # Chaos knobs.
     # off | light | moderate | aggressive | exhaustive.
-    # exhaustive walks every applicable pattern in the schema once; for LLM-
-    # backed graphs that means one full graph invocation per fuzzable field-
-    # pattern pair, so we widen max_perturbations' upper bound to fit it.
     intensity: str = "aggressive"
     seed: int = 7
     max_perturbations: int = Field(default=25, ge=1, le=500)
     auto_chaos_exclude: list[str] = Field(default_factory=list)
 
-    # ---- Judge (optional LLM over traces) -----------------------------------
+    # Judge config (optional LLM over traces).
     judge: str = "off"
     judge_model: str | None = None
     user_guidelines: list[str] = Field(default_factory=list)
 
-    # ---- Phase 2 — divergence cost cascade ---------------------------------
+    # Divergence cascade.
     divergence_mode: str = "exact"
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
     max_judge_calls: int = Field(default=10, ge=0, le=100)
     similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
 
-class ForkRunRequest(BaseModel):
-    """Fork an existing run at a chosen step with optional overrides."""
-    branch_at_step: int = Field(ge=0)
-    seed: int | None = None
-    prompt_variants: dict[str, str] = Field(default_factory=dict)  # role -> 'naive'|'hardened'
-    disabled_agents: list[str] = Field(default_factory=list)
-    extend_by: int | None = None
-    new_run_id: str | None = None
-
-
-# ---- helpers --------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Adapter-tab demo graph registry. Each entry returns (graph, initial_state,
-# meta-dict). meta-dict carries the description shown in the UI plus the
-# default agent list. New graphs added here automatically surface in the
-# /api/adapter-graphs response.
-# ---------------------------------------------------------------------------
-
+# ---- adapter graph registry -----------------------------------------------
 
 def _list_adapter_graphs() -> list[dict[str, Any]]:
     """Return user-facing metadata for every graph the Adapter tab can run.
 
-    Includes an ``available`` flag so the UI can grey out options whose
-    deps / env vars aren't satisfied (e.g. langgraph-supervisor without
-    OPENAI_API_KEY).
+    Includes an `available` flag so the UI can grey out options whose
+    deps / env vars aren't satisfied.
     """
     import os
 
-    # langgraph_supervisor availability — both package + key required.
     sup_pkg_ok = True
     try:
         import langgraph_supervisor  # noqa: F401
@@ -431,12 +180,6 @@ def _list_adapter_graphs() -> list[dict[str, Any]]:
 
 
 def _build_demo_graph(name: str, overrides: dict[str, Any]) -> tuple[Any, dict, dict[str, Any]]:
-    """Build a named demo graph + its initial state, applying user overrides.
-
-    Returns (graph, initial_state, meta). Raises ValueError for unknown names,
-    ImportError if the graph's deps aren't installed, RuntimeError if env vars
-    (e.g. OPENAI_API_KEY) are missing.
-    """
     if name == "ticket_triage":
         return _build_ticket_triage_demo(overrides)
     if name == "langgraph_supervisor":
@@ -445,7 +188,7 @@ def _build_demo_graph(name: str, overrides: dict[str, Any]) -> tuple[Any, dict, 
 
 
 def _build_ticket_triage_demo(overrides: dict[str, Any]) -> tuple[Any, dict, dict[str, Any]]:
-    """The bundled 3-node demo. Supports a 'query' override for the ticket text."""
+    """The bundled 3-node demo."""
 
     def _classify(state: dict) -> dict:
         text = (state.get("text") or "").lower()
@@ -520,12 +263,7 @@ def _build_ticket_triage_demo(overrides: dict[str, Any]) -> tuple[Any, dict, dic
 
 
 def _build_langgraph_supervisor_demo(overrides: dict[str, Any]) -> tuple[Any, dict, dict[str, Any]]:
-    """The canonical langgraph-supervisor README example. Raises ImportError
-    if deps are missing, RuntimeError if OPENAI_API_KEY isn't set.
-
-    Reuses the same builder as the validation harness so behaviour matches
-    examples/adapters/run_drift_on_langgraph_supervisor.py.
-    """
+    """Canonical langgraph-supervisor README example."""
     import os
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError(
@@ -542,15 +280,12 @@ def _build_langgraph_supervisor_demo(overrides: dict[str, Any]) -> tuple[Any, di
             f"`pip install drift[validation]`. Underlying error: {e}"
         )
 
-    # Import lazily — heavy module pulls in langchain + openai chains.
     import warnings
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=DeprecationWarning, module=".*langgraph.*")
-        # Reuse the exact builder the validation harness uses, so server
-        # behaviour exactly matches the offline experiments.
         from pathlib import Path
         import sys as _sys
-        _harness_dir = Path(__file__).resolve().parents[2] / "examples" / "adapters"
+        _harness_dir = PROJECT_ROOT / "examples" / "adapters"
         if str(_harness_dir) not in _sys.path:
             _sys.path.insert(0, str(_harness_dir))
         from run_drift_on_langgraph_supervisor import (  # type: ignore
@@ -573,77 +308,10 @@ def _build_langgraph_supervisor_demo(overrides: dict[str, Any]) -> tuple[Any, di
     return graph, initial_state, meta
 
 
-def _build_llm(req: StartRunRequest, topology: Topology) -> LLMClient:
-    if req.llm == "mock":
-        return ScriptedMockLLM(seed=req.seed, role_handlers=topology.mock_handlers)
-    if req.llm == "openai":
-        from drift.llm.openai_adapter import OpenAILLM
-        return OpenAILLM(model=req.model or "gpt-4o-mini")
-    raise HTTPException(400, f"unknown llm {req.llm!r}")
-
-
-def _load_jsonl(p: Path) -> list[dict]:
-    if not p.exists():
-        return []
-    return [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-
-def _build_timeline(
-    a_failures: list[dict],
-    b_failures: list[dict],
-    *,
-    a_events: list[dict],
-    b_events: list[dict],
-    a_snap: list[dict],
-    b_snap: list[dict],
-    divergence_step: int | None,
-) -> dict[str, Any]:
-    """Per-timestep rollup for the divergence visualization.
-
-    For each step that appears in either run, return what happened in A and
-    what happened in B: event names that fired, failure types that triggered,
-    and the snapshot's sentiment + open-cases count for quick visual context.
-    """
-    def per_step_rollup(failures, events, snaps):
-        steps: dict[int, dict[str, Any]] = {}
-        for e in events:
-            t = int(e["timestep"])
-            steps.setdefault(t, {"events": [], "failures": [], "sentiment": None, "open": None})
-            steps[t]["events"].append(e["name"])
-        for f in failures:
-            t = int(f["timestep"])
-            steps.setdefault(t, {"events": [], "failures": [], "sentiment": None, "open": None})
-            steps[t]["failures"].append(f["failure_type"])
-        for s in snaps:
-            t = int(s["timestep"])
-            steps.setdefault(t, {"events": [], "failures": [], "sentiment": None, "open": None})
-            steps[t]["sentiment"] = s.get("customer_sentiment")
-            steps[t]["open"] = len(s.get("open_cases", {}))
-        return steps
-
-    a_steps = per_step_rollup(a_failures, a_events, a_snap)
-    b_steps = per_step_rollup(b_failures, b_events, b_snap)
-    all_steps = sorted(set(a_steps.keys()) | set(b_steps.keys()))
-    return {
-        "divergence_step": divergence_step,
-        "steps": [
-            {
-                "t": t,
-                "a": a_steps.get(t),
-                "b": b_steps.get(t),
-            }
-            for t in all_steps
-        ],
-    }
-
+# ---- MAST helpers ---------------------------------------------------------
 
 def _shape_mast_response(entry: dict[str, Any], result: dict[str, Any], *, mode: str) -> dict[str, Any]:
-    """Format a MAST per-trace result for the Detect tab.
-
-    Both cached and live paths produce the same per-trace shape (from
-    `drift.failures.mast_eval.judge_one_trace`); this shapes it for the UI
-    by adding the curated demo metadata + a precision/recall summary.
-    """
+    """Format a MAST per-trace result for the UI."""
     per_mode = result.get("per_mode", [])
     n_tp = sum(1 for m in per_mode if m["outcome"] == "TP")
     n_fp = sum(1 for m in per_mode if m["outcome"] == "FP")
@@ -675,573 +343,31 @@ def _shape_mast_response(entry: dict[str, Any], result: dict[str, Any], *, mode:
     }
 
 
-def _summarize_run_dir(run_dir: Path) -> dict[str, Any]:
-    """Build the fields the runs-list view needs without loading every line."""
-    failures = _load_jsonl(run_dir / "failures.jsonl")
-    actions = _load_jsonl(run_dir / "actions.jsonl")
-    snapshots = _load_jsonl(run_dir / "snapshots.jsonl")
-    meta = {}
-    meta_path = run_dir / "run_meta.json"
-    if meta_path.exists():
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception:
-            meta = {}
-    return {
-        "run_id": run_dir.name,
-        "n_actions": len(actions),
-        "n_failures": len(failures),
-        "n_snapshots": len(snapshots),
-        "final_step": snapshots[-1]["timestep"] if snapshots else 0,
-        "topology": meta.get("topology"),
-        "scenario": meta.get("scenario"),
-        "seed": meta.get("seed"),
-        "llm": meta.get("llm"),
-        "prompt_variant": meta.get("prompt_variant"),
-        "started_at": meta.get("started_at"),
-        "steps_requested": meta.get("steps"),
-        # Lineage — present when this run is a fork.
-        "parent_run_id": meta.get("parent_run_id"),
-        "branch_at_step": meta.get("branch_at_step"),
-        "fork_overrides": meta.get("fork_overrides"),
-    }
-
-
-# ---- background task ------------------------------------------------------
-
-def _wire_progress(state: _RunState, runner: SimulationRunner) -> None:
-    """Hook runner._tick so every step updates the polled `_RunState`.
-    Shared between fresh runs and forks."""
-    original_tick = runner._tick
-
-    async def progress_tick(t: int) -> None:
-        prev_events = len(runner.events)
-        prev_failures = len(runner.failures)
-        await original_tick(t)
-        with _RUNS_LOCK:
-            state.completed_steps = t
-            state.failure_count = len(runner.failures)
-            state.world_state = runner.world.state.model_dump(mode="json")
-            ftype: dict[str, int] = {}
-            for f in runner.failures:
-                ftype[f.failure_type] = ftype.get(f.failure_type, 0) + 1
-            state.failures_by_type = ftype
-            state.recent_events = [e.model_dump(mode="json") for e in runner.events[-12:]]
-            state.recent_failures = [f.model_dump(mode="json") for f in runner.failures[-8:]]
-            state.recent_actions = [a.model_dump(mode="json") for a in runner.actions[-4:]]
-            state.last_step_event_count = len(runner.events) - prev_events
-            state.last_step_failure_count = len(runner.failures) - prev_failures
-    runner._tick = progress_tick  # type: ignore[assignment]
-
-
-async def _execute_run(state: _RunState, req: StartRunRequest) -> None:
-    """Runs the simulation. Updates `state` so the UI can poll progress."""
-    try:
-        state.status = "running"
-        reset_all_counters()
-        topology = get_topology(req.topology)
-        llm = _build_llm(req, topology)
-        agents = topology.agent_factory(llm)
-        for a in agents:
-            prompt = topology.prompts.get((a.role, req.prompt_variant)) \
-                or topology.prompts.get((a.role, "naive"), a.system_prompt)
-            a.system_prompt = prompt
-        if req.scenario:
-            scen_path = SCENARIOS_DIR / req.scenario
-            if not scen_path.exists():
-                raise FileNotFoundError(f"scenario not found: {req.scenario}")
-            sched = EventScheduler.from_yaml(scen_path, seed=req.seed,
-                                             event_registry=topology.event_registry)
-        else:
-            sched = EventScheduler.empty(seed=req.seed,
-                                         event_registry=topology.event_registry)
-
-        run_dir = RUNS_DIR / state.run_id
-        logger = RunLogger(base_dir=RUNS_DIR, run_id=state.run_id)
-
-        meta = {
-            "topology": req.topology,
-            "scenario": req.scenario,
-            "seed": req.seed,
-            "llm": req.llm,
-            "model": req.model,
-            "prompt_variant": req.prompt_variant,
-            "steps": req.steps,
-            "started_at": state.started_at,
-        }
-        (run_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
-        runner = SimulationRunner(
-            agents=agents,
-            scheduler=sched,
-            steps=req.steps,
-            detectors=topology.detectors,
-            logger=logger,
-            initial_world=topology.initial_world(),
-        )
-        _wire_progress(state, runner)
-        try:
-            await runner.run()
-        finally:
-            logger.close()
-
-        state.status = "done"
-        state.finished_at = dt.datetime.now().isoformat(timespec="seconds")
-    except Exception as e:
-        state.status = "failed"
-        state.error = f"{type(e).__name__}: {e}"
-        state.finished_at = dt.datetime.now().isoformat(timespec="seconds")
-        traceback.print_exc()
-
-
-async def _execute_fork(state: _RunState, parent_run_id: str, req: ForkRunRequest) -> None:
-    """Runs a fork via drift.fork.build_fork. Updates `state` for polling."""
-    from drift.fork import ForkConfig, ForkOverrides, build_fork
-    try:
-        state.status = "running"
-        reset_all_counters()
-        overrides = ForkOverrides(
-            seed=req.seed,
-            prompt_variants=dict(req.prompt_variants or {}),
-            disabled_agents=set(req.disabled_agents or []),
-        )
-        cfg = ForkConfig(
-            parent_run_id=parent_run_id,
-            branch_at_step=req.branch_at_step,
-            overrides=overrides,
-            new_run_id=state.run_id,
-            extend_by=req.extend_by,
-        )
-        runner, _meta = build_fork(cfg, runs_dir=RUNS_DIR)
-        _wire_progress(state, runner)
-        try:
-            await runner.run()
-        finally:
-            if runner.logger:
-                runner.logger.close()
-
-        state.status = "done"
-        state.finished_at = dt.datetime.now().isoformat(timespec="seconds")
-    except Exception as e:
-        state.status = "failed"
-        state.error = f"{type(e).__name__}: {e}"
-        state.finished_at = dt.datetime.now().isoformat(timespec="seconds")
-        traceback.print_exc()
-
-
 # ---- app ------------------------------------------------------------------
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="drift", description="Multi-agent stress-test simulator")
-
-    @app.get("/api/topologies")
-    def topologies() -> list[dict[str, Any]]:
-        out = []
-        for name in list_topologies():
-            t = get_topology(name)
-            sample_agents = t.agent_factory(ScriptedMockLLM(seed=0))
-            roles = [a.role for a in sample_agents]
-            out.append({
-                "name": t.name,
-                "description": t.description,
-                "roles": roles,
-                "events": sorted(t.event_registry.keys()),
-                "detectors": [d.__name__.replace("detect_", "") for d in t.detectors],
-            })
-        return out
-
-    @app.get("/api/scenarios")
-    def scenarios() -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        if not SCENARIOS_DIR.exists():
-            return out
-        for p in sorted(SCENARIOS_DIR.glob("*.yaml")):
-            try:
-                import yaml
-                data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-            except Exception:
-                data = {}
-            out.append({
-                "filename": p.name,
-                "name": data.get("name", p.stem),
-                "scripted_count": len(data.get("scripted", []) or []),
-                "stochastic_count": len(data.get("stochastic", []) or []),
-                "events_used": sorted({e["name"] for e in (data.get("scripted") or [])}),
-            })
-        return out
-
-    @app.get("/api/runs")
-    def runs() -> list[dict[str, Any]]:
-        if not RUNS_DIR.exists():
-            return []
-        return [
-            _summarize_run_dir(d)
-            for d in sorted(RUNS_DIR.iterdir(), reverse=True)
-            if d.is_dir() and (d / "snapshots.jsonl").exists()
-        ]
-
-    @app.get("/api/runs/{run_id}")
-    def run_detail(run_id: str) -> dict[str, Any]:
-        run_dir = RUNS_DIR / run_id
-        if not run_dir.is_dir():
-            raise HTTPException(404, f"run {run_id!r} not found")
-        return {
-            "summary":   _summarize_run_dir(run_dir),
-            "events":    _load_jsonl(run_dir / "events.jsonl"),
-            "actions":   _load_jsonl(run_dir / "actions.jsonl"),
-            "snapshots": _load_jsonl(run_dir / "snapshots.jsonl"),
-            "failures":  _load_jsonl(run_dir / "failures.jsonl"),
-        }
-
-    @app.post("/api/runs")
-    async def start_run(req: StartRunRequest) -> dict[str, Any]:
-        if req.topology not in list_topologies():
-            raise HTTPException(400, f"unknown topology: {req.topology}")
-        run_id = req.run_id or f"{req.topology}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-        # Reject reuse of an existing run_id; runs/<id> would otherwise collide.
-        if (RUNS_DIR / run_id).exists():
-            raise HTTPException(409, f"run_id {run_id!r} already exists")
-        RUNS_DIR.mkdir(parents=True, exist_ok=True)
-
-        state = _RunState(run_id=run_id, total_steps=req.steps, request=req.model_dump())
-        with _RUNS_LOCK:
-            _RUNS[run_id] = state
-
-        # Schedule the simulation as a background task on the running event loop.
-        asyncio.create_task(_execute_run(state, req))
-        return {"run_id": run_id, "status": state.status}
-
-    @app.post("/api/runs/{parent_run_id}/fork")
-    async def fork_run(parent_run_id: str, req: ForkRunRequest) -> dict[str, Any]:
-        parent_dir = RUNS_DIR / parent_run_id
-        if not parent_dir.is_dir():
-            raise HTTPException(404, f"parent run not found: {parent_run_id}")
-        # Default new_run_id mirrors the fork.py convention.
-        new_run_id = req.new_run_id or f"{parent_run_id}__fork_at_{req.branch_at_step}"
-        if (RUNS_DIR / new_run_id).exists():
-            raise HTTPException(409, f"run_id {new_run_id!r} already exists")
-
-        # Approximate total steps for the live progress bar. The actual step
-        # count is determined inside build_fork (parent total - branch_at_step
-        # by default, or req.extend_by if given).
-        try:
-            parent_meta_path = parent_dir / "run_meta.json"
-            parent_meta = json.loads(parent_meta_path.read_text(encoding="utf-8"))
-            parent_total = int(parent_meta.get("steps", 0))
-        except Exception:
-            parent_total = 0
-        approx_steps = req.extend_by if req.extend_by is not None \
-            else max(1, parent_total - req.branch_at_step)
-
-        state = _RunState(
-            run_id=new_run_id,
-            total_steps=approx_steps,
-            request={
-                "parent_run_id": parent_run_id,
-                "branch_at_step": req.branch_at_step,
-                "topology": parent_meta.get("topology") if "parent_meta" in dir() else None,
-                **req.model_dump(),
-            },
-        )
-        # Decorate the request dict with topology if we can read it from parent meta.
-        try:
-            state.request["topology"] = parent_meta.get("topology")
-        except Exception:
-            pass
-        with _RUNS_LOCK:
-            _RUNS[new_run_id] = state
-
-        asyncio.create_task(_execute_fork(state, parent_run_id, req))
-        return {"run_id": new_run_id, "status": state.status, "parent_run_id": parent_run_id}
-
-    @app.get("/api/runs/{run_id}/status")
-    def run_status(run_id: str) -> dict[str, Any]:
-        with _RUNS_LOCK:
-            s = _RUNS.get(run_id)
-        if s is None:
-            # Maybe we restarted the server but the run completed before; check disk.
-            if (RUNS_DIR / run_id / "snapshots.jsonl").exists():
-                return {"run_id": run_id, "status": "done", "completed_steps": -1, "total_steps": -1}
-            raise HTTPException(404, f"unknown run {run_id!r}")
-        return {
-            "run_id": s.run_id,
-            "status": s.status,
-            "completed_steps": s.completed_steps,
-            "total_steps": s.total_steps,
-            "failure_count": s.failure_count,
-            "error": s.error,
-            "started_at": s.started_at,
-            "finished_at": s.finished_at,
-            "topology": s.request.get("topology"),
-            "scenario": s.request.get("scenario"),
-            "world_state": s.world_state,
-            "failures_by_type": s.failures_by_type,
-            "recent_events": s.recent_events,
-            "recent_failures": s.recent_failures,
-            "recent_actions": s.recent_actions,
-            "last_step_event_count": s.last_step_event_count,
-            "last_step_failure_count": s.last_step_failure_count,
-        }
-
-    @app.post("/api/compare")
-    def compare(req: CompareRequest) -> dict[str, Any]:
-        a_dir = RUNS_DIR / req.run_a
-        b_dir = RUNS_DIR / req.run_b
-        if not a_dir.is_dir() or not b_dir.is_dir():
-            raise HTTPException(404, "both runs must exist")
-        a_summary = _summarize_run_dir(a_dir)
-        b_summary = _summarize_run_dir(b_dir)
-        a_failures = _load_jsonl(a_dir / "failures.jsonl")
-        b_failures = _load_jsonl(b_dir / "failures.jsonl")
-        a_actions = _load_jsonl(a_dir / "actions.jsonl")
-        b_actions = _load_jsonl(b_dir / "actions.jsonl")
-        a_snap = _load_jsonl(a_dir / "snapshots.jsonl")
-        b_snap = _load_jsonl(b_dir / "snapshots.jsonl")
-
-        # ----- relationship detection ---------------------------------
-        # Cases:
-        #   parent_child: one run is the parent of the other (branch_at = child's branch_at_step)
-        #   siblings: both runs share the same parent AND branch_at_step
-        #   unrelated: no shared lineage
-        a_pid = a_summary.get("parent_run_id")
-        b_pid = b_summary.get("parent_run_id")
-        a_bat = a_summary.get("branch_at_step")
-        b_bat = b_summary.get("branch_at_step")
-        relationship = "unrelated"
-        divergence_step: int | None = None
-        if b_pid == a_summary["run_id"] and b_bat is not None:
-            relationship = "parent_child"
-            divergence_step = int(b_bat)
-        elif a_pid == b_summary["run_id"] and a_bat is not None:
-            relationship = "parent_child"
-            divergence_step = int(a_bat)
-        elif a_pid and b_pid and a_pid == b_pid and a_bat == b_bat and a_bat is not None:
-            relationship = "siblings"
-            divergence_step = int(a_bat)
-
-        # ----- mode resolution ---------------------------------------
-        mode = req.mode
-        if mode == "auto":
-            mode = "post_branch" if (relationship != "unrelated") else "total"
-        if mode == "post_branch" and divergence_step is None:
-            mode = "total"
-
-        # ----- aggregation helpers (optionally filtered by step) -----
-        def by_type(failures, after_step: int | None):
-            out: dict[str, int] = {}
-            for f in failures:
-                if after_step is not None and f.get("timestep", 0) <= after_step:
-                    continue
-                out[f["failure_type"]] = out.get(f["failure_type"], 0) + 1
-            return out
-
-        def by_agent_kind(actions, after_step: int | None):
-            out: dict[str, dict[str, int]] = {}
-            for x in actions:
-                if after_step is not None and x.get("timestep", 0) <= after_step:
-                    continue
-                out.setdefault(x["agent_name"], {})
-                out[x["agent_name"]][x["kind"]] = out[x["agent_name"]].get(x["kind"], 0) + 1
-            return out
-
-        # In post_branch mode, count only what happened strictly after the branch step.
-        cutoff = divergence_step if mode == "post_branch" else None
-
-        # Action and failure totals filtered to the active mode.
-        a_filt_failures = [f for f in a_failures if cutoff is None or f.get("timestep", 0) > cutoff]
-        b_filt_failures = [f for f in b_failures if cutoff is None or f.get("timestep", 0) > cutoff]
-        a_filt_actions  = [x for x in a_actions  if cutoff is None or x.get("timestep", 0) > cutoff]
-        b_filt_actions  = [x for x in b_actions  if cutoff is None or x.get("timestep", 0) > cutoff]
-
-        return {
-            "relationship": relationship,
-            "divergence_step": divergence_step,
-            "mode": mode,
-            "a": {
-                **a_summary,
-                "failures_by_type": by_type(a_failures, cutoff),
-                "actions_by_agent_kind": by_agent_kind(a_actions, cutoff),
-                "final": a_snap[-1] if a_snap else {},
-                "n_failures_in_mode": len(a_filt_failures),
-                "n_actions_in_mode": len(a_filt_actions),
-            },
-            "b": {
-                **b_summary,
-                "failures_by_type": by_type(b_failures, cutoff),
-                "actions_by_agent_kind": by_agent_kind(b_actions, cutoff),
-                "final": b_snap[-1] if b_snap else {},
-                "n_failures_in_mode": len(b_filt_failures),
-                "n_actions_in_mode": len(b_filt_actions),
-            },
-            # Per-step rollups for the divergence timeline. Keys = timesteps.
-            "timeline": _build_timeline(a_failures, b_failures,
-                                        a_events=_load_jsonl(a_dir / "events.jsonl"),
-                                        b_events=_load_jsonl(b_dir / "events.jsonl"),
-                                        a_snap=a_snap, b_snap=b_snap,
-                                        divergence_step=divergence_step),
-        }
-
-    @app.post("/api/byoa")
-    async def byoa(req: BYOARequest) -> dict[str, Any]:
-        """Execute user-supplied agent code and run drift over it.
-
-        Looks for in the user's code namespace:
-          - any number of @drift.agent-decorated functions (collected as agents)
-          - optional `initial_state()` returning a WorldState
-          - optional `events()` returning a list of (timestep, Event) tuples
-
-        Then runs drift.run_async with the detector list layered with the
-        requested topology's domain-specific detectors.
-        """
-        import drift
-        from drift.sdk import _BYOAgent, run_async
-        from drift.topologies import get_topology
-
-        if req.detector_topology not in list_topologies():
-            raise HTTPException(400, f"unknown topology: {req.detector_topology}")
-
-        # Build the execution namespace. We expose `drift` and a few core
-        # symbols so users don't have to remember to import them. asyncio
-        # is also available because users may write async helpers.
-        namespace: dict[str, Any] = {
-            "__name__": "__byoa__",
-            "__builtins__": __builtins__,
-            "drift": drift,
-            "asyncio": asyncio,
-        }
-
-        # Reset action/failure counters so each BYOA run starts clean.
-        from drift.testing import reset_all_counters
-        reset_all_counters()
-
-        try:
-            exec(req.code, namespace)
-        except SyntaxError as e:
-            raise HTTPException(400, f"syntax error: {e.msg} (line {e.lineno})")
-        except Exception as e:
-            raise HTTPException(400, f"error executing user code: {type(e).__name__}: {e}")
-
-        # Collect every _BYOAgent instance the user code produced.
-        agents = [v for v in namespace.values() if isinstance(v, _BYOAgent)]
-        if not agents:
-            raise HTTPException(
-                400,
-                "no @drift.agent-decorated functions found. Define at least one "
-                "function decorated with @drift.agent(role=...) at module level."
-            )
-
-        # Optional initial state.
-        state = None
-        init_fn = namespace.get("initial_state")
-        if callable(init_fn):
-            try:
-                state = init_fn()
-            except Exception as e:
-                raise HTTPException(400, f"initial_state() raised: {type(e).__name__}: {e}")
-
-        # Optional events list.
-        events = None
-        events_fn = namespace.get("events")
-        if callable(events_fn):
-            try:
-                events = events_fn()
-            except Exception as e:
-                raise HTTPException(400, f"events() raised: {type(e).__name__}: {e}")
-
-        # Detector list: GENERAL + the requested topology's specific bundle.
-        topology = get_topology(req.detector_topology)
-        detectors = topology.detectors
-
-        # Build the judge if the user picked one. Surface bad config as 400
-        # (caller error) rather than 500 (server error).
-        from drift.failures.judge import JUDGE_PREFIX, build_judge
-        try:
-            judge_llm = build_judge(req.judge, model=req.judge_model)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        except Exception as e:
-            raise HTTPException(400, f"could not build judge {req.judge!r}: {type(e).__name__}: {e}")
-
-        try:
-            result = await run_async(
-                agents=agents,
-                state=state,
-                events=events,
-                steps=req.steps,
-                seed=req.seed,
-                detectors=detectors,
-                auto_chaos=req.auto_chaos if req.auto_chaos != "off" else None,
-                auto_chaos_exclude=req.auto_chaos_exclude or None,
-                judge_llm=judge_llm,
-                judge_every=req.judge_every,
-                user_guidelines=req.user_guidelines or None,
-            )
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        except Exception as e:
-            raise HTTPException(500, f"run failed: {type(e).__name__}: {e}")
-
-        n_llm_failures = sum(
-            1 for f in result.failures if f.failure_type.startswith(JUDGE_PREFIX)
-        )
-
-        return {
-            "summary": {
-                "agents": [{"name": a.name, "role": a.role} for a in agents],
-                "steps_requested": req.steps,
-                "steps_completed": result.final_state.timestep,
-                "n_actions": len(result.actions),
-                "n_events": len(result.events),
-                "n_failures": len(result.failures),
-                "n_failures_llm": n_llm_failures,
-                "n_failures_deterministic": len(result.failures) - n_llm_failures,
-                "n_failures_user_guideline": sum(
-                    1 for f in result.failures
-                    if f.failure_type.startswith(JUDGE_PREFIX + "user_guideline")
-                ),
-                "n_auto_chaos_injected": len(result.auto_chaos_injected),
-                "auto_chaos": req.auto_chaos,
-                "judge": req.judge,
-                "judge_model": req.judge_model,
-                "n_user_guidelines": len(req.user_guidelines or []),
-                "detector_topology": req.detector_topology,
-            },
-            "failures": [f.model_dump(mode="json") for f in result.failures],
-            "actions": [a.model_dump(mode="json") for a in result.actions],
-            "events": [e.model_dump(mode="json") for e in result.events],
-            "auto_chaos_injected": [e.model_dump(mode="json") for e in result.auto_chaos_injected],
-            "final_state": result.final_state.model_dump(mode="json"),
-        }
-
-    @app.get("/api/byoa-example")
-    def byoa_example() -> dict[str, Any]:
-        """Return a starter snippet the Custom tab can pre-populate."""
-        return {
-            "detector_topology": "code_review",
-            "code": _BYOA_EXAMPLE_CODE,
-        }
+    app = FastAPI(title="drift", version="0.2.0")
 
     # ---- LangGraph adapter demo (Adapter tab) -----------------------------
 
     @app.get("/api/adapter-graphs")
     def adapter_graphs() -> dict[str, Any]:
-        """List which bundled graphs the adapter tab can run, with their
+        """List which bundled graphs the Adapter tab can run, with their
         descriptions, default state shape, and availability (deps + API key)."""
         return {"graphs": _list_adapter_graphs()}
 
     @app.get("/api/results")
     def results_index() -> dict[str, Any]:
-        """List every saved experiment JSON file under results/, grouped by
+        """List every saved experiment JSON under results/, grouped by
         experiment subdirectory. Powers the Results browser in the UI."""
-        results_root = Path(__file__).resolve().parents[2] / "results"
         groups: dict[str, list[dict[str, Any]]] = {}
-        if results_root.exists():
-            for path in sorted(results_root.rglob("*.json")):
+        if RESULTS_DIR.exists():
+            for path in sorted(RESULTS_DIR.rglob("*.json")):
                 try:
                     stat = path.stat()
                 except OSError:
                     continue
-                rel = path.relative_to(results_root)
+                rel = path.relative_to(RESULTS_DIR)
                 group = rel.parts[0] if len(rel.parts) > 1 else "(root)"
                 groups.setdefault(group, []).append({
                     "name": rel.name,
@@ -1249,7 +375,6 @@ def create_app() -> FastAPI:
                     "size_bytes": stat.st_size,
                     "modified_ts": stat.st_mtime,
                 })
-        # Most-recent first within each group.
         for entries in groups.values():
             entries.sort(key=lambda e: e["modified_ts"], reverse=True)
         return {"groups": groups}
@@ -1258,7 +383,7 @@ def create_app() -> FastAPI:
     def results_file(relpath: str) -> Any:
         """Serve a single result JSON file by relative path. Restricted to
         results/ and bare *.json to keep the surface boring."""
-        results_root = (Path(__file__).resolve().parents[2] / "results").resolve()
+        results_root = RESULTS_DIR.resolve()
         try:
             full = (results_root / relpath).resolve()
         except (ValueError, OSError) as e:
@@ -1276,22 +401,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/adapter-demo")
     async def adapter_demo(req: AdapterDemoRequest) -> dict[str, Any]:
-        """Run drift's auto-chaos against a bundled langgraph-shaped graph.
-
-        Two graphs available:
-
-          1. ``ticket_triage`` (default, always available) — a 3-node demo
-             where both terminal nodes look up ``open_tickets[ticket_id]``
-             without a defensive check. Chaos that empties or rekeys the
-             dict reliably crashes the run. Showcases schema-driven failure-
-             finding, drift's verified moat.
-
-          2. ``langgraph_supervisor`` — the canonical math+research supervisor
-             from langchain-ai/langgraph-supervisor-py's README. Requires
-             langgraph-supervisor + langchain-openai installed and
-             OPENAI_API_KEY set. Use ``state_overrides`` to pass the user's
-             question as the first message.
-        """
+        """Run drift's auto-chaos against a bundled langgraph-shaped graph."""
         from drift.adapters.langgraph import drift_test_async
         from drift.failures.judge import build_judge
 
@@ -1302,8 +412,6 @@ def create_app() -> FastAPI:
         except (ValueError, ImportError, RuntimeError) as e:
             raise HTTPException(400, str(e))
 
-        # Build the judge if the caller asked for one. Surface bad config as
-        # 400 so the UI can show it; runtime crashes mid-judge bubble up as 500.
         try:
             judge_llm = build_judge(req.judge, model=req.judge_model)
         except ValueError as e:
@@ -1371,16 +479,9 @@ def create_app() -> FastAPI:
                 "judge_findings": p.judge_findings,
                 "coordination_findings": p.coordination_findings,
                 "divergence_details": [_divergence_dict(d) for d in p.divergence_details],
-                # UNCHANGED-audit: tier-2/3 candidates the cascade dropped.
-                # Empty in exact mode (no cascade); populated under tiered
-                # mode whenever the noise band or judge cleared a field-level
-                # diff. Lets the UI show "we filtered this because X" instead
-                # of silently reporting UNCHANGED.
                 "filtered_divergences": [_divergence_dict(d) for d in p.filtered_divergences],
             }
 
-        # Render the noise band into a JSON-friendly shape. We dump as dicts
-        # because the FieldNoiseBand dataclass has non-trivial fields.
         noise_band_dump = {
             name: {
                 "name": band.name,
@@ -1421,16 +522,11 @@ def create_app() -> FastAPI:
             "perturbations": [_pert_dict(p) for p in result.perturbations],
         }
 
-    # ---- MAST demo (Detect tab) -------------------------------------------
+    # ---- MAST demo --------------------------------------------------------
 
     @app.get("/api/mast-demos")
     def mast_demos() -> dict[str, Any]:
-        """List the curated MAST demo traces with task + outcome metadata.
-
-        Used by the Detect tab to render the four cards. We pull the human
-        ground truth from the per-trace cached result so the card can show
-        what annotators flagged before the user even clicks Run.
-        """
+        """List the curated MAST demo traces with task + outcome metadata."""
         if not MAST_DATASET.exists():
             raise HTTPException(404, f"MAST dataset not bundled at {MAST_DATASET}")
         mast = json.loads(MAST_DATASET.read_text(encoding="utf-8"))
@@ -1459,19 +555,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/mast-analyze")
     async def mast_analyze(req: MastAnalyzeRequest) -> dict[str, Any]:
-        """Run (or replay cached) drift's judge against one curated MAST trace.
-
-        mode='cached' returns the prior judge result from disk — instant,
-        no API spend. Used for the default demo experience.
-
-        mode='live' calls the OpenAI judge with the same prompt the offline
-        runner uses and returns fresh predictions. Costs tokens but gives
-        the user the "run it for real" moment.
-
-        Either way the response includes per-mode TP/FP/FN/TN labels so the
-        Detect tab can show the honest side-by-side.
-        """
-        # Validate that this trace_id is one we curated.
+        """Run (or replay cached) drift's judge against one curated MAST trace."""
         entry = next((e for e in MAST_DEMO_TRACES if e["id"] == req.trace_id), None)
         if entry is None:
             raise HTTPException(400, f"trace_id {req.trace_id} is not a curated MAST demo trace")
@@ -1484,8 +568,6 @@ def create_app() -> FastAPI:
             return _shape_mast_response(entry, cached, mode="cached")
 
         if req.mode == "live":
-            # Re-run the judge live against this trace. Import lazily so the
-            # server still loads when openai isn't installed.
             from drift.failures.judge import OpenAIJudge
             from drift.failures.mast_eval import judge_one_trace
 
@@ -1519,7 +601,7 @@ def create_app() -> FastAPI:
     else:
         @app.get("/")
         def root() -> JSONResponse:
-            return JSONResponse({"detail": "web/ directory not found", "api": "/api/topologies"})
+            return JSONResponse({"detail": "web/ directory not found", "api": "/api/adapter-graphs"})
 
     return app
 
