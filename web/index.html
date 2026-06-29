@@ -25,8 +25,6 @@
     <button class="tab active" data-tab="adapter" role="tab">Adapter</button>
     <button class="tab"        data-tab="results" role="tab">Results</button>
     <button class="tab"        data-tab="custom"  role="tab">Custom</button>
-    <button class="tab"        data-tab="new"     role="tab">Native sim</button>
-    <button class="tab"        data-tab="runs"    role="tab">Runs <span id="runs-count" class="badge"></span></button>
   </nav>
 
   <main>
@@ -87,34 +85,18 @@
               </div>
               <div class="field">
                 <label for="adapter-seed">Seed</label>
-                <input type="number" id="adapter-seed" name="seed" value="7" />
+                <input type="number" id="adapter-seed" value="7" />
               </div>
             </div>
 
             <div class="row two-col">
               <div class="field">
                 <label for="adapter-max-perturbations">Max perturbations</label>
-                <input type="number" id="adapter-max-perturbations" value="8" min="1" max="50" />
+                <input type="number" id="adapter-max-perturbations" value="6" min="1" max="500" />
               </div>
               <div class="field">
                 <label for="adapter-exclude">Exclude patterns <span class="muted">(comma-sep)</span></label>
-                <input type="text" id="adapter-exclude" name="exclude"
-                       placeholder="flip_bool, corrupt_string[priority]" />
-              </div>
-            </div>
-
-            <div class="row two-col">
-              <div class="field">
-                <label for="adapter-judge">Judge</label>
-                <select id="adapter-judge">
-                  <option value="off">off</option>
-                  <option value="mock">mock</option>
-                  <option value="openai" selected>openai</option>
-                </select>
-              </div>
-              <div class="field">
-                <label for="adapter-judge-model">Judge model</label>
-                <input type="text" id="adapter-judge-model" placeholder="gpt-4o-mini" />
+                <input type="text" id="adapter-exclude" placeholder="e.g. flip_bool, corrupt_string[reply]" />
               </div>
             </div>
 
@@ -122,9 +104,9 @@
               <div class="field">
                 <label for="adapter-divergence-mode">Divergence mode</label>
                 <select id="adapter-divergence-mode">
-                  <option value="exact">exact</option>
-                  <option value="tiered" selected>tiered</option>
-                  <option value="off">off</option>
+                  <option value="exact">exact (fast, noisy on LLM graphs)</option>
+                  <option value="tiered" selected>tiered (cascade with judge — recommended)</option>
+                  <option value="off">off (crash detection only)</option>
                 </select>
               </div>
               <div class="field">
@@ -135,23 +117,38 @@
 
             <div class="row two-col">
               <div class="field">
-                <label for="adapter-max-judge-calls">Max judge calls (tier-3)</label>
-                <input type="number" id="adapter-max-judge-calls" value="10" min="0" max="100" />
+                <label for="adapter-similarity-threshold">Tier 2 similarity threshold</label>
+                <input type="number" id="adapter-similarity-threshold" value="0.85" min="0" max="1" step="0.05" />
               </div>
               <div class="field">
-                <label for="adapter-similarity-threshold">Similarity threshold (tier 2)</label>
-                <input type="number" id="adapter-similarity-threshold" value="0.85" min="0" max="1" step="0.05" />
+                <label for="adapter-max-judge-calls">Max tier-3 judge calls</label>
+                <input type="number" id="adapter-max-judge-calls" value="10" min="0" max="100" />
+              </div>
+            </div>
+
+            <div class="row two-col">
+              <div class="field">
+                <label for="adapter-judge">LLM judge over traces</label>
+                <select id="adapter-judge">
+                  <option value="off">off</option>
+                  <option value="openai" selected>OpenAI (real)</option>
+                  <option value="mock">Mock (no API)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="adapter-judge-model">Judge model</label>
+                <input type="text" id="adapter-judge-model" placeholder="gpt-4o-mini" />
               </div>
             </div>
 
             <div class="field">
-              <label for="adapter-user-guidelines">User guidelines <span class="muted">(plain English, one per line)</span></label>
+              <label for="adapter-user-guidelines">User guidelines <span class="muted">(optional, one per line)</span></label>
               <textarea id="adapter-user-guidelines" class="mono" rows="3"
-                        placeholder="respond must never reply about a ticket that doesn't exist in open_tickets"></textarea>
+                        placeholder="agent must escalate when sentiment drops below 0.3"></textarea>
             </div>
           </details>
 
-          <div class="row" style="margin-top: 14px;">
+          <div class="actions">
             <button type="button" id="adapter-run" class="primary">Run drift_test</button>
             <span id="adapter-status" class="muted"></span>
           </div>
@@ -160,297 +157,22 @@
 
       <div id="adapter-result" class="hidden">
         <div class="card">
-          <h3>
-            Summary
-            <button type="button" id="adapter-download-json" class="ghost-btn" style="float: right; font-size: 12px;">
-              ⇩ Download JSON
-            </button>
-          </h3>
+          <h3>Run summary</h3>
           <div id="adapter-summary" class="kv-grid"></div>
-          <div id="adapter-headline" style="margin-top: 12px;"></div>
+          <div class="row" style="margin-top: 8px; gap: 8px;">
+            <button type="button" id="adapter-download-json" class="ghost-btn">⇩ Download raw JSON</button>
+          </div>
         </div>
 
         <div class="card">
-          <h3>Baseline</h3>
-          <div id="adapter-baseline"></div>
+          <h3>Baseline trace</h3>
+          <div id="adapter-baseline-trace"></div>
         </div>
 
         <div class="card">
           <h3>Perturbations</h3>
-          <p class="muted" style="font-size: 12px;">
-            <span class="pill danger">CRASH</span>
-            <span class="pill warning">DIVERGE</span>
-            <span class="pill success">UNCHANGED</span>
-            <span class="pill info">JUDGE</span>
-            <span class="pill info" style="background:#854d0e22;color:#a16207;">COORD</span>
-            — click any row to expand its trace next to baseline.
-          </p>
+          <p class="help">Sorted by severity: crashes first, then divergences, then unchanged. Click any row to expand the full per-super-step trace + findings.</p>
           <div id="adapter-perturbations" class="failure-list"></div>
-        </div>
-      </div>
-    </section>
-
-    <section id="tab-new" class="tab-panel">
-      <div class="grid two-col">
-        <div class="card">
-          <h2>Configure run</h2>
-          <form id="new-run-form">
-            <div class="field">
-              <label for="topology">Topology</label>
-              <select id="topology" name="topology" required></select>
-              <p class="help" id="topology-help"></p>
-            </div>
-
-            <div class="field">
-              <label for="scenario">Scenario</label>
-              <select id="scenario" name="scenario"></select>
-              <p class="help" id="scenario-help"></p>
-            </div>
-
-            <div class="row two-col">
-              <div class="field">
-                <label for="steps">Steps</label>
-                <input type="number" id="steps" name="steps" value="30" min="1" max="500" />
-              </div>
-              <div class="field">
-                <label for="seed">Seed</label>
-                <input type="number" id="seed" name="seed" value="42" />
-              </div>
-            </div>
-
-            <div class="row two-col">
-              <div class="field">
-                <label for="llm">LLM backend</label>
-                <select id="llm" name="llm">
-                  <option value="mock">mock (free, deterministic)</option>
-                  <option value="openai">openai (real, costs cents)</option>
-                </select>
-              </div>
-              <div class="field">
-                <label for="model">Model</label>
-                <input type="text" id="model" name="model" placeholder="auto" />
-              </div>
-            </div>
-
-            <div class="field">
-              <label for="prompt-variant">Prompt variant</label>
-              <div class="seg" role="tablist">
-                <input type="radio" name="prompt_variant" id="pv-naive"    value="naive" checked />
-                <label for="pv-naive" class="seg-opt">naive</label>
-                <input type="radio" name="prompt_variant" id="pv-hardened" value="hardened" />
-                <label for="pv-hardened" class="seg-opt">hardened</label>
-              </div>
-              <p class="help">Naive = day-one prompts. Hardened = explicit guardrails against detected failures. <strong>No-op when LLM = mock</strong> (mock ignores system_prompt); only meaningful with <code>openai</code>.</p>
-            </div>
-
-            <div class="field">
-              <label for="run-id">Run name <span class="muted">(optional)</span></label>
-              <input type="text" id="run-id" name="run_id" placeholder="auto-generated if blank" />
-            </div>
-
-            <div class="actions">
-              <button type="submit" class="primary">Start run</button>
-              <button type="button" id="clone-last" class="ghost-btn">Clone last config</button>
-            </div>
-          </form>
-        </div>
-
-        <div class="card">
-          <h2>Live status</h2>
-          <div id="live-status" class="empty">No run started yet. Submit the form to begin.</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ===================== RUNS ===================== -->
-    <section id="tab-runs" class="tab-panel">
-      <div class="card">
-        <div class="card-head">
-          <h2>Runs</h2>
-          <div class="card-actions">
-            <input type="search" id="runs-search" placeholder="filter by name, topology, llm..." />
-            <button id="runs-refresh" class="ghost-btn">Refresh</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table id="runs-table">
-            <thead>
-              <tr>
-                <th>Run</th>
-                <th>Topology</th>
-                <th>Scenario</th>
-                <th>Steps</th>
-                <th>Seed</th>
-                <th>LLM</th>
-                <th>Variant</th>
-                <th class="num">Failures</th>
-                <th>Started</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="runs-tbody"></tbody>
-          </table>
-        </div>
-        <div id="runs-empty" class="empty hidden">No runs yet — start one from the New Run tab.</div>
-      </div>
-    </section>
-
-    <!-- ===================== RUN DETAIL ===================== -->
-    <section id="tab-detail" class="tab-panel">
-      <div class="card detail-head">
-        <button class="ghost-btn back-btn" id="detail-back">← Runs</button>
-        <div class="detail-title-row">
-          <h2 id="detail-title">Run</h2>
-          <div class="detail-actions">
-            <button id="detail-fork-btn" class="primary">Fork from…</button>
-            <button id="detail-compare-parent-btn" class="ghost-btn hidden">Compare with parent</button>
-          </div>
-        </div>
-        <div id="detail-lineage" class="lineage-badge hidden"></div>
-        <div id="detail-meta" class="kv-grid"></div>
-      </div>
-
-      <div class="grid two-col">
-        <div class="card">
-          <h3>Failures by type</h3>
-          <div id="detail-failure-summary"></div>
-          <div class="failure-list" id="detail-failure-list"></div>
-        </div>
-        <div class="card">
-          <h3>Final world state</h3>
-          <div id="detail-world" class="kv-grid mono"></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>Event timeline</h3>
-        <div id="detail-events" class="timeline"></div>
-      </div>
-
-      <div class="card">
-        <h3>Agent action mix</h3>
-        <div id="detail-agents" class="agent-bars"></div>
-      </div>
-    </section>
-
-    <!-- ===================== CUSTOM (BYOA) ===================== -->
-    <section id="tab-custom" class="tab-panel">
-      <div class="card">
-        <h2>Bring your own agents + environment</h2>
-        <p class="help">
-          Define one or more <code>@drift.agent</code> async functions in the editor below.
-          Optionally subclass <code>drift.WorldState</code> for your domain, define an
-          <code>initial_state()</code> function to populate it, and/or an <code>events()</code>
-          function returning <code>[(timestep, event), …]</code> for scheduled chaos.
-          See the loaded example for the full shape.
-        </p>
-        <p class="help warn-text">
-          Executes Python in the local server process. Safe for local development; do not expose
-          this server to untrusted users.
-        </p>
-
-        <div class="row two-col">
-          <div class="field">
-            <label for="byoa-topology">Detectors</label>
-            <select id="byoa-topology"></select>
-            <p class="help" id="byoa-topology-help"></p>
-          </div>
-          <div class="row two-col">
-            <div class="field">
-              <label for="byoa-steps">Steps</label>
-              <input type="number" id="byoa-steps" value="10" min="1" max="200" />
-            </div>
-            <div class="field">
-              <label for="byoa-seed">Seed</label>
-              <input type="number" id="byoa-seed" value="42" />
-            </div>
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="byoa-auto-chaos">Auto-chaos</label>
-          <select id="byoa-auto-chaos">
-            <option value="off">Off</option>
-            <option value="light">Light (~8% per step)</option>
-            <option value="moderate" selected>Moderate (~18%)</option>
-            <option value="aggressive">Aggressive (~35%)</option>
-          </select>
-          <p class="help">
-            Drift walks your <code>WorldState</code> fields and injects type-appropriate mutations
-            (bool flips, dict clears, list reverses, etc.) at random steps. Injected events appear
-            in results prefixed <code>AutoChaos.&lt;pattern&gt;[field]</code>.
-          </p>
-        </div>
-
-        <div class="row two-col">
-          <div class="field">
-            <label for="byoa-judge">LLM-judged detection</label>
-            <select id="byoa-judge">
-              <option value="off" selected>Off — deterministic detectors only</option>
-              <option value="mock">Mock — placeholder, no API key required</option>
-              <option value="openai">OpenAI — real judge (needs OPENAI_API_KEY)</option>
-            </select>
-            <p class="help">
-              Adds an LLM-judged detector alongside the deterministic ones. Findings are
-              prefixed <code>llm:</code> across five families: coordination_contradiction,
-              grounding_failure, state_drift, emergent_decay, gate_bypass.
-            </p>
-          </div>
-          <div class="row two-col">
-            <div class="field">
-              <label for="byoa-judge-model">Judge model</label>
-              <input type="text" id="byoa-judge-model" placeholder="gpt-4o-mini" />
-            </div>
-            <div class="field">
-              <label for="byoa-judge-every">Judge every N steps</label>
-              <input type="number" id="byoa-judge-every" value="5" min="1" max="50" />
-            </div>
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="byoa-user-guidelines">User guidelines <span class="muted">(optional, one per line)</span></label>
-          <textarea id="byoa-user-guidelines" class="mono"
-                    rows="4"
-                    placeholder="agents must escalate when sentiment drops below 0.3&#10;merger must never act while security_block is active&#10;reviewer_b must not reference cases not in open_cases"></textarea>
-          <p class="help">
-            Plain-English patterns the judge will additionally watch for. Matches are
-            reported under <code>llm:user_guideline:&lt;n&gt;</code>. Use for domain-specific
-            patterns the built-in five-family taxonomy doesn't cover.
-          </p>
-        </div>
-
-        <div class="field">
-          <label for="byoa-code">Agent code</label>
-          <textarea id="byoa-code" class="mono code-input"
-                    spellcheck="false"
-                    placeholder="@drift.agent(role='reviewer')&#10;async def reviewer(state, memory):&#10;    return drift.Action(kind='approve_review', target_case_id='PR-1')"></textarea>
-        </div>
-
-        <div class="actions">
-          <button type="button" id="byoa-load-example" class="ghost-btn">Load example</button>
-          <button type="button" id="byoa-clear" class="ghost-btn">Clear</button>
-          <button type="button" id="byoa-submit" class="primary">Run on my agents</button>
-        </div>
-      </div>
-
-      <div id="byoa-result" class="hidden">
-        <div class="card">
-          <h3>Run summary</h3>
-          <div id="byoa-summary" class="kv-grid"></div>
-        </div>
-        <div class="card" id="byoa-auto-chaos-card" hidden>
-          <h3>Auto-chaos events injected</h3>
-          <p class="help">
-            Each event mutates one field mid-run; any failure that fires after the injection
-            step is a candidate for being caused by it.
-          </p>
-          <div class="failure-list" id="byoa-auto-chaos-list"></div>
-        </div>
-        <div class="card">
-          <h3>Detected failures</h3>
-          <div id="byoa-failure-summary"></div>
-          <div class="failure-list" id="byoa-failure-list"></div>
         </div>
       </div>
     </section>
@@ -479,58 +201,26 @@
       </div>
     </section>
 
+    <!-- ===================== CUSTOM (BYOA — being re-wired) ===================== -->
+    <section id="tab-custom" class="tab-panel">
+      <div class="card">
+        <h2>Bring your own agents <span class="muted" style="font-size: 13px;">— rewiring</span></h2>
+        <p class="help">
+          The <code>@drift.agent</code> decorator + Custom tab predated the LangGraph adapter. After the
+          2026-06-29 cleanup the native simulator was removed, so this tab is paused while we re-wire it
+          to run user-supplied agents through the adapter path.
+        </p>
+        <p class="help">
+          The decorator <code>@drift.agent</code> still imports as a data shape; only the runtime path is
+          paused. Want to test your agents now? Wire them into a LangGraph and use the Adapter tab, or call
+          <code>drift_test</code> from a Python script (see <code>examples/adapters/</code>).
+        </p>
+      </div>
+    </section>
+
   </main>
 
   <div id="toast-host"></div>
-
-  <!-- Fork modal — hidden until the Fork button is clicked from Run Detail. -->
-  <div id="fork-modal" class="modal-backdrop hidden" aria-hidden="true">
-    <div class="modal" role="dialog" aria-labelledby="fork-modal-title">
-      <div class="modal-head">
-        <h2 id="fork-modal-title">Fork run</h2>
-        <button class="ghost-btn modal-close" aria-label="Close">×</button>
-      </div>
-      <div class="modal-body">
-        <p class="muted" id="fork-modal-context"></p>
-
-        <div class="field">
-          <label for="fork-at">Branch at timestep</label>
-          <div class="row two-col">
-            <input type="range" id="fork-at-slider" min="0" max="0" step="1" value="0" />
-            <input type="number" id="fork-at" min="0" value="0" />
-          </div>
-          <p class="help" id="fork-at-help">0 = re-run from the beginning. Higher = branch later.</p>
-        </div>
-
-        <div class="field">
-          <label for="fork-seed">Override seed <span class="muted">(optional)</span></label>
-          <input type="number" id="fork-seed" placeholder="inherit from parent" />
-          <p class="help">Leave blank to keep the parent's RNG aligned past the branch point. Override to roll different dice.</p>
-        </div>
-
-        <div class="field">
-          <label>Prompt variant per agent</label>
-          <div id="fork-variants" class="fork-variants"></div>
-          <p class="help">Default inherits the parent's variant. Choose 'hardened' on any role to test rules that target a detector class.</p>
-        </div>
-
-        <div class="field">
-          <label>Disable agents in the branch</label>
-          <div id="fork-disable" class="fork-disable"></div>
-          <p class="help">Disabled agents are skipped from the branch onwards — useful for ablation studies.</p>
-        </div>
-
-        <div class="field">
-          <label for="fork-run-id">New run name <span class="muted">(optional)</span></label>
-          <input type="text" id="fork-run-id" placeholder="auto-generated from parent + branch step" />
-        </div>
-      </div>
-      <div class="modal-foot">
-        <button type="button" class="ghost-btn modal-close">Cancel</button>
-        <button type="button" id="fork-submit" class="primary">Launch fork</button>
-      </div>
-    </div>
-  </div>
 
   <script src="/web/app.js"></script>
 </body>
