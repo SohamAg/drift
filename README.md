@@ -78,12 +78,16 @@ Currently shipped:
 | `verifier_always_approves` | MAST 3.x family + Anthropic engineering blog |
 | `infinite_handoff` | MAST 1.3 + Cognition open problem #2 |
 | `subagent_fanout_excess` | Anthropic 50-subagent incident |
+| `hallucinated_reference` | MAST 2.x grounding failures + Anthropic subagent hallucination |
 
 Each detector ships a structured `detect()` (over the adapter trace) plus a
-text-only `detect_from_text()` (for MAST-style transcripts). Free,
-deterministic, runs alongside every drift_test. **Empirically validated** on
-real LangGraph code (`examples/adapters/run_drift_on_adversarial_mas.py`),
-not just synthetic fixtures.
+text-only `detect_from_text()` (for MAST-style transcripts) plus a curated
+explainer doc under [`docs/detectors/`](docs/detectors/) with source
+citations and architecture-level fix guidance — no generated suggestion
+text. Free, deterministic, runs alongside every drift_test. **Empirically
+validated** on real LangGraph code
+(`examples/adapters/run_drift_on_adversarial_mas.py`), not just synthetic
+fixtures.
 
 ### Plus — optional LLM judge over the full trace
 Six-category taxonomy (`coordination_contradiction`, `grounding_failure`,
@@ -193,14 +197,16 @@ e:\drift\
 ├── web/                   — Vanilla HTML/CSS/JS frontend (3 tabs: Adapter / Results / Custom-stub)
 ├── examples/adapters/     — drift_test runners + validation harnesses
 ├── data/external/mast/    — MAST dataset (gitignored)
+├── docs/detectors/        — Curated per-detector explainer docs
 ├── results/               — Saved experiment JSON (gitignored)
-└── tests/                 — Pytest suite (140 tests)
+└── tests/                 — Pytest suite (157 tests)
 ```
 
 > **2026-06-29 cleanup:** the native per-tick simulator (topologies / scenarios
 > / fork+replay / run history) was removed alongside its UI tabs. The
-> LangGraph adapter is the single supported path. The 3-detector coordination
-> library + the LLM judge are the value layer running over adapter traces.
+> LangGraph adapter is the single supported path. The coordination-failure
+> detector library + the LLM judge are the value layer running over adapter
+> traces.
 
 ### Tests
 
@@ -209,9 +215,9 @@ $env:PYTHONPATH = "e:\drift\src"
 python -m pytest -q
 ```
 
-140 tests cover: chaos engine (schema-walked perturbations + intensities
+157 tests cover: chaos engine (schema-walked perturbations + intensities
 including exhaustive), tiered divergence cascade + UNCHANGED audit,
-LLM judge (6-family taxonomy + user guidelines + dedup), all 3 coordination
+LLM judge (6-family taxonomy + user guidelines + dedup), all 4 coordination
 detectors with synthetic positive + negative + cross-specificity fixtures,
 LangGraph adapter integration paths.
 
