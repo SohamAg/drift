@@ -16,6 +16,7 @@ from drift.failures.library import (
     hallucinated_reference,
     infinite_handoff,
     run_all_on_trace,
+    stale_state_reference,
     subagent_fanout_excess,
     verifier_always_approves,
 )
@@ -606,6 +607,153 @@ def test_contradictory_decisions_text_variant_negative_empty():
 
 
 # ---------------------------------------------------------------------------
+# Detector 6: stale_state_reference
+# ---------------------------------------------------------------------------
+
+
+def test_stale_state_reference_positive_close_then_reference():
+    """Closer closes case-42, later agent still targets case-42 — stale."""
+    trace = _trace([
+        ("intake",  {"case_id": "case-42", "content": "PR for feature X"}),
+        ("closer",  {"case_id": "case-42", "status": "closed"}),
+        ("auditor", {"target_case_id": "case-42", "rationale": "processing"}),
+    ])
+    out = stale_state_reference.detect(_ctx(trace))
+    assert len(out) == 1
+    assert out[0].failure_type == "stale_state_reference"
+    assert "case-42" in out[0].summary.lower()
+    assert out[0].timestep == 3
+
+
+def test_stale_state_reference_positive_multiple_stale_references():
+    """Two agents reference the same closed entity — both fire (each is a
+    distinct propagation event)."""
+    trace = _trace([
+        ("intake",  {"case_id": "case-1"}),
+        ("closer",  {"case_id": "case-1", "status": "resolved"}),
+        ("agent_a", {"case_id": "case-1", "note": "audit"}),
+        ("agent_b", {"case_id": "case-1", "note": "retry"}),
+    ])
+    out = stale_state_reference.detect(_ctx(trace))
+    assert len(out) == 2
+
+
+def test_stale_state_reference_negative_reopen_before_reference():
+    """Close, then reopen, then reference — legitimate. No fire."""
+    trace = _trace([
+        ("intake",   {"case_id": "case-42"}),
+        ("closer",   {"case_id": "case-42", "status": "closed"}),
+        ("reopener", {"case_id": "case-42", "status": "reopened"}),
+        ("worker",   {"case_id": "case-42", "note": "working on it"}),
+    ])
+    out = stale_state_reference.detect(_ctx(trace))
+    assert out == []
+
+
+def test_stale_state_reference_negative_same_step_close_only():
+    """A single step that both mentions and closes the entity is not stale.
+    The closer is describing what it's doing to the entity, not acting on a
+    previously-closed one."""
+    trace = _trace([
+        ("intake", {"case_id": "case-42"}),
+        ("closer", {"case_id": "case-42", "status": "closed"}),
+    ])
+    out = stale_state_reference.detect(_ctx(trace))
+    assert out == []
+
+
+def test_stale_state_reference_negative_never_closed():
+    """Entity referenced repeatedly but never closed — not stale."""
+    trace = _trace([
+        ("intake",   {"case_id": "case-42"}),
+        ("worker_a", {"case_id": "case-42", "note": "assigned"}),
+        ("worker_b", {"case_id": "case-42", "note": "in progress"}),
+    ])
+    out = stale_state_reference.detect(_ctx(trace))
+    assert out == []
+
+
+def test_stale_state_reference_negative_different_entity():
+    """Case-1 closed; case-2 referenced — no cross-contamination."""
+    trace = _trace([
+        ("intake",  {"case_id": "case-1"}),
+        ("closer",  {"case_id": "case-1", "status": "closed"}),
+        ("worker",  {"case_id": "case-2", "note": "different case"}),
+    ])
+    out = stale_state_reference.detect(_ctx(trace))
+    assert out == []
+
+
+def test_stale_state_reference_negative_reopen_same_step_as_reference():
+    """Same step reopens AND references — reopen wins, no fire."""
+    trace = _trace([
+        ("intake",   {"case_id": "case-42"}),
+        ("closer",   {"case_id": "case-42", "status": "closed"}),
+        ("reopener", {"case_id": "case-42", "status": "reopened",
+                      "note": "resuming work on case-42"}),
+    ])
+    out = stale_state_reference.detect(_ctx(trace))
+    assert out == []
+
+
+def test_stale_state_reference_negative_empty_trace():
+    assert stale_state_reference.detect(_ctx([])) == []
+
+
+def test_stale_state_reference_recognizes_multiple_closure_tokens():
+    """Verify 'archived', 'deleted', 'cancelled' all count as closure."""
+    for closure in ["archived", "deleted", "cancelled", "resolved", "done"]:
+        trace = _trace([
+            ("intake",  {"case_id": "case-x"}),
+            ("closer",  {"case_id": "case-x", "status": closure}),
+            ("worker",  {"case_id": "case-x", "note": "later work"}),
+        ])
+        out = stale_state_reference.detect(_ctx(trace))
+        assert len(out) == 1, f"closure token {closure!r} did not register"
+
+
+def test_stale_state_reference_custom_status_field():
+    """User-supplied status field works via kwargs."""
+    trace = _trace([
+        ("intake",  {"case_id": "case-1", "lifecycle_phase": "open"}),
+        ("closer",  {"case_id": "case-1", "lifecycle_phase": "done"}),
+        ("worker",  {"case_id": "case-1", "note": "still working"}),
+    ])
+    out = stale_state_reference.detect(
+        _ctx(trace),
+        status_fields=["lifecycle_phase"],
+    )
+    assert len(out) == 1
+
+
+# ---- text variant ---------------------------------------------------------
+
+
+def test_stale_state_reference_text_variant_positive():
+    transcript = """
+Alice: TICKET-42 has been resolved and archived.
+Bob: I'll continue investigating TICKET-42 tomorrow.
+"""
+    out = stale_state_reference.detect_from_text(transcript)
+    assert len(out) == 1
+    assert "ticket-42" in out[0].summary.lower()
+
+
+def test_stale_state_reference_text_variant_negative_reopen():
+    transcript = """
+Alice: TICKET-42 has been closed.
+Bob: TICKET-42 has been reopened, please continue.
+Charlie: Working on TICKET-42 now.
+"""
+    out = stale_state_reference.detect_from_text(transcript)
+    assert out == []
+
+
+def test_stale_state_reference_text_variant_negative_empty():
+    assert stale_state_reference.detect_from_text("") == []
+
+
+# ---------------------------------------------------------------------------
 # Cross-specificity: each positive fixture must not trigger other detectors
 # ---------------------------------------------------------------------------
 
@@ -717,6 +865,55 @@ def test_specificity_other_fixtures_do_not_fire_contradictory():
     for fx in (verifier_fx, handoff_fx, hallucination_fx):
         types = [f.failure_type for f in run_all_on_trace(fx)]
         assert "contradictory_decisions" not in types
+
+
+def test_specificity_stale_state_reference_fixture_fires_only_it():
+    """A pure stale-state fixture doesn't accidentally trigger other detectors."""
+    trace = _trace([
+        ("intake",  {"case_id": "case-42"}),
+        ("closer",  {"case_id": "case-42", "status": "closed"}),
+        ("auditor", {"target_case_id": "case-42", "rationale": "processing"}),
+    ])
+    out = run_all_on_trace(trace)
+    types = [f.failure_type for f in out]
+    assert "stale_state_reference" in types
+    assert "verifier_always_approves" not in types
+    assert "infinite_handoff" not in types
+    assert "subagent_fanout_excess" not in types
+    assert "hallucinated_reference" not in types
+    assert "contradictory_decisions" not in types
+
+
+def test_specificity_other_fixtures_do_not_fire_stale_state():
+    """Verifier/handoff/fanout/hallucination/contradictory fixtures
+    shouldn't accidentally trigger stale_state_reference."""
+    verifier_fx = _trace([
+        ("planner",  {"task": "review feature x"}),
+        ("verifier", {"verdict": "approve"}),
+        ("planner",  {"task": "review feature y"}),
+        ("verifier", {"verdict": "approve"}),
+        ("planner",  {"task": "review feature z"}),
+        ("verifier", {"verdict": "approve"}),
+        ("planner",  {"task": "review feature w"}),
+        ("verifier", {"verdict": "approve"}),
+    ])
+    handoff_fx = _trace([
+        ("a", {"thinking": "passing to b"}),
+        ("b", {"thinking": "passing to a"}),
+        ("a", {"thinking": "passing to b"}),
+        ("b", {"thinking": "passing to a"}),
+    ], start_state={"task": "fix bug", "result": ""})
+    hallucination_fx = _trace([
+        ("planner", {"rationale": "starting"}),
+        ("worker",  {"rationale": "closing TICKET-42 as duplicate"}),
+    ])
+    contradictory_fx = _trace([
+        ("reviewer_a", {"case_id": "case-42", "verdict": "approve"}),
+        ("reviewer_b", {"case_id": "case-42", "verdict": "reject"}),
+    ])
+    for fx in (verifier_fx, handoff_fx, hallucination_fx, contradictory_fx):
+        types = [f.failure_type for f in run_all_on_trace(fx)]
+        assert "stale_state_reference" not in types
 
 
 def test_specificity_other_fixtures_do_not_fire_hallucination():
