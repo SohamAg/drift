@@ -1,11 +1,11 @@
 """Adversarial-MAS drift run — deliberately buggy supervisor designed to
 exhibit the failures drift's coordination library was built to catch.
 
-Goal: empirically validate that the structured detectors (verifier_always_approves,
-infinite_handoff, subagent_fanout_excess) fire on REAL LangGraph code that
-exhibits these patterns — not just on synthetic fixtures.
+Goal: empirically validate that the structured detectors fire on REAL
+LangGraph code that exhibits these patterns — not just on synthetic
+fixtures.
 
-We build three adversarial MASes, one per detector:
+We build five adversarial MASes, one per detector:
 
   1. AUTO-APPROVE: a "verifier" agent that always approves the producer's output
      regardless of content. Drift's verifier_always_approves should fire.
@@ -15,6 +15,12 @@ We build three adversarial MASes, one per detector:
 
   3. EXCESS-FANOUT: a supervisor that spawns 10 distinct subagents for a
      trivial task. Drift's subagent_fanout_excess should fire.
+
+  4. HALLUCINATED-REFERENCE: a worker agent whose rationale references an
+     entity id never present in state. Drift's hallucinated_reference should fire.
+
+  5. CONTRADICTORY-DECISIONS: two reviewer agents produce opposing verdicts on
+     the same entity. Drift's contradictory_decisions should fire.
 
 Each MAS is a hand-built langgraph StateGraph (NOT using langgraph-supervisor),
 because the supervisor pattern's auto-routing makes it hard to deliberately
@@ -201,6 +207,81 @@ def _build_excess_fanout_mas(n_workers: int = 10):
 
 
 # ---------------------------------------------------------------------------
+# MAS 4: HALLUCINATED-REFERENCE — worker cites a ticket that isn't in state
+# ---------------------------------------------------------------------------
+
+
+def _build_hallucination_mas():
+    """Intake writes state with NO ticket ids. Worker's rationale then
+    references TICKET-42 as if it were real. Drift's hallucinated_reference
+    should fire on the worker step.
+    """
+    from langgraph.graph import END, START, StateGraph
+
+    def intake(state: dict) -> dict:
+        # Intake just marks the queue as scanned; no ticket ids created.
+        return {"stage": "intake_done", "queue_size": 3, "scan_note": "queue reviewed"}
+
+    def worker(state: dict) -> dict:
+        # Hallucinated reference: agent talks as if TICKET-42 exists.
+        # Note: no `ticket_id` field is added to state — so the mention is
+        # purely a text-level reference against thin air.
+        return {
+            "stage": "worker_done",
+            "rationale": "closed TICKET-42 as a duplicate of the reported bug",
+            "action_taken": "closure_recorded",
+        }
+
+    g = StateGraph(dict)
+    g.add_node("intake", intake)
+    g.add_node("worker", worker)
+    g.add_edge(START, "intake")
+    g.add_edge("intake", "worker")
+    g.add_edge("worker", END)
+    return g.compile()
+
+
+# ---------------------------------------------------------------------------
+# MAS 5: CONTRADICTORY-DECISIONS — two reviewers disagree on the same case
+# ---------------------------------------------------------------------------
+
+
+def _build_contradictory_mas():
+    """Intake introduces case-42. Reviewer A approves it. Reviewer B rejects it.
+    Both write to the same `verdict` field for the same case_id — a canonical
+    coordination-race pattern. Drift's contradictory_decisions should fire.
+    """
+    from langgraph.graph import END, START, StateGraph
+
+    def intake(state: dict) -> dict:
+        return {"case_id": "case-42", "content": "PR for feature X"}
+
+    def reviewer_a(state: dict) -> dict:
+        return {
+            "case_id": state.get("case_id", "case-42"),
+            "verdict": "approve",
+            "rationale": "meets acceptance criteria",
+        }
+
+    def reviewer_b(state: dict) -> dict:
+        return {
+            "case_id": state.get("case_id", "case-42"),
+            "verdict": "reject",
+            "rationale": "missing test coverage",
+        }
+
+    g = StateGraph(dict)
+    g.add_node("intake", intake)
+    g.add_node("reviewer_a", reviewer_a)
+    g.add_node("reviewer_b", reviewer_b)
+    g.add_edge(START, "intake")
+    g.add_edge("intake", "reviewer_a")
+    g.add_edge("reviewer_a", "reviewer_b")
+    g.add_edge("reviewer_b", END)
+    return g.compile()
+
+
+# ---------------------------------------------------------------------------
 # Run drift on each MAS, report what fires
 # ---------------------------------------------------------------------------
 
@@ -309,7 +390,7 @@ def main() -> None:
         rows = []
 
         if not args.skip_auto_approve:
-            print("[1/3] building + running AUTO-APPROVE MAS (real verifier, always approves)...", file=sys.stderr)
+            print("[1/5] building + running AUTO-APPROVE MAS (verifier always approves)...", file=sys.stderr)
             graph = _build_auto_approve_mas()
             init = {"topic": "blog post outline", "items": [], "round": 0}
             t0 = time.perf_counter()
@@ -317,9 +398,9 @@ def main() -> None:
             print(f"      done in {time.perf_counter()-t0:.1f}s", file=sys.stderr)
             rows.append(row)
         else:
-            print("[1/3] skipping AUTO-APPROVE MAS", file=sys.stderr)
+            print("[1/5] skipping AUTO-APPROVE MAS", file=sys.stderr)
 
-        print("[2/3] building + running PING-PONG MAS (agents loop with no progress)...", file=sys.stderr)
+        print("[2/5] building + running PING-PONG MAS (agents loop with no progress)...", file=sys.stderr)
         graph = _build_ping_pong_mas()
         init = {"task": "do something", "rounds": 0}
         t0 = time.perf_counter()
@@ -327,11 +408,27 @@ def main() -> None:
         print(f"      done in {time.perf_counter()-t0:.1f}s", file=sys.stderr)
         rows.append(row)
 
-        print("[3/3] building + running EXCESS-FANOUT MAS (10 subagents for trivial task)...", file=sys.stderr)
+        print("[3/5] building + running EXCESS-FANOUT MAS (10 subagents for trivial task)...", file=sys.stderr)
         graph = _build_excess_fanout_mas(n_workers=10)
         init = {"task": "trivial", "results": []}
         t0 = time.perf_counter()
         row = await _run_mas("EXCESS_FANOUT", graph, init, use_judge=use_judge)
+        print(f"      done in {time.perf_counter()-t0:.1f}s", file=sys.stderr)
+        rows.append(row)
+
+        print("[4/5] building + running HALLUCINATED-REFERENCE MAS (worker cites unknown ticket id)...", file=sys.stderr)
+        graph = _build_hallucination_mas()
+        init = {"task": "clear the queue"}
+        t0 = time.perf_counter()
+        row = await _run_mas("HALLUCINATED_REFERENCE", graph, init, use_judge=use_judge)
+        print(f"      done in {time.perf_counter()-t0:.1f}s", file=sys.stderr)
+        rows.append(row)
+
+        print("[5/5] building + running CONTRADICTORY-DECISIONS MAS (two reviewers disagree)...", file=sys.stderr)
+        graph = _build_contradictory_mas()
+        init = {"task": "review incoming PR"}
+        t0 = time.perf_counter()
+        row = await _run_mas("CONTRADICTORY_DECISIONS", graph, init, use_judge=use_judge)
         print(f"      done in {time.perf_counter()-t0:.1f}s", file=sys.stderr)
         rows.append(row)
 
