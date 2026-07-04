@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from drift.failures.library import (
     ALL_DETECTORS,
+    contradictory_decisions,
     hallucinated_reference,
     infinite_handoff,
     run_all_on_trace,
@@ -465,6 +466,146 @@ def test_hallucinated_reference_text_variant_negative_empty():
 
 
 # ---------------------------------------------------------------------------
+# Detector 5: contradictory_decisions
+# ---------------------------------------------------------------------------
+
+
+def test_contradictory_decisions_positive_two_agents_different_verdicts():
+    """Reviewer A approves case-42, reviewer B rejects it — clear coord failure."""
+    trace = _trace([
+        ("reviewer_a", {"case_id": "case-42", "verdict": "approve"}),
+        ("reviewer_b", {"case_id": "case-42", "verdict": "reject"}),
+    ])
+    out = contradictory_decisions.detect(_ctx(trace))
+    assert len(out) == 1
+    assert out[0].failure_type == "contradictory_decisions"
+    assert "case-42" in out[0].summary.lower()
+    assert set(out[0].agents_involved) == {"reviewer_a", "reviewer_b"}
+
+
+def test_contradictory_decisions_positive_same_agent_flipflops():
+    """One agent approves then rejects the same case — role instability."""
+    trace = _trace([
+        ("reviewer", {"case_id": "TICKET-9", "decision": "accept"}),
+        ("planner",  {"note": "asking again"}),
+        ("reviewer", {"case_id": "TICKET-9", "decision": "deny"}),
+    ])
+    out = contradictory_decisions.detect(_ctx(trace))
+    assert len(out) == 1
+    assert "ticket-9" in out[0].summary.lower()
+    assert out[0].agents_involved == ["reviewer"]
+
+
+def test_contradictory_decisions_positive_rationale_polarity():
+    """Structured entity id but polarity only in rationale text."""
+    trace = _trace([
+        ("agent_a", {"target_case_id": "case-1", "rationale": "This looks fine — approve."}),
+        ("agent_b", {"target_case_id": "case-1", "rationale": "Actually, this must be rejected."}),
+    ])
+    out = contradictory_decisions.detect(_ctx(trace))
+    assert len(out) == 1
+    assert "case-1" in out[0].summary.lower()
+
+
+def test_contradictory_decisions_negative_same_polarity():
+    """Two approvals — no contradiction."""
+    trace = _trace([
+        ("reviewer_a", {"case_id": "case-42", "verdict": "approve"}),
+        ("reviewer_b", {"case_id": "case-42", "verdict": "approve"}),
+    ])
+    out = contradictory_decisions.detect(_ctx(trace))
+    assert out == []
+
+
+def test_contradictory_decisions_negative_different_entities():
+    """Approve case-1, reject case-2 — different entities, no contradiction."""
+    trace = _trace([
+        ("reviewer_a", {"case_id": "case-1", "verdict": "approve"}),
+        ("reviewer_b", {"case_id": "case-2", "verdict": "reject"}),
+    ])
+    out = contradictory_decisions.detect(_ctx(trace))
+    assert out == []
+
+
+def test_contradictory_decisions_negative_neutral_plus_positive():
+    """Pending is neutral — no fire even against a later approve."""
+    trace = _trace([
+        ("reviewer_a", {"case_id": "case-1", "verdict": "pending"}),
+        ("reviewer_b", {"case_id": "case-1", "verdict": "approve"}),
+    ])
+    out = contradictory_decisions.detect(_ctx(trace))
+    assert out == []
+
+
+def test_contradictory_decisions_negative_no_entity_id():
+    """Verdicts without an entity id can't be paired — no fire."""
+    trace = _trace([
+        ("reviewer_a", {"verdict": "approve"}),
+        ("reviewer_b", {"verdict": "reject"}),
+    ])
+    out = contradictory_decisions.detect(_ctx(trace))
+    assert out == []
+
+
+def test_contradictory_decisions_only_flags_contradicted_entities():
+    """Multiple entities in trace, only one contradicted — one finding."""
+    trace = _trace([
+        ("a", {"case_id": "case-1", "verdict": "approve"}),
+        ("a", {"case_id": "case-2", "verdict": "approve"}),
+        ("b", {"case_id": "case-1", "verdict": "reject"}),
+        ("b", {"case_id": "case-3", "verdict": "reject"}),
+    ])
+    out = contradictory_decisions.detect(_ctx(trace))
+    assert len(out) == 1
+    assert "case-1" in out[0].summary.lower()
+
+
+def test_contradictory_decisions_custom_verdict_field():
+    """User can pass domain-specific verdict field names."""
+    trace = _trace([
+        ("reviewer_a", {"case_id": "case-1", "diagnosis": "resolved"}),
+        ("reviewer_b", {"case_id": "case-1", "diagnosis": "unresolved"}),
+    ])
+    # Default fields don't include "diagnosis" — pass it explicitly.
+    out = contradictory_decisions.detect(
+        _ctx(trace),
+        verdict_fields=["diagnosis"],
+    )
+    assert len(out) == 1
+    assert "case-1" in out[0].summary.lower()
+
+
+def test_contradictory_decisions_negative_empty_trace():
+    assert contradictory_decisions.detect(_ctx([])) == []
+
+
+# ---- text variant ---------------------------------------------------------
+
+
+def test_contradictory_decisions_text_variant_positive():
+    transcript = """
+Reviewer A: I approve TICKET-42, looks fine.
+Reviewer B: TICKET-42 should be rejected, missing tests.
+"""
+    out = contradictory_decisions.detect_from_text(transcript)
+    assert len(out) == 1
+    assert "ticket-42" in out[0].summary.lower()
+
+
+def test_contradictory_decisions_text_variant_negative_agreement():
+    transcript = """
+Reviewer A: I approve TICKET-42.
+Reviewer B: TICKET-42 accepted, looks fine.
+"""
+    out = contradictory_decisions.detect_from_text(transcript)
+    assert out == []
+
+
+def test_contradictory_decisions_text_variant_negative_empty():
+    assert contradictory_decisions.detect_from_text("") == []
+
+
+# ---------------------------------------------------------------------------
 # Cross-specificity: each positive fixture must not trigger other detectors
 # ---------------------------------------------------------------------------
 
@@ -531,6 +672,51 @@ def test_specificity_hallucinated_reference_fixture_fires_only_it():
     assert "verifier_always_approves" not in types
     assert "infinite_handoff" not in types
     assert "subagent_fanout_excess" not in types
+
+
+def test_specificity_contradictory_decisions_fixture_fires_only_it():
+    """A pure contradictory-decisions fixture doesn't accidentally trip other
+    detectors — the trace is too short for handoff, no verifier, no fanout,
+    and both case ids are structured so no hallucination."""
+    trace = _trace([
+        ("reviewer_a", {"case_id": "case-42", "verdict": "approve"}),
+        ("reviewer_b", {"case_id": "case-42", "verdict": "reject"}),
+    ])
+    out = run_all_on_trace(trace)
+    types = [f.failure_type for f in out]
+    assert "contradictory_decisions" in types
+    assert "verifier_always_approves" not in types
+    assert "infinite_handoff" not in types
+    assert "subagent_fanout_excess" not in types
+    assert "hallucinated_reference" not in types
+
+
+def test_specificity_other_fixtures_do_not_fire_contradictory():
+    """Verifier/handoff/fanout/hallucination fixtures shouldn't accidentally
+    have contradictory-verdict shapes."""
+    verifier_fx = _trace([
+        ("planner",  {"task": "review feature x"}),
+        ("verifier", {"verdict": "approve"}),
+        ("planner",  {"task": "review feature y"}),
+        ("verifier", {"verdict": "approve"}),
+        ("planner",  {"task": "review feature z"}),
+        ("verifier", {"verdict": "approve"}),
+        ("planner",  {"task": "review feature w"}),
+        ("verifier", {"verdict": "approve"}),
+    ])
+    handoff_fx = _trace([
+        ("a", {"thinking": "passing to b"}),
+        ("b", {"thinking": "passing to a"}),
+        ("a", {"thinking": "passing to b"}),
+        ("b", {"thinking": "passing to a"}),
+    ], start_state={"task": "fix bug", "result": ""})
+    hallucination_fx = _trace([
+        ("planner", {"rationale": "starting"}),
+        ("worker",  {"rationale": "closing TICKET-42 as duplicate"}),
+    ])
+    for fx in (verifier_fx, handoff_fx, hallucination_fx):
+        types = [f.failure_type for f in run_all_on_trace(fx)]
+        assert "contradictory_decisions" not in types
 
 
 def test_specificity_other_fixtures_do_not_fire_hallucination():
