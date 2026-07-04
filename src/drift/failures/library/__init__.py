@@ -30,6 +30,7 @@ from drift.failures.library import (
     contradictory_decisions,
     hallucinated_reference,
     infinite_handoff,
+    stale_state_reference,
     subagent_fanout_excess,
     verifier_always_approves,
 )
@@ -48,6 +49,7 @@ ALL_DETECTORS = [
     subagent_fanout_excess,
     hallucinated_reference,
     contradictory_decisions,
+    stale_state_reference,
 ]
 
 
@@ -125,6 +127,7 @@ __all__ = [
     "mast_mode_map",
     "run_all_on_text",
     "run_all_on_trace",
+    "stale_state_reference",
     "subagent_fanout_excess",
     "verifier_always_approves",
 ]
