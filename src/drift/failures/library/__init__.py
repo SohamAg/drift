@@ -27,6 +27,7 @@ from typing import Any
 
 from drift.failures.base import FailureRecord
 from drift.failures.library import (
+    hallucinated_reference,
     infinite_handoff,
     subagent_fanout_excess,
     verifier_always_approves,
@@ -44,6 +45,7 @@ ALL_DETECTORS = [
     verifier_always_approves,
     infinite_handoff,
     subagent_fanout_excess,
+    hallucinated_reference,
 ]
 
 
@@ -115,6 +117,7 @@ __all__ = [
     "detector_names",
     "from_adapter_trace",
     "from_native",
+    "hallucinated_reference",
     "infinite_handoff",
     "mast_mode_map",
     "run_all_on_text",
