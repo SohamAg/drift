@@ -5,7 +5,7 @@ Goal: empirically validate that the structured detectors fire on REAL
 LangGraph code that exhibits these patterns — not just on synthetic
 fixtures.
 
-We build five adversarial MASes, one per detector:
+We build six adversarial MASes, one per detector:
 
   1. AUTO-APPROVE: a "verifier" agent that always approves the producer's output
      regardless of content. Drift's verifier_always_approves should fire.
@@ -21,6 +21,9 @@ We build five adversarial MASes, one per detector:
 
   5. CONTRADICTORY-DECISIONS: two reviewer agents produce opposing verdicts on
      the same entity. Drift's contradictory_decisions should fire.
+
+  6. STALE-STATE-REFERENCE: closer closes a case, downstream auditor still
+     targets it. Drift's stale_state_reference should fire.
 
 Each MAS is a hand-built langgraph StateGraph (NOT using langgraph-supervisor),
 because the supervisor pattern's auto-routing makes it hard to deliberately
@@ -282,6 +285,45 @@ def _build_contradictory_mas():
 
 
 # ---------------------------------------------------------------------------
+# MAS 6: STALE-STATE-REFERENCE — auditor targets a case that closer just closed
+# ---------------------------------------------------------------------------
+
+
+def _build_stale_state_mas():
+    """intake → closer → auditor. Closer sets status=closed on case-42; auditor
+    then targets the same case as if still active. Drift's stale_state_reference
+    should fire on the auditor step.
+    """
+    from langgraph.graph import END, START, StateGraph
+
+    def intake(state: dict) -> dict:
+        return {"case_id": "case-42", "content": "PR for feature X"}
+
+    def closer(state: dict) -> dict:
+        return {
+            "case_id": state.get("case_id", "case-42"),
+            "status": "closed",
+            "close_note": "resolved by upstream fast path",
+        }
+
+    def auditor(state: dict) -> dict:
+        return {
+            "target_case_id": state.get("case_id", "case-42"),
+            "rationale": "beginning audit pass on case-42",
+        }
+
+    g = StateGraph(dict)
+    g.add_node("intake", intake)
+    g.add_node("closer", closer)
+    g.add_node("auditor", auditor)
+    g.add_edge(START, "intake")
+    g.add_edge("intake", "closer")
+    g.add_edge("closer", "auditor")
+    g.add_edge("auditor", END)
+    return g.compile()
+
+
+# ---------------------------------------------------------------------------
 # Run drift on each MAS, report what fires
 # ---------------------------------------------------------------------------
 
@@ -390,7 +432,7 @@ def main() -> None:
         rows = []
 
         if not args.skip_auto_approve:
-            print("[1/5] building + running AUTO-APPROVE MAS (verifier always approves)...", file=sys.stderr)
+            print("[1/6] building + running AUTO-APPROVE MAS (verifier always approves)...", file=sys.stderr)
             graph = _build_auto_approve_mas()
             init = {"topic": "blog post outline", "items": [], "round": 0}
             t0 = time.perf_counter()
@@ -398,9 +440,9 @@ def main() -> None:
             print(f"      done in {time.perf_counter()-t0:.1f}s", file=sys.stderr)
             rows.append(row)
         else:
-            print("[1/5] skipping AUTO-APPROVE MAS", file=sys.stderr)
+            print("[1/6] skipping AUTO-APPROVE MAS", file=sys.stderr)
 
-        print("[2/5] building + running PING-PONG MAS (agents loop with no progress)...", file=sys.stderr)
+        print("[2/6] building + running PING-PONG MAS (agents loop with no progress)...", file=sys.stderr)
         graph = _build_ping_pong_mas()
         init = {"task": "do something", "rounds": 0}
         t0 = time.perf_counter()
@@ -408,7 +450,7 @@ def main() -> None:
         print(f"      done in {time.perf_counter()-t0:.1f}s", file=sys.stderr)
         rows.append(row)
 
-        print("[3/5] building + running EXCESS-FANOUT MAS (10 subagents for trivial task)...", file=sys.stderr)
+        print("[3/6] building + running EXCESS-FANOUT MAS (10 subagents for trivial task)...", file=sys.stderr)
         graph = _build_excess_fanout_mas(n_workers=10)
         init = {"task": "trivial", "results": []}
         t0 = time.perf_counter()
@@ -416,7 +458,7 @@ def main() -> None:
         print(f"      done in {time.perf_counter()-t0:.1f}s", file=sys.stderr)
         rows.append(row)
 
-        print("[4/5] building + running HALLUCINATED-REFERENCE MAS (worker cites unknown ticket id)...", file=sys.stderr)
+        print("[4/6] building + running HALLUCINATED-REFERENCE MAS (worker cites unknown ticket id)...", file=sys.stderr)
         graph = _build_hallucination_mas()
         init = {"task": "clear the queue"}
         t0 = time.perf_counter()
@@ -424,11 +466,19 @@ def main() -> None:
         print(f"      done in {time.perf_counter()-t0:.1f}s", file=sys.stderr)
         rows.append(row)
 
-        print("[5/5] building + running CONTRADICTORY-DECISIONS MAS (two reviewers disagree)...", file=sys.stderr)
+        print("[5/6] building + running CONTRADICTORY-DECISIONS MAS (two reviewers disagree)...", file=sys.stderr)
         graph = _build_contradictory_mas()
         init = {"task": "review incoming PR"}
         t0 = time.perf_counter()
         row = await _run_mas("CONTRADICTORY_DECISIONS", graph, init, use_judge=use_judge)
+        print(f"      done in {time.perf_counter()-t0:.1f}s", file=sys.stderr)
+        rows.append(row)
+
+        print("[6/6] building + running STALE-STATE-REFERENCE MAS (auditor targets closed case)...", file=sys.stderr)
+        graph = _build_stale_state_mas()
+        init = {"task": "audit backlog"}
+        t0 = time.perf_counter()
+        row = await _run_mas("STALE_STATE_REFERENCE", graph, init, use_judge=use_judge)
         print(f"      done in {time.perf_counter()-t0:.1f}s", file=sys.stderr)
         rows.append(row)
 
