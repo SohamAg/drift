@@ -80,6 +80,7 @@ Currently shipped:
 | `subagent_fanout_excess` | Anthropic 50-subagent incident |
 | `hallucinated_reference` | MAST 2.x grounding failures + Anthropic subagent hallucination |
 | `contradictory_decisions` | MAST 3.2 + Cognition principle 2 (conflicting decisions carry bad results) |
+| `stale_state_reference` | MAST 1.5 parallel-agent state race + Cognition open problem #2 |
 
 Each detector ships a structured `detect()` (over the adapter trace) plus a
 text-only `detect_from_text()` (for MAST-style transcripts) plus a curated
@@ -200,7 +201,7 @@ e:\drift\
 ├── data/external/mast/    — MAST dataset (gitignored)
 ├── docs/detectors/        — Curated per-detector explainer docs
 ├── results/               — Saved experiment JSON (gitignored)
-└── tests/                 — Pytest suite (172 tests)
+└── tests/                 — Pytest suite (187 tests)
 ```
 
 > **2026-06-29 cleanup:** the native per-tick simulator (topologies / scenarios
@@ -216,9 +217,9 @@ $env:PYTHONPATH = "e:\drift\src"
 python -m pytest -q
 ```
 
-172 tests cover: chaos engine (schema-walked perturbations + intensities
+187 tests cover: chaos engine (schema-walked perturbations + intensities
 including exhaustive), tiered divergence cascade + UNCHANGED audit,
-LLM judge (6-family taxonomy + user guidelines + dedup), all 5 coordination
+LLM judge (6-family taxonomy + user guidelines + dedup), all 6 coordination
 detectors with synthetic positive + negative + cross-specificity fixtures,
 LangGraph adapter integration paths.
 
