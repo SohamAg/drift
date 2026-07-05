@@ -1279,12 +1279,257 @@ def drift_test(
     )
 
 
+# =============================================================================
+# Fork-edit-replay — v1
+# =============================================================================
+#
+# Design spec: docs/design/fork_edit_replay_v1.md.
+# v1 scope: rerun-from-state execution, sparse deep-merge edits, state only,
+# run-to-completion, optional top-vs-bottom compare. Deferred features
+# (prompt editing, bounded replay, consistency check) live in
+# memory/feature_ideas.md — do not forget them.
+#
+# The primitive is diagnostic, not therapeutic. Fix goes in the parent graph;
+# fork-edit is how the developer isolates WHERE to fix.
+
+
+@dataclass
+class ForkBranch:
+    """One branch of a fork-edit-replay run — either the fork-edited branch or
+    the optional top-edited (initial-state-edited) branch. Same shape as a
+    baseline run but scoped to what came out of THIS fork."""
+
+    initial_state: dict            # the effective initial state we ran from
+    trace: list[dict] = field(default_factory=list)
+    final_state: dict | None = None
+    crashed: bool = False
+    error: str = ""
+    error_type: str = ""
+    duration_s: float = 0.0
+    coordination_findings: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class ForkResult:
+    """Result of one drift_test_fork call.
+
+    parent_summary carries only enough of the parent to render the diff view
+    without holding a reference to the full AdapterResult (keeps this
+    serializable + storable independently).
+
+    fork_branch is always present — the branch produced by editing state at
+    fork_step and running forward.
+
+    top_edited_branch is populated only when the user passed
+    `also_apply_at_initial=True`. It applied the same edits at the parent's
+    initial state and ran fresh from step 0. Used for the design-diagnostic
+    "would fixing this at initial design achieve the same outcome?" question.
+    See feature_ideas.md → Fork-edit-replay augmentations → feature 2.
+    """
+
+    parent_run_id: str
+    fork_step: int
+    edits: dict[str, Any]
+    fork_point_state: dict         # state_after[fork_step] BEFORE edits
+    edited_state_at_fork: dict     # state_after[fork_step] AFTER edits (merged)
+    fork_branch: ForkBranch = field(default_factory=lambda: ForkBranch(initial_state={}))
+    top_edited_branch: ForkBranch | None = None
+    # Cost / provenance telemetry for the fork call itself.
+    duration_s: float = 0.0
+
+    @property
+    def n_coordination_findings(self) -> int:
+        n = len(self.fork_branch.coordination_findings)
+        if self.top_edited_branch:
+            n += len(self.top_edited_branch.coordination_findings)
+        return n
+
+
+def _deep_merge_edits(base: dict, edits: dict) -> dict:
+    """Sparse deep-merge — `edits` overwrites at leaf level; dict values recurse.
+
+    - Non-dict values in `edits` replace whatever's at the same key in `base`.
+    - Dict values recurse (so `edits={"a": {"b": 1}}` doesn't wipe base's other
+      "a" subkeys).
+    - Lists are REPLACED wholesale — supporting list splice syntax needs the
+      JSON-patch surface we deliberately deferred.
+
+    Returns a new dict (deepcopy of `base` mutated in place). Does not modify
+    the input.
+    """
+    out = deepcopy(base)
+
+    def _apply(dst: dict, src: dict) -> None:
+        for k, v in src.items():
+            if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                _apply(dst[k], v)
+            else:
+                dst[k] = deepcopy(v)
+
+    if isinstance(edits, dict):
+        _apply(out, edits)
+    return out
+
+
+async def _run_one_fork_branch(
+    graph: Any,
+    initial_state: dict,
+    *,
+    run_coordination_detectors: bool,
+    coordination_roles: dict[str, str] | None,
+) -> ForkBranch:
+    """Run the graph once from `initial_state`, capture trace + coord findings."""
+    t0 = time.perf_counter()
+    try:
+        final_state, trace = await _stream_or_invoke(graph, initial_state)
+        duration = time.perf_counter() - t0
+        coord: list[dict] = []
+        if run_coordination_detectors and trace:
+            findings = _run_library_on_trace(
+                trace,
+                initial_state=initial_state,
+                baseline_state=final_state,
+                roles_by_agent=coordination_roles,
+            )
+            coord = [f.model_dump(mode="json") for f in findings]
+        return ForkBranch(
+            initial_state=deepcopy(initial_state),
+            trace=trace,
+            final_state=final_state,
+            duration_s=duration,
+            coordination_findings=coord,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return ForkBranch(
+            initial_state=deepcopy(initial_state),
+            trace=[],
+            final_state=None,
+            crashed=True,
+            error=str(exc)[:400],
+            error_type=type(exc).__name__,
+            duration_s=time.perf_counter() - t0,
+        )
+
+
+async def drift_test_fork_async(
+    *,
+    graph: Any,
+    parent_result: AdapterResult,
+    fork_step: int,
+    edits: dict[str, Any],
+    also_apply_at_initial: bool = False,
+    run_coordination_detectors: bool = True,
+    coordination_roles: dict[str, str] | None = None,
+    parent_run_id: str | None = None,
+) -> ForkResult:
+    """Fork a completed adapter run at `fork_step`, apply `edits`, re-run forward.
+
+    v1 execution model: rerun-from-state. We take the state_after of the fork
+    step in the parent's baseline trace, deep-merge `edits` into it, and invoke
+    the graph fresh with that as the initial state. This means the fork branch
+    "starts" from the fork-point state — not resuming a paused execution. Good
+    enough for the common developer case; graphs that depend on tool-call
+    resume position will need the v2 checkpointer path.
+
+    If `also_apply_at_initial=True`, we also invoke the graph with the same
+    edits applied to the parent's original initial state. The two branches
+    are returned together so callers can render the design-diagnostic compare:
+    does editing at initial design converge to the same outcome as editing at
+    fork_step, or does the state carry path-dependence?
+
+    Raises ValueError on out-of-range fork_step or crashed parent baseline.
+    """
+    if parent_result.baseline.crashed:
+        raise ValueError(
+            "cannot fork a run whose baseline crashed (no valid trace to fork from)"
+        )
+    trace = parent_result.baseline.trace
+    if not trace:
+        raise ValueError(
+            "parent run has an empty baseline trace — the graph produced no "
+            "streamable super-steps, so there's no fork point"
+        )
+    if fork_step < 1 or fork_step > len(trace):
+        raise ValueError(
+            f"fork_step={fork_step} out of range [1, {len(trace)}] "
+            f"(parent baseline has {len(trace)} steps)"
+        )
+
+    t0 = time.perf_counter()
+    fork_point_state = deepcopy(trace[fork_step - 1].get("state_after") or {})
+    edited_state_at_fork = _deep_merge_edits(fork_point_state, edits or {})
+
+    fork_branch = await _run_one_fork_branch(
+        graph,
+        edited_state_at_fork,
+        run_coordination_detectors=run_coordination_detectors,
+        coordination_roles=coordination_roles,
+    )
+
+    top_branch: ForkBranch | None = None
+    if also_apply_at_initial:
+        edited_initial = _deep_merge_edits(
+            parent_result.baseline.initial_state or {},
+            edits or {},
+        )
+        top_branch = await _run_one_fork_branch(
+            graph,
+            edited_initial,
+            run_coordination_detectors=run_coordination_detectors,
+            coordination_roles=coordination_roles,
+        )
+
+    return ForkResult(
+        parent_run_id=parent_run_id or "",
+        fork_step=fork_step,
+        edits=deepcopy(edits or {}),
+        fork_point_state=fork_point_state,
+        edited_state_at_fork=edited_state_at_fork,
+        fork_branch=fork_branch,
+        top_edited_branch=top_branch,
+        duration_s=time.perf_counter() - t0,
+    )
+
+
+def drift_test_fork(
+    *,
+    graph: Any,
+    parent_result: AdapterResult,
+    fork_step: int,
+    edits: dict[str, Any],
+    also_apply_at_initial: bool = False,
+    run_coordination_detectors: bool = True,
+    coordination_roles: dict[str, str] | None = None,
+    parent_run_id: str | None = None,
+) -> ForkResult:
+    """Synchronous wrapper around `drift_test_fork_async`.
+
+    See `drift_test_fork_async` for arg semantics.
+    """
+    return asyncio.run(
+        drift_test_fork_async(
+            graph=graph,
+            parent_result=parent_result,
+            fork_step=fork_step,
+            edits=edits,
+            also_apply_at_initial=also_apply_at_initial,
+            run_coordination_detectors=run_coordination_detectors,
+            coordination_roles=coordination_roles,
+            parent_run_id=parent_run_id,
+        )
+    )
+
+
 __all__ = [
     "AdapterResult",
     "BaselineResult",
+    "ForkBranch",
+    "ForkResult",
     "PerturbationResult",
     "FieldDivergence",
     "FieldNoiseBand",
     "drift_test",
     "drift_test_async",
+    "drift_test_fork",
+    "drift_test_fork_async",
 ]
