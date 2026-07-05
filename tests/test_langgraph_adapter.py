@@ -29,9 +29,14 @@ import pytest
 from drift.adapters.langgraph import (
     AdapterResult,
     BaselineResult,
+    ForkBranch,
+    ForkResult,
     PerturbationResult,
+    _deep_merge_edits,
     drift_test,
     drift_test_async,
+    drift_test_fork,
+    drift_test_fork_async,
 )
 
 
@@ -1133,3 +1138,288 @@ def test_coordination_library_explicit_roles_passthrough():
     )
     types = {f["failure_type"] for f in result.baseline.coordination_findings}
     assert "verifier_always_approves" in types
+
+
+# ---------------------------------------------------------------------------
+# Fork-edit-replay v1
+# ---------------------------------------------------------------------------
+
+
+class _ForkableGraph:
+    """Streaming graph whose per-node output depends on state — so state
+    edits at fork_step change what downstream nodes emit.
+
+    Nodes:
+      intake:   writes {"case_id": state["case_id"], "stage": "intake_done"}
+      reviewer: writes {"verdict": "approve" if state["case_id"] starts with
+                        "case-" else "reject", "case_id": state["case_id"]}
+      closer:   writes {"case_id": state["case_id"], "status": "closed"}
+    """
+
+    def stream(self, state):
+        running = dict(state)
+        case_id = str(running.get("case_id", "case-unknown"))
+        u1 = {"case_id": case_id, "stage": "intake_done"}
+        running.update(u1)
+        yield {"intake": u1}
+        verdict = "approve" if case_id.startswith("case-") else "reject"
+        u2 = {"case_id": running["case_id"], "verdict": verdict}
+        running.update(u2)
+        yield {"reviewer": u2}
+        u3 = {"case_id": running["case_id"], "status": "closed"}
+        running.update(u3)
+        yield {"closer": u3}
+
+    def invoke(self, state):
+        out = dict(state)
+        for chunk in self.stream(state):
+            for upd in chunk.values():
+                out.update(upd)
+        return out
+
+
+def test_deep_merge_edits_replaces_leaves_and_recurses_dicts():
+    base = {"a": 1, "b": {"c": 2, "d": 3}, "e": [1, 2]}
+    out = _deep_merge_edits(base, {"a": 99, "b": {"c": 42}, "e": ["new"]})
+    assert out == {"a": 99, "b": {"c": 42, "d": 3}, "e": ["new"]}
+    # base is untouched
+    assert base == {"a": 1, "b": {"c": 2, "d": 3}, "e": [1, 2]}
+
+
+def test_deep_merge_edits_dict_over_non_dict_replaces():
+    """When base has a non-dict at a key, edits' dict at same key REPLACES it
+    (no attempt to merge dict into scalar)."""
+    base = {"x": "was_a_string"}
+    out = _deep_merge_edits(base, {"x": {"now": "nested"}})
+    assert out == {"x": {"now": "nested"}}
+
+
+def test_deep_merge_edits_empty_edits_returns_deepcopy_of_base():
+    base = {"a": [1, 2]}
+    out = _deep_merge_edits(base, {})
+    assert out == base
+    assert out is not base
+    assert out["a"] is not base["a"]
+
+
+def test_fork_basic_state_edit_changes_downstream_output():
+    """Fork at step 1 (intake_done), edit case_id, verify the reviewer's
+    downstream output reflects the edit."""
+    graph = _ForkableGraph()
+    parent = drift_test(
+        graph=graph,
+        initial_state={"case_id": "case-42"},
+        intensity="off",
+        seed=1,
+    )
+    assert not parent.baseline.crashed
+    assert len(parent.baseline.trace) == 3
+    # Baseline reviewer sees case-42 → approve
+    assert parent.baseline.final_state["verdict"] == "approve"
+
+    fork = drift_test_fork(
+        graph=graph,
+        parent_result=parent,
+        fork_step=1,
+        edits={"case_id": "nope-99"},  # doesn't start with 'case-' → reject
+    )
+    assert fork.fork_step == 1
+    assert fork.edited_state_at_fork["case_id"] == "nope-99"
+    assert fork.fork_branch.final_state is not None
+    assert fork.fork_branch.final_state["verdict"] == "reject"
+    assert fork.top_edited_branch is None
+
+
+def test_fork_reports_final_state_and_trace():
+    """Fork branch's trace should be a full downstream run (all 3 nodes here
+    since we rerun the whole graph from the fork point)."""
+    graph = _ForkableGraph()
+    parent = drift_test(
+        graph=graph,
+        initial_state={"case_id": "case-1"},
+        intensity="off",
+        seed=1,
+    )
+    fork = drift_test_fork(
+        graph=graph,
+        parent_result=parent,
+        fork_step=2,
+        edits={"verdict": "reject"},
+    )
+    assert fork.fork_branch.trace, "fork branch should have a trace"
+    assert fork.fork_branch.final_state["status"] == "closed"
+
+
+def test_fork_top_vs_bottom_opt_in_populates_both_branches():
+    """also_apply_at_initial=True produces both the fork-edited branch
+    and the initial-state-edited branch."""
+    graph = _ForkableGraph()
+    parent = drift_test(
+        graph=graph,
+        initial_state={"case_id": "case-orig"},
+        intensity="off",
+        seed=1,
+    )
+    fork = drift_test_fork(
+        graph=graph,
+        parent_result=parent,
+        fork_step=1,
+        edits={"case_id": "bad-id"},   # bad prefix → reject
+        also_apply_at_initial=True,
+    )
+    assert fork.fork_branch.final_state["verdict"] == "reject"
+    assert fork.top_edited_branch is not None
+    assert fork.top_edited_branch.final_state["verdict"] == "reject"
+    # Top branch is a fresh run from step 0, so its trace also has 3 steps.
+    assert len(fork.top_edited_branch.trace) == 3
+
+
+def test_fork_raises_on_out_of_range_fork_step():
+    graph = _ForkableGraph()
+    parent = drift_test(
+        graph=graph,
+        initial_state={"case_id": "case-x"},
+        intensity="off",
+        seed=1,
+    )
+    with pytest.raises(ValueError, match="out of range"):
+        drift_test_fork(
+            graph=graph,
+            parent_result=parent,
+            fork_step=99,
+            edits={},
+        )
+    with pytest.raises(ValueError, match="out of range"):
+        drift_test_fork(
+            graph=graph,
+            parent_result=parent,
+            fork_step=0,
+            edits={},
+        )
+
+
+def test_fork_raises_on_crashed_baseline():
+    """Fork requires a completed baseline trace to fork from."""
+    class _AlwaysCrashes:
+        def stream(self, state):
+            raise RuntimeError("kaboom")
+            yield  # unreachable
+
+    parent = drift_test(
+        graph=_AlwaysCrashes(),
+        initial_state={"case_id": "case-1"},
+        intensity="off",
+        seed=1,
+    )
+    assert parent.baseline.crashed
+    with pytest.raises(ValueError, match="baseline crashed"):
+        drift_test_fork(
+            graph=_AlwaysCrashes(),
+            parent_result=parent,
+            fork_step=1,
+            edits={},
+        )
+
+
+def test_fork_runs_coordination_detectors_on_forked_trace():
+    """After forking, the coord detectors should scan the forked trace.
+    Craft a graph that fires contradictory_decisions after we edit a field."""
+
+    class _ContradictoryEditableGraph:
+        """Baseline: two reviewers agree on approve.
+        After fork editing forced_verdict=reject on step 1, second reviewer
+        writes reject → contradiction."""
+
+        def stream(self, state):
+            running = dict(state)
+            forced = running.get("forced_verdict", "approve")
+            u1 = {"case_id": "case-1", "verdict": "approve"}
+            running.update(u1)
+            yield {"reviewer_a": u1}
+            # reviewer_b reads forced_verdict from state
+            u2 = {"case_id": "case-1", "verdict": forced}
+            running.update(u2)
+            yield {"reviewer_b": u2}
+
+        def invoke(self, state):
+            out = dict(state)
+            for chunk in self.stream(state):
+                for upd in chunk.values():
+                    out.update(upd)
+            return out
+
+    graph = _ContradictoryEditableGraph()
+    # Baseline: no forced_verdict → both approve, no contradiction
+    parent = drift_test(
+        graph=graph,
+        initial_state={"forced_verdict": "approve"},
+        intensity="off",
+        seed=1,
+    )
+    parent_types = {f["failure_type"] for f in parent.baseline.coordination_findings}
+    assert "contradictory_decisions" not in parent_types
+
+    # Fork at step 1: edit forced_verdict to "reject"
+    fork = drift_test_fork(
+        graph=graph,
+        parent_result=parent,
+        fork_step=1,
+        edits={"forced_verdict": "reject"},
+    )
+    fork_types = {f["failure_type"] for f in fork.fork_branch.coordination_findings}
+    assert "contradictory_decisions" in fork_types
+
+
+def test_fork_async_variant_runs_from_running_loop():
+    """drift_test_fork_async should be awaitable directly."""
+
+    graph = _ForkableGraph()
+    parent = drift_test(
+        graph=graph,
+        initial_state={"case_id": "case-a"},
+        intensity="off",
+        seed=1,
+    )
+
+    async def _run():
+        return await drift_test_fork_async(
+            graph=graph,
+            parent_result=parent,
+            fork_step=1,
+            edits={"case_id": "case-b"},
+        )
+
+    fork = asyncio.run(_run())
+    assert fork.fork_branch.final_state["case_id"] == "case-b"
+
+
+def test_fork_result_n_coordination_findings_property_sums_both_branches():
+    """Convenience property: total coord findings across both branches."""
+
+    class _CrashGraph:
+        def stream(self, state):
+            u1 = {"case_id": "case-1", "verdict": "approve"}
+            yield {"a": u1}
+            u2 = {"case_id": "case-1", "verdict": "reject"}
+            yield {"b": u2}
+
+    graph = _CrashGraph()
+    parent = drift_test(
+        graph=graph,
+        initial_state={},
+        intensity="off",
+        seed=1,
+    )
+    fork = drift_test_fork(
+        graph=graph,
+        parent_result=parent,
+        fork_step=1,
+        edits={},
+        also_apply_at_initial=True,
+    )
+    # Both branches produce the same 2-step trace and both fire contradictory_decisions.
+    assert fork.n_coordination_findings == (
+        len(fork.fork_branch.coordination_findings)
+        + len(fork.top_edited_branch.coordination_findings)
+    )
+    assert fork.n_coordination_findings >= 2
