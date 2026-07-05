@@ -1327,3 +1327,30 @@ input[type="range"]::-moz-range-thumb {
 .failure-cell.sev-warn .fcount { color: #fbbf24; }
 #mast-result { margin-top: 16px; }
 #mast-result .card + .card { margin-top: 16px; }
+
+/* ---- fork-edit-replay v1 ---- */
+#fork-result-panel {
+  padding: 14px 16px;
+  background: var(--bg-elev);
+}
+.fork-branches {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+  margin-top: 10px;
+}
+@media (min-width: 900px) {
+  .fork-branches { grid-template-columns: 1fr 1fr; }
+}
+.fork-branch {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.fork-branch-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 6px;
+  color: var(--text-strong, inherit);
+}
