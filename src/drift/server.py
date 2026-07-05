@@ -118,6 +118,37 @@ class AdapterDemoRequest(BaseModel):
     similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
 
+class AdapterForkRequest(BaseModel):
+    """Fork-edit-replay a completed adapter run at a specific step.
+
+    Design spec: docs/design/fork_edit_replay_v1.md. Deferred features live
+    in memory/feature_ideas.md; ship v1 (state edit + top-vs-bottom compare)
+    only.
+
+    The client passes back the parent's baseline trace + initial state (data
+    it already received from /api/adapter-demo). The server rebuilds the
+    graph (using the same graph_name + state_overrides) and calls the fork
+    API. This avoids a server-side graph cache — trade a redundant graph
+    build for statelessness. Cheap.
+    """
+    # Same fields as AdapterDemoRequest for graph rebuild.
+    graph_name: str = "ticket_triage"
+    state_overrides: dict[str, Any] = Field(default_factory=dict)
+
+    # Parent baseline the client received from /api/adapter-demo.
+    parent_baseline_trace: list[dict[str, Any]] = Field(default_factory=list)
+    parent_initial_state: dict[str, Any] = Field(default_factory=dict)
+
+    # Fork params.
+    fork_step: int = Field(..., ge=1, le=500)
+    edits: dict[str, Any] = Field(default_factory=dict)
+    also_apply_at_initial: bool = False
+
+    # Optional coordination role overrides for the coord detectors on the
+    # forked trace.
+    coordination_roles: dict[str, str] = Field(default_factory=dict)
+
+
 # ---- adapter graph registry -----------------------------------------------
 
 def _list_adapter_graphs() -> list[dict[str, Any]]:
@@ -520,6 +551,81 @@ def create_app() -> FastAPI:
             "summary_lines": result.summary_lines(),
             "baseline": _baseline_dict(result.baseline),
             "perturbations": [_pert_dict(p) for p in result.perturbations],
+        }
+
+    @app.post("/api/adapter-fork")
+    async def adapter_fork(req: AdapterForkRequest) -> dict[str, Any]:
+        """Fork-edit-replay a completed adapter run.
+
+        Design spec: docs/design/fork_edit_replay_v1.md.
+
+        Client sends: graph_name + state_overrides (to rebuild the same
+        graph), parent baseline trace + initial state (to fork from),
+        fork_step + edits (what to change), and the top-vs-bottom opt-in.
+        Server rebuilds the graph, wraps the parent data into the shape
+        drift_test_fork_async expects, and runs the fork.
+        """
+        from drift.adapters.langgraph import (
+            AdapterResult,
+            BaselineResult,
+            drift_test_fork_async,
+        )
+
+        try:
+            graph, _initial_ignored, graph_meta = _build_demo_graph(
+                req.graph_name, req.state_overrides
+            )
+        except (ValueError, ImportError, RuntimeError) as e:
+            raise HTTPException(400, str(e))
+
+        # Wrap the parent-baseline snapshot into an AdapterResult shape so
+        # drift_test_fork_async can validate + read from it. Only baseline
+        # is populated — we don't need the parent's perturbations here.
+        parent_shim = AdapterResult(
+            baseline=BaselineResult(
+                initial_state=dict(req.parent_initial_state),
+                trace=list(req.parent_baseline_trace),
+            ),
+        )
+
+        try:
+            fork = await drift_test_fork_async(
+                graph=graph,
+                parent_result=parent_shim,
+                fork_step=req.fork_step,
+                edits=req.edits,
+                also_apply_at_initial=req.also_apply_at_initial,
+                coordination_roles=req.coordination_roles or None,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+        def _branch_dict(b: Any) -> dict[str, Any]:
+            return {
+                "initial_state": b.initial_state,
+                "trace": b.trace,
+                "final_state": b.final_state,
+                "crashed": b.crashed,
+                "error": b.error,
+                "error_type": b.error_type,
+                "duration_s": round(b.duration_s, 4),
+                "coordination_findings": b.coordination_findings,
+            }
+
+        return {
+            "graph_name": graph_meta["name"],
+            "graph_description": graph_meta["description"],
+            "fork_step": fork.fork_step,
+            "edits": fork.edits,
+            "fork_point_state": fork.fork_point_state,
+            "edited_state_at_fork": fork.edited_state_at_fork,
+            "fork_branch": _branch_dict(fork.fork_branch),
+            "top_edited_branch": (
+                _branch_dict(fork.top_edited_branch)
+                if fork.top_edited_branch else None
+            ),
+            "n_coordination_findings": fork.n_coordination_findings,
+            "duration_s": round(fork.duration_s, 4),
         }
 
     # ---- MAST demo --------------------------------------------------------
