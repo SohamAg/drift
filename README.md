@@ -91,6 +91,31 @@ validated** on real LangGraph code
 (`examples/adapters/run_drift_on_adversarial_mas.py`), not just synthetic
 fixtures.
 
+### 4. Fork-edit-replay — counterfactual state edits at any trace step
+Once you have a coord finding, `drift_test_fork()` lets you edit the state
+at any super-step and re-run the graph forward from there. The forked
+branch's trace + coord findings render side-by-side with the parent's, so
+you can verify a hypothesized fix without changing your graph code.
+
+```python
+from drift.adapters.langgraph import drift_test, drift_test_fork
+parent = drift_test(graph=graph, initial_state={...})
+fork = drift_test_fork(
+    graph=graph,
+    parent_result=parent,
+    fork_step=1,
+    edits={"ticket_id": "TICKET-42"},     # sparse deep-merge into state_after
+    also_apply_at_initial=True,            # top-vs-bottom compare (design diagnostic)
+)
+```
+
+Diagnostic, not therapeutic. If both branches close the finding, the fix is
+legitimate at both initial-design AND local level. If only the fork closes
+it, there's path-dependence — the fix works locally but wouldn't survive a
+redesign upstream. See [`docs/design/fork_edit_replay_v1.md`](docs/design/fork_edit_replay_v1.md)
+for the design spec and [`examples/adapters/fork_edit_demo.py`](examples/adapters/fork_edit_demo.py)
+for a runnable end-to-end demo.
+
 ### Plus — optional LLM judge over the full trace
 Six-category taxonomy (`coordination_contradiction`, `grounding_failure`,
 `state_drift`, `emergent_decay`, `gate_bypass`, `user_guideline`) applied to
@@ -201,7 +226,7 @@ e:\drift\
 ├── data/external/mast/    — MAST dataset (gitignored)
 ├── docs/detectors/        — Curated per-detector explainer docs
 ├── results/               — Saved experiment JSON (gitignored)
-└── tests/                 — Pytest suite (187 tests)
+└── tests/                 — Pytest suite (198 tests)
 ```
 
 > **2026-06-29 cleanup:** the native per-tick simulator (topologies / scenarios
@@ -217,11 +242,12 @@ $env:PYTHONPATH = "e:\drift\src"
 python -m pytest -q
 ```
 
-187 tests cover: chaos engine (schema-walked perturbations + intensities
+198 tests cover: chaos engine (schema-walked perturbations + intensities
 including exhaustive), tiered divergence cascade + UNCHANGED audit,
 LLM judge (6-family taxonomy + user guidelines + dedup), all 6 coordination
 detectors with synthetic positive + negative + cross-specificity fixtures,
-LangGraph adapter integration paths.
+LangGraph adapter integration paths, fork-edit-replay (state edit +
+top-vs-bottom compare).
 
 ---
 
