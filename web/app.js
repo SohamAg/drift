@@ -292,6 +292,9 @@
           similarity_threshold: Number.isFinite(similarity_threshold) ? similarity_threshold : 0.85,
         },
       });
+      // Stash the state_overrides so the fork endpoint can rebuild the
+      // same graph. Client-only side-channel; server won't see this key.
+      data._state_overrides = state_overrides;
       renderAdapterResult(data);
       $('#adapter-result').classList.remove('hidden');
       $('#adapter-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -327,6 +330,19 @@
       el('pre', { class: 'mono', text: JSON.stringify(step.state_after || {}, null, 2) }),
     ]);
 
+    // Fork-edit-replay button — only on baseline steps (opts.forkable)
+    if (opts.forkable) {
+      const forkBtn = el('button', {
+        class: 'btn small ghost',
+        style: 'margin-top: 6px;',
+        onclick: (e) => {
+          e.stopPropagation();
+          openForkModal(step);
+        },
+      }, ['🔱 fork from here']);
+      detail.appendChild(forkBtn);
+    }
+
     const row = el('div', { class: 'trace-step' + (opts.startExpanded ? ' expanded' : '') }, [
       el('div', { class: 'trace-step-num', text: '#' + step.step }),
       el('div', { class: 'trace-step-body' }, [
@@ -340,6 +356,195 @@
       row.classList.toggle('expanded');
     });
     return row;
+  }
+
+  // ---- fork-edit-replay ---------------------------------------------------
+  //
+  // Design spec: docs/design/fork_edit_replay_v1.md. v1: state edit + optional
+  // top-vs-bottom compare. Deferred: bounded replay, consistency check, prompt
+  // editing (all captured in memory/feature_ideas.md).
+
+  function openForkModal(step) {
+    if (!_lastAdapterRun) {
+      toast('No adapter run loaded — run drift_test first', 'error');
+      return;
+    }
+    const stateAfter = step.state_after || {};
+
+    // Backdrop.
+    const backdrop = el('div', { class: 'modal-backdrop', tabindex: '-1' });
+    const close = () => backdrop.remove();
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+
+    const helpText =
+      'Edit state below (JSON). Sparse-merged into state_after at this ' +
+      'step — leaves you don\'t touch are preserved. Lists REPLACE (no ' +
+      'splicing in v1). Submit to fork: server reruns the graph from this ' +
+      'edited state forward.';
+
+    const editTA = el('textarea', {
+      class: 'mono',
+      style: 'width: 100%; height: 220px; font-size: 12px;',
+    });
+    editTA.value = JSON.stringify(stateAfter, null, 2);
+
+    const alsoInitial = el('input', { type: 'checkbox', id: 'fork-also-initial' });
+    const submitBtn = el('button', { class: 'btn primary', text: 'Fork + replay' });
+    const cancelBtn = el('button', { class: 'btn ghost', text: 'Cancel', onclick: close });
+    const statusLine = el('div', { class: 'muted', style: 'margin-top: 6px;' });
+
+    submitBtn.addEventListener('click', async () => {
+      let edited;
+      try {
+        edited = JSON.parse(editTA.value);
+      } catch (e) {
+        statusLine.textContent = 'Invalid JSON: ' + e.message;
+        return;
+      }
+      // Build sparse edits: whatever the user changed vs original state_after.
+      const edits = diffStateForFork(stateAfter, edited);
+      if (Object.keys(edits).length === 0) {
+        statusLine.textContent = 'No edits detected — modify the JSON above first.';
+        return;
+      }
+      submitBtn.disabled = true;
+      statusLine.textContent = 'Running forked replay…';
+      try {
+        const fork = await api('/api/adapter-fork', {
+          method: 'POST',
+          body: {
+            graph_name: _lastAdapterRun.graph_name,
+            state_overrides: _lastAdapterRun._state_overrides || {},
+            parent_baseline_trace: _lastAdapterRun.baseline.trace || [],
+            parent_initial_state: _lastAdapterRun.baseline.initial_state || {},
+            fork_step: step.step,
+            edits,
+            also_apply_at_initial: alsoInitial.checked,
+          },
+        });
+        close();
+        renderForkResult(fork, step);
+      } catch (e) {
+        statusLine.textContent = 'Fork failed: ' + e.message;
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    const modal = el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, [
+      el('div', { class: 'modal-head' }, [
+        el('h2', { text: `🔱 Fork from step #${step.step} (${step.node})` }),
+        el('button', { class: 'btn ghost modal-close', text: '×', onclick: close, 'aria-label': 'close' }),
+      ]),
+      el('div', { class: 'modal-body' }, [
+        el('div', { class: 'help', style: 'margin-bottom: 8px;', text: helpText }),
+        editTA,
+        el('div', { style: 'margin-top: 10px; display: flex; align-items: center; gap: 6px;' }, [
+          alsoInitial,
+          el('label', { for: 'fork-also-initial', class: 'help',
+            text: 'also apply these edits at initial state (top-vs-bottom compare)' }),
+        ]),
+        statusLine,
+      ]),
+      el('div', { class: 'modal-foot' }, [cancelBtn, submitBtn]),
+    ]);
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    editTA.focus();
+  }
+
+  function diffStateForFork(before, after) {
+    // Emit only the top-level keys that changed. Deep merge on the server
+    // handles nested; but for edit intent, if the user changed a nested
+    // key we send the whole subtree of that top-level key. Simple.
+    const out = {};
+    const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
+    for (const k of keys) {
+      const a = before ? before[k] : undefined;
+      const b = after ? after[k] : undefined;
+      if (JSON.stringify(a) !== JSON.stringify(b)) {
+        out[k] = b;
+      }
+    }
+    return out;
+  }
+
+  function renderForkResult(fork, forkedFromStep) {
+    // Insert (or replace) a fork-result panel below the baseline trace.
+    const container = $('#adapter-baseline-trace');
+    if (!container) return;
+    // Remove any previous fork panel.
+    const prior = document.getElementById('fork-result-panel');
+    if (prior) prior.remove();
+
+    const panel = el('div', { id: 'fork-result-panel', class: 'card',
+                              style: 'margin-top: 14px; border: 1px solid var(--accent, #7aa2f7);' });
+    panel.appendChild(el('div', { class: 'card-title',
+      text: `🔱 Fork replay — from step #${fork.fork_step} of the baseline` }));
+
+    const kvHost = el('div', { class: 'kv' });
+    const kvs = [
+      ['Edits', Object.keys(fork.edits).join(', ') || '(none)'],
+      ['Fork branch',
+        fork.fork_branch.crashed
+          ? `CRASHED — ${fork.fork_branch.error_type}`
+          : `${(fork.fork_branch.trace || []).length} step(s)`],
+    ];
+    if (fork.top_edited_branch) {
+      kvs.push(['Top-edit branch',
+        fork.top_edited_branch.crashed
+          ? `CRASHED — ${fork.top_edited_branch.error_type}`
+          : `${(fork.top_edited_branch.trace || []).length} step(s)`]);
+    }
+    if (fork.n_coordination_findings != null) {
+      kvs.push(['Coord findings (total)', String(fork.n_coordination_findings)]);
+    }
+    kvs.push(['Duration', `${fork.duration_s}s`]);
+    kvs.forEach(([k, v]) => {
+      kvHost.appendChild(el('span', { class: 'k', text: k }));
+      kvHost.appendChild(el('span', { class: 'v', text: v }));
+    });
+    panel.appendChild(kvHost);
+
+    // The two branches side by side.
+    const branches = el('div', { class: 'fork-branches' });
+    branches.appendChild(renderForkBranch('Fork-edited (from step #' + fork.fork_step + ')', fork.fork_branch));
+    if (fork.top_edited_branch) {
+      branches.appendChild(renderForkBranch('Same edits at initial state (top)', fork.top_edited_branch));
+    }
+    panel.appendChild(branches);
+
+    container.appendChild(panel);
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function renderForkBranch(title, branch) {
+    const box = el('div', { class: 'fork-branch' });
+    box.appendChild(el('div', { class: 'fork-branch-title', text: title }));
+    if (branch.crashed) {
+      box.appendChild(el('div', { class: 'pill danger', text: 'CRASHED' }));
+      box.appendChild(el('pre', { class: 'mono', text: `${branch.error_type}: ${branch.error}` }));
+      return box;
+    }
+    box.appendChild(el('details', { style: 'margin-top: 6px;' }, [
+      el('summary', { class: 'help', text: `Initial state (${Object.keys(branch.initial_state || {}).length} keys)` }),
+      el('pre', { class: 'mono', style: 'max-height: 160px; overflow: auto; font-size: 11px;',
+                 text: JSON.stringify(branch.initial_state || {}, null, 2) }),
+    ]));
+    box.appendChild(el('div', { class: 'help', style: 'margin: 6px 0 4px 0;',
+      text: `Trace — ${(branch.trace || []).length} step(s):` }));
+    box.appendChild(renderTraceList(branch.trace || []));
+    box.appendChild(el('details', { style: 'margin-top: 6px;' }, [
+      el('summary', { class: 'help', text: `Final state (${Object.keys(branch.final_state || {}).length} keys)` }),
+      el('pre', { class: 'mono', style: 'max-height: 160px; overflow: auto; font-size: 11px;',
+                 text: JSON.stringify(branch.final_state || {}, null, 2) }),
+    ]));
+    if ((branch.coordination_findings || []).length) {
+      box.appendChild(el('div', { class: 'muted', style: 'margin-top: 6px;',
+        text: 'Coord findings on this branch:' }));
+      branch.coordination_findings.forEach(f => box.appendChild(renderCoordFinding(f)));
+    }
+    return box;
   }
 
   function renderTraceList(trace, opts = {}) {
@@ -423,8 +628,8 @@
       ]));
 
       base.appendChild(el('div', { class: 'help', style: 'margin: 8px 0 4px 0;',
-                                   text: `Trace — ${(b.trace || []).length} super-step(s):` }));
-      base.appendChild(renderTraceList(b.trace));
+                                   text: `Trace — ${(b.trace || []).length} super-step(s) (each row expandable, expand to fork):` }));
+      base.appendChild(renderTraceList(b.trace, { forkable: true }));
 
       base.appendChild(el('details', { style: 'margin-top: 10px;' }, [
         el('summary', { class: 'help', text: `Final state (${Object.keys(b.final_state || {}).length} keys)` }),
