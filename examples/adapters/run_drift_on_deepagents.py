@@ -43,19 +43,56 @@ from drift.failures.judge import build_judge  # noqa: E402
 RESULTS_DIR = REPO_ROOT / "results" / "deepagents"
 
 
-def _build_deepagent(model: str = "gpt-4o-mini"):
-    """Build a minimal deepagent — no external tools, just its built-in
-    planning + sub-agent + filesystem tools. Simplest legitimate config.
+def _build_deepagent(model: str = "gpt-4o-mini", with_subagents: bool = False):
+    """Build a deepagent. Without `with_subagents`, uses just built-in
+    middleware (fs/planning/subagent tools) — thin trace. With subagents,
+    configures researcher + summarizer + critic sub-agents so drift's
+    detectors see actual delegation across nodes.
     """
     from deepagents import create_deep_agent
 
+    subagents = None
+    if with_subagents:
+        subagents = [
+            {
+                "name": "researcher",
+                "description": "Researches a topic and reports findings.",
+                "system_prompt": (
+                    "You are a researcher. When given a topic, produce a "
+                    "concise list of 3-4 key facts. Keep it to under 100 words."
+                ),
+            },
+            {
+                "name": "critic",
+                "description": (
+                    "Critiques a set of findings and flags any it disagrees "
+                    "with or thinks are wrong."
+                ),
+                "system_prompt": (
+                    "You are a skeptical critic. Given a set of findings, "
+                    "identify any that seem overstated, wrong, or missing "
+                    "important nuance. Keep your critique brief."
+                ),
+            },
+            {
+                "name": "summarizer",
+                "description": "Summarizes findings into a final response.",
+                "system_prompt": (
+                    "You are a summarizer. Given findings and any critique, "
+                    "produce a final 3-paragraph summary."
+                ),
+            },
+        ]
+
     return create_deep_agent(
         model=f"openai:{model}",
-        tools=[],   # rely on built-in fs / planning / subagent tools
+        tools=[],
+        subagents=subagents,
         system_prompt=(
-            "You are a research assistant. Break the task down into steps "
-            "and delegate subtasks to sub-agents when appropriate. Keep "
-            "your final answer under 5 sentences."
+            "You are a research supervisor. Delegate research to the "
+            "researcher sub-agent, then have the critic review the findings, "
+            "then have the summarizer produce a final summary. Keep the "
+            "final answer under 5 sentences."
         ),
     )
 
@@ -159,14 +196,18 @@ def main() -> None:
     p.add_argument("--save-json", action="store_true")
     p.add_argument("--divergence-mode", default="tiered")
     p.add_argument("--max-judge-calls", type=int, default=6)
+    p.add_argument("--with-subagents", action="store_true",
+                   help="configure researcher/critic/summarizer sub-agents "
+                        "for richer inter-agent traces")
     args = p.parse_args()
 
     if not os.environ.get("OPENAI_API_KEY"):
         sys.exit("OPENAI_API_KEY not set")
 
-    print(f"building deepagent (model={args.model})...", file=sys.stderr)
+    print(f"building deepagent (model={args.model}, subagents={args.with_subagents})...",
+          file=sys.stderr)
     try:
-        agent = _build_deepagent(model=args.model)
+        agent = _build_deepagent(model=args.model, with_subagents=args.with_subagents)
     except ImportError as e:
         sys.exit(f"deepagents not installed: {e}")
     initial = _initial_state(args.question)
