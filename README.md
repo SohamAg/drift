@@ -266,14 +266,28 @@ top-vs-bottom compare).
   The noise floor measurement helps, but the threshold itself is one
   number applied across all fields — a per-field comparator override
   would be more correct.
-- **3 coordination detectors is a starting kit, not a complete library.**
+- **6 coordination detectors is a starting kit, not a complete library.**
   The detectors target universal patterns (auto-approving verifier, infinite
-  handoff, excess fanout). Domain-specific failures need the user-guideline
-  mechanism — which is currently a free-text textarea, not a structured DSL.
-- **Empirical evidence is on one library** (langgraph-supervisor). Drift
-  hasn't been shown to catch things engineers couldn't find by reading
-  their own code; only that it surfaces them more systematically + with
-  lower friction.
+  handoff, excess fanout, hallucinated / stale entity references, contradictory
+  decisions). Domain-specific failures need the user-guideline mechanism —
+  which is currently a free-text textarea, not a structured DSL.
+- **Coord detectors observe LangGraph super-steps, not tool-call internals.**
+  Some frameworks (e.g. [deepagents](https://github.com/langchain-ai/deepagents))
+  express sub-agent delegation as **tool calls the main `model` node makes**,
+  not as separate graph nodes. From `.stream()`'s perspective the sub-agent
+  activity is opaque — you see `model` → `tools` → `model` → `tools`, and the
+  multi-agent behavior happens inside the `tools` node. Drift's detectors
+  can't see coordination they can't observe. This is architectural, not a
+  detector-quality issue. **Drift's coord library is sized for LangGraph MAS
+  where multi-agent behavior is expressed as graph nodes** (supervisor
+  patterns, explicit routing, `Send()` fan-outs). Empirically confirmed on
+  deepagents across 3 runs — silent detectors on a real 3rd-party MAS.
+- **Empirical evidence is on two libraries** — [langgraph-supervisor-py](https://github.com/langchain-ai/langgraph-supervisor-py)
+  (5-specialist extended run surfaced 2 real `coordination_contradiction`
+  findings from the LLM judge, zero false positives from structured detectors)
+  and deepagents (silent — see architectural caveat above). Drift hasn't been
+  shown to catch things engineers couldn't find by reading their own code;
+  only that it surfaces them more systematically + with lower friction.
 
 See `FUTURE_DIRECTIONS.md` and the post-compaction kickoff memory file for
 the next builds.
