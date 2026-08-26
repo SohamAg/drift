@@ -122,6 +122,29 @@ Six-category taxonomy (`coordination_contradiction`, `grounding_failure`,
 the per-super-step trace. Catches semantic coordination issues a single-step
 detector can't see. Add custom rules in plain English via `user_guidelines=`.
 
+### 5. Evidence packs — `drift report`
+A run's raw JSON is not what a reviewer, auditor, or insurer consumes. `drift
+report` renders it into a single self-contained HTML document: what was tested,
+what chaos was applied, what diverged, every finding with its evidence, the
+counterfactual fork proof, and a sha256 of the source run for integrity.
+
+```powershell
+python -m drift report results/<run>.json `
+    --fork results/fork_demo/<fork>.json `
+    --target "my-agent-system" `
+    --out evidence.html
+```
+
+No external fonts, scripts, or network fetches — archivable and print-to-PDF
+clean. This is the shape emerging agent-certification schemes ask for: AIUC-1
+(the standard behind the first insured AI-agent policies) requires evidence of
+thousands of adversarial simulations on a **quarterly re-test cadence**. Drift
+generates the simulations and the document in one pass.
+
+[**→ See a real generated report**](https://claude.ai/code/artifact/3c12d718-8604-4062-a7f9-7a0680b59f34)
+(langgraph-supervisor, LangChain's own multi-agent demo — 12 runs, 2 real
+coordination bugs, fix verified by fork-replay).
+
 ---
 
 ## Web UI

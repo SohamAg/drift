@@ -14,10 +14,14 @@ verify finding goes away.
 
 Run:
     PYTHONPATH=src python examples/adapters/fork_edit_demo.py
+    PYTHONPATH=src python examples/adapters/fork_edit_demo.py --save-json
 """
 from __future__ import annotations
 
+import argparse
+import json
 import sys
+import time
 import warnings
 from pathlib import Path
 
@@ -39,6 +43,11 @@ def _summarize_findings(findings: list[dict]) -> str:
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--save-json", action="store_true",
+                    help="save a fork-proof JSON consumable by `drift report --fork`")
+    args = ap.parse_args()
+
     graph = _build_hallucination_mas()
 
     print("=" * 74)
@@ -102,6 +111,25 @@ def main() -> None:
         print("    -> the fix didn't close the finding; hypothesis was wrong.")
 
     print(f"\n    fork duration: {fork.duration_s:.3f}s (both branches combined)")
+
+    if args.save_json:
+        out_dir = REPO_ROOT / "results" / "fork_demo"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "mas": "hallucination_mas (adversarial demo)",
+            "finding_type": "hallucinated_reference",
+            "fork_step": 1,
+            "edits": {"ticket_id": "TICKET-42"},
+            "baseline_findings": parent.baseline.coordination_findings,
+            "fork_findings": fork.fork_branch.coordination_findings,
+            "top_findings": fork.top_edited_branch.coordination_findings,
+            "fork_closed": not fork_still_fires,
+            "top_closed": not top_still_fires,
+            "duration_s": fork.duration_s,
+        }
+        path = out_dir / f"fork_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        print(f"    fork proof written to {path.relative_to(REPO_ROOT)}")
 
 
 if __name__ == "__main__":

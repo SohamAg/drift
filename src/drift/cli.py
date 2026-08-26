@@ -61,6 +61,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    from drift.report import write_report
+
+    out = write_report(
+        args.results,
+        fork_path=args.fork,
+        out_path=args.out,
+        title=args.title,
+        target_name=args.target,
+    )
+    print(f"evidence report written to {out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _load_dotenv()
     parser = argparse.ArgumentParser(
@@ -74,9 +88,23 @@ def main(argv: list[str] | None = None) -> int:
     srv_p.add_argument("--port", type=int, default=8765)
     srv_p.add_argument("--reload", action="store_true", help="auto-reload on code changes (dev)")
 
+    rep_p = sub.add_parser(
+        "report",
+        help="render a saved results JSON into a self-contained HTML evidence report",
+    )
+    rep_p.add_argument("results", help="path to a runner results JSON")
+    rep_p.add_argument("--fork", default=None,
+                       help="optional fork-edit-replay proof JSON (fork_edit_demo --save-json)")
+    rep_p.add_argument("--out", default=None,
+                       help="output HTML path (default: <results>.report.html)")
+    rep_p.add_argument("--title", default=None, help="report title")
+    rep_p.add_argument("--target", default=None, help="target system name shown in the header")
+
     args = parser.parse_args(argv)
     if args.cmd == "serve":
         return cmd_serve(args)
+    if args.cmd == "report":
+        return cmd_report(args)
     parser.print_help()
     return 1
 
