@@ -21,3 +21,5 @@ data/
 .vscode/mcp.json
 .mcp.json
 .env
+# target-system venv (disposable)
+.venv-targets/
