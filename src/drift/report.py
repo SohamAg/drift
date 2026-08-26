@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-__all__ = ["load_run", "render_report", "write_report"]
+__all__ = ["NotADriftRun", "load_run", "render_report", "write_report"]
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +80,39 @@ def _norm_question(q: dict) -> dict:
     }
 
 
+#: A flat (single-run) results file must carry at least one of these keys to
+#: be treated as a drift adapter run. Without this check, unrelated JSON in
+#: results/ (judge-eval dumps, ad-hoc exports) silently normalizes into an
+#: empty one-scenario "run" and pollutes aggregate views.
+_RUN_MARKERS = (
+    "perturbations",
+    "baseline_trace_steps",
+    "baseline_judge",
+    "baseline_coord",
+    "baseline_crashed",
+)
+
+
+class NotADriftRun(ValueError):
+    """Raised when a JSON file under results/ isn't an adapter run."""
+
+
 def load_run(path: str | Path) -> dict:
-    """Load + normalize a results JSON; attach source integrity metadata."""
+    """Load + normalize a results JSON; attach source integrity metadata.
+
+    Raises NotADriftRun if the file doesn't carry adapter-run structure.
+    """
     path = Path(path)
     raw_bytes = path.read_bytes()
     data = json.loads(raw_bytes.decode("utf-8"))
+
+    if not isinstance(data, dict):
+        raise NotADriftRun(f"{path.name}: top level is not an object")
+    if "per_question" not in data and not any(k in data for k in _RUN_MARKERS):
+        raise NotADriftRun(
+            f"{path.name}: no adapter-run markers "
+            f"(expected 'per_question' or one of {_RUN_MARKERS})"
+        )
 
     if "per_question" in data:
         questions = [_norm_question(q) for q in data["per_question"]]

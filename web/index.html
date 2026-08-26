@@ -22,15 +22,54 @@
   </header>
 
   <nav class="tabs" role="tablist">
-    <button class="tab active" data-tab="adapter" role="tab">Adapter</button>
+    <button class="tab active" data-tab="overview" role="tab">Overview</button>
+    <button class="tab"        data-tab="adapter" role="tab">Adapter</button>
     <button class="tab"        data-tab="results" role="tab">Results</button>
     <button class="tab"        data-tab="custom"  role="tab">Custom</button>
   </nav>
 
   <main>
 
+    <!-- ===================== OVERVIEW ===================== -->
+    <section id="tab-overview" class="tab-panel active">
+      <div class="overview-head">
+        <div>
+          <h2>Coordination reliability across every system you've tested</h2>
+          <p class="help">
+            Aggregated from every saved run in <code>results/</code>. Each finding links
+            back to the run that surfaced it; any run can be rendered as a shareable
+            evidence pack.
+          </p>
+        </div>
+        <button type="button" id="overview-refresh" class="ghost-btn">↻ Refresh</button>
+      </div>
+
+      <div id="overview-stats" class="stat-row"></div>
+
+      <div class="card">
+        <h3>Findings <span class="muted" id="overview-findings-count"></span></h3>
+        <p class="help">Every coordination failure drift has surfaced, newest first.</p>
+        <div id="overview-findings" class="empty">Loading…</div>
+      </div>
+
+      <div class="card">
+        <h3>Systems under test</h3>
+        <p class="help">One row per target system, with its full chaos history.</p>
+        <div id="overview-systems" class="empty">Loading…</div>
+      </div>
+
+      <div class="card">
+        <h3>Runs</h3>
+        <p class="help">
+          Every adapter run on disk. <strong>Evidence pack</strong> renders a run into a
+          self-contained HTML document — the artifact a reviewer or auditor consumes.
+        </p>
+        <div id="overview-runs" class="empty">Loading…</div>
+      </div>
+    </section>
+
     <!-- ===================== ADAPTER ===================== -->
-    <section id="tab-adapter" class="tab-panel active">
+    <section id="tab-adapter" class="tab-panel">
       <div class="card">
         <h2>Test a multi-agent graph under chaos</h2>
 

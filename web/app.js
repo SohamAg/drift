@@ -85,10 +85,241 @@
   function activateTab(name) {
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
+    if (name === 'overview') initOverview();
     if (name === 'adapter') initAdapter();
     if (name === 'results') initResults();
   }
   $$('.tab').forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
+
+  // ---------- overview tab -----------------------------------------------
+
+  let _overviewLoaded = false;
+
+  const relTime = (ts) => {
+    if (!ts) return '—';
+    const secs = Date.now() / 1000 - ts;
+    if (secs < 3600) return `${Math.max(1, Math.round(secs / 60))}m ago`;
+    if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+    const days = Math.round(secs / 86400);
+    return days < 30 ? `${days}d ago` : new Date(ts * 1000).toLocaleDateString();
+  };
+
+  function statCard(n, label, tone = '') {
+    return el('div', { class: 'stat' }, [
+      el('div', { class: `stat-n ${tone}`, text: String(n) }),
+      el('div', { class: 'stat-l', text: label }),
+    ]);
+  }
+
+  function renderOverviewStats(d) {
+    const t = d.totals;
+    const host = $('#overview-stats');
+    host.replaceChildren(
+      statCard(t.systems, 'systems tested'),
+      statCard(t.runs, 'runs executed'),
+      statCard(t.perturbations, 'chaos perturbations'),
+      statCard(t.diverged, 'diverged', t.diverged ? 'warn' : ''),
+      statCard(t.crashed, 'crashed', t.crashed ? 'crit' : 'ok'),
+      statCard(t.findings, 'findings', t.findings ? 'crit' : 'ok'),
+    );
+  }
+
+  function renderOverviewFindings(d) {
+    const host = $('#overview-findings');
+    $('#overview-findings-count').textContent =
+      d.findings.length ? `· ${d.findings.length}` : '';
+    if (!d.findings.length) {
+      host.className = 'empty';
+      host.textContent = 'No findings yet. Run a test from the Adapter tab.';
+      return;
+    }
+    host.className = 'finding-feed';
+    host.replaceChildren(...d.findings.map(f =>
+      el('div', { class: 'ov-finding' }, [
+        el('div', { class: 'ov-finding-head' }, [
+          el('span', { class: 'tag-critical', text: f.failure_type }),
+          el('span', { class: 'ov-where', text: f.where || '' }),
+          el('span', { class: 'ov-time', text: relTime(f.modified_ts) }),
+        ]),
+        el('p', { class: 'ov-summary', text: f.summary }),
+        el('button', {
+          class: 'link-btn',
+          text: `↗ ${f.source_path}`,
+          onclick: () => openReportModal(f.source_path),
+        }),
+      ])
+    ));
+  }
+
+  function renderOverviewSystems(d) {
+    const host = $('#overview-systems');
+    if (!d.systems.length) {
+      host.className = 'empty';
+      host.textContent = 'No runs saved yet.';
+      return;
+    }
+    host.className = 'table-wrap';
+    host.replaceChildren(el('table', { class: 'ov-table' }, [
+      el('thead', {}, el('tr', {}, [
+        el('th', { text: 'System' }),
+        el('th', { text: 'Runs' }),
+        el('th', { text: 'Perturbations' }),
+        el('th', { text: 'Findings' }),
+        el('th', { text: 'Agents' }),
+        el('th', { text: 'Last run' }),
+      ])),
+      el('tbody', {}, d.systems.map(s => el('tr', {}, [
+        el('td', {}, el('span', { class: 'ov-sys', text: s.group })),
+        el('td', { class: 'num', text: String(s.n_runs) }),
+        el('td', { class: 'num', text: String(s.n_perturbations) }),
+        el('td', {}, el('span', {
+          class: s.n_findings ? 'tag-critical' : 'tag-quiet',
+          text: String(s.n_findings),
+        })),
+        el('td', { class: 'ov-agents', text: s.agents.length ? s.agents.join(', ') : '—' }),
+        el('td', { class: 'muted', text: relTime(s.last_run_ts) }),
+      ]))),
+    ]));
+  }
+
+  function renderOverviewRuns(d) {
+    const host = $('#overview-runs');
+    if (!d.runs.length) {
+      host.className = 'empty';
+      host.textContent = 'No runs saved yet.';
+      return;
+    }
+    host.className = 'table-wrap';
+    host.replaceChildren(el('table', { class: 'ov-table' }, [
+      el('thead', {}, el('tr', {}, [
+        el('th', { text: 'Run' }),
+        el('th', { text: 'Model' }),
+        el('th', { text: 'Intensity' }),
+        el('th', { text: 'Scenarios' }),
+        el('th', { text: 'Perturbations' }),
+        el('th', { text: 'Findings' }),
+        el('th', { text: 'When' }),
+        el('th', { text: '' }),
+      ])),
+      el('tbody', {}, d.runs.map(r => el('tr', {}, [
+        el('td', {}, [
+          el('div', { class: 'ov-sys', text: r.group }),
+          el('div', { class: 'ov-runname', text: r.name }),
+        ]),
+        el('td', { class: 'muted', text: r.model || '—' }),
+        el('td', { class: 'muted', text: r.intensity || '—' }),
+        el('td', { class: 'num', text: String(r.n_scenarios) }),
+        el('td', { class: 'num', text: String(r.n_perturbations) }),
+        el('td', {}, el('span', {
+          class: r.n_findings ? 'tag-critical' : 'tag-quiet',
+          text: String(r.n_findings),
+        })),
+        el('td', { class: 'muted', text: relTime(r.modified_ts) }),
+        el('td', {}, el('button', {
+          class: 'ghost-btn sm',
+          text: 'Evidence pack',
+          onclick: () => openReportModal(r.path),
+        })),
+      ]))),
+    ]));
+  }
+
+  async function initOverview(force = false) {
+    if (_overviewLoaded && !force) return;
+    try {
+      const d = await api('/api/overview');
+      renderOverviewStats(d);
+      renderOverviewFindings(d);
+      renderOverviewSystems(d);
+      renderOverviewRuns(d);
+      _overviewLoaded = true;
+    } catch (e) {
+      $('#overview-findings').className = 'empty';
+      $('#overview-findings').textContent = `Could not load overview: ${e.message}`;
+    }
+  }
+
+  $('#overview-refresh').addEventListener('click', () => {
+    toast('Refreshing…');
+    initOverview(true);
+  });
+
+  // ---------- evidence pack modal ----------------------------------------
+
+  async function openReportModal(path) {
+    const backdrop = el('div', { class: 'modal-backdrop', tabindex: '-1' });
+    const close = () => backdrop.remove();
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+    });
+
+    const titleInput = el('input', { type: 'text', placeholder: 'Report title (optional)' });
+    const targetInput = el('input', { type: 'text', placeholder: 'Target system name (optional)' });
+    const frame = el('iframe', { class: 'report-frame', title: 'Evidence pack preview' });
+    const status = el('span', { class: 'muted', text: '' });
+
+    let currentHtml = '';
+    let currentName = 'report.html';
+
+    async function build() {
+      status.textContent = 'Rendering…';
+      try {
+        const res = await api('/api/report', {
+          method: 'POST',
+          body: {
+            path,
+            title: titleInput.value.trim(),
+            target: targetInput.value.trim(),
+          },
+        });
+        currentHtml = res.html;
+        currentName = res.filename;
+        frame.srcdoc = res.html;
+        status.textContent = `${res.summary.n_runs} runs · ${res.summary.n_perturbations} perturbations`;
+      } catch (e) {
+        status.textContent = `Failed: ${e.message}`;
+      }
+    }
+
+    const modal = el('div', { class: 'modal modal-wide', role: 'dialog', 'aria-modal': 'true' }, [
+      el('div', { class: 'modal-head' }, [
+        el('h2', { text: 'Evidence pack' }),
+        el('button', { class: 'btn ghost modal-close', text: '×', onclick: close, 'aria-label': 'close' }),
+      ]),
+      el('div', { class: 'modal-body' }, [
+        el('p', { class: 'help', text: `Rendering ${path} into a self-contained HTML document — offline, print-clean, sha256-stamped.` }),
+        el('div', { class: 'row two-col', style: 'margin-bottom: 10px;' }, [
+          el('div', { class: 'field' }, [el('label', { text: 'Title' }), titleInput]),
+          el('div', { class: 'field' }, [el('label', { text: 'Target system' }), targetInput]),
+        ]),
+        el('div', { class: 'row', style: 'gap: 8px; margin-bottom: 10px;' }, [
+          el('button', { class: 'ghost-btn', text: '↻ Re-render', onclick: build }),
+          status,
+        ]),
+        frame,
+      ]),
+      el('div', { class: 'modal-foot' }, [
+        el('button', { class: 'btn ghost', text: 'Close', onclick: close }),
+        el('button', {
+          class: 'primary',
+          text: '⇩ Download HTML',
+          onclick: () => {
+            if (!currentHtml) return toast('Nothing rendered yet', 'error');
+            const blob = new Blob([currentHtml], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = el('a', { href: url, download: currentName });
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            toast('Evidence pack downloaded');
+          },
+        }),
+      ]),
+    ]);
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    build();
+  }
 
   // ---------- adapter tab ------------------------------------------------
 
@@ -1109,5 +1340,5 @@
 
   // ---------- start -------------------------------------------------------
 
-  initAdapter();
+  initOverview();
 })();

@@ -126,3 +126,41 @@ def test_no_findings_renders_clean(flat_path: Path, tmp_path: Path) -> None:
     p.write_text(json.dumps(data), encoding="utf-8")
     html_text = render_report(load_run(p))
     assert "No coordination findings" in html_text
+
+
+# --------------------------------------------------------------------------
+# Non-run rejection — keeps unrelated JSON in results/ out of aggregate views
+# --------------------------------------------------------------------------
+
+def test_rejects_non_drift_json(tmp_path: Path) -> None:
+    """Judge-eval dumps and other stray JSON must not parse as runs."""
+    from drift.report import NotADriftRun
+
+    p = tmp_path / "judge_eval.json"
+    p.write_text(json.dumps({
+        "path": "x", "example": "y", "n_actions": 3,
+        "failures_by_type": {}, "judge_calls": 2,
+    }), encoding="utf-8")
+    with pytest.raises(NotADriftRun):
+        load_run(p)
+
+
+def test_rejects_non_object_json(tmp_path: Path) -> None:
+    from drift.report import NotADriftRun
+
+    p = tmp_path / "list.json"
+    p.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    with pytest.raises(NotADriftRun):
+        load_run(p)
+
+
+def test_accepts_flat_run_with_only_baseline_marker(tmp_path: Path) -> None:
+    """A run with no perturbations is still a run if it has baseline markers."""
+    p = tmp_path / "baseline_only.json"
+    p.write_text(json.dumps({
+        "question": "q", "baseline_crashed": False,
+        "baseline_trace_steps": 4, "baseline_judge": [], "baseline_coord": [],
+    }), encoding="utf-8")
+    run = load_run(p)
+    assert run["summary"]["n_runs"] == 1
+    assert run["summary"]["n_perturbations"] == 0

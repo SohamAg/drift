@@ -149,6 +149,18 @@ class AdapterForkRequest(BaseModel):
     coordination_roles: dict[str, str] = Field(default_factory=dict)
 
 
+class ReportRequest(BaseModel):
+    """Render a saved run under results/ into the HTML evidence pack.
+
+    `path` and `fork_path` are relative to results/; both are validated
+    server-side against directory escape.
+    """
+    path: str
+    fork_path: str = ""
+    title: str = ""
+    target: str = ""
+
+
 # ---- adapter graph registry -----------------------------------------------
 
 def _list_adapter_graphs() -> list[dict[str, Any]]:
@@ -409,6 +421,165 @@ def create_app() -> FastAPI:
         for entries in groups.values():
             entries.sort(key=lambda e: e["modified_ts"], reverse=True)
         return {"groups": groups}
+
+    @app.get("/api/overview")
+    def overview() -> dict[str, Any]:
+        """Aggregate every saved run under results/ into one dashboard payload.
+
+        Walks each experiment JSON, normalizes it through report.load_run
+        (which understands both runner shapes), and rolls the per-run
+        summaries up into portfolio-level counts: systems tested, runs
+        executed, perturbations applied, and every finding surfaced with a
+        pointer back to its source file.
+
+        Files that don't parse as a drift run (fork proofs, ad-hoc dumps)
+        are skipped silently rather than failing the whole view.
+        """
+        from drift.report import NotADriftRun, load_run
+
+        runs: list[dict[str, Any]] = []
+        findings: list[dict[str, Any]] = []
+        totals = {
+            "runs": 0, "perturbations": 0, "crashed": 0,
+            "diverged": 0, "unchanged": 0, "findings": 0,
+        }
+        agents: set[str] = set()
+
+        if RESULTS_DIR.exists():
+            for path in sorted(RESULTS_DIR.rglob("*.json")):
+                rel = str(path.relative_to(RESULTS_DIR)).replace("\\", "/")
+                try:
+                    run = load_run(path)
+                except (NotADriftRun, json.JSONDecodeError, OSError):
+                    continue
+                s = run["summary"]
+                group = rel.split("/")[0] if "/" in rel else "(root)"
+                n_find = s["n_judge_findings"] + s["n_coord_findings"]
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+
+                runs.append({
+                    "path": rel,
+                    "group": group,
+                    "name": path.name,
+                    "modified_ts": mtime,
+                    "model": run["config"].get("model", ""),
+                    "intensity": run["config"].get("intensity", ""),
+                    "elapsed_seconds": run.get("elapsed_seconds"),
+                    "n_scenarios": s["n_scenarios"],
+                    "n_runs": s["n_runs"],
+                    "n_perturbations": s["n_perturbations"],
+                    "n_crashed": s["n_crashed"],
+                    "n_diverged": s["n_diverged"],
+                    "n_findings": n_find,
+                    "agents": s["agents"],
+                })
+                totals["runs"] += s["n_runs"]
+                totals["perturbations"] += s["n_perturbations"]
+                totals["crashed"] += s["n_crashed"]
+                totals["diverged"] += s["n_diverged"]
+                totals["unchanged"] += s["n_unchanged"]
+                totals["findings"] += n_find
+                agents.update(s["agents"])
+
+                for f in run["judge_findings"] + run["coord_findings"]:
+                    findings.append({
+                        "failure_type": f.get("failure_type") or f.get("type") or "finding",
+                        "summary": f.get("summary", ""),
+                        "where": f.get("where", ""),
+                        "source_path": rel,
+                        "source_group": group,
+                        "modified_ts": mtime,
+                    })
+
+        runs.sort(key=lambda r: r["modified_ts"], reverse=True)
+        findings.sort(key=lambda f: f["modified_ts"], reverse=True)
+
+        by_group: dict[str, dict[str, Any]] = {}
+        for r in runs:
+            g = by_group.setdefault(r["group"], {
+                "group": r["group"], "n_files": 0, "n_runs": 0,
+                "n_perturbations": 0, "n_findings": 0, "agents": set(),
+                "last_run_ts": 0.0,
+            })
+            g["n_files"] += 1
+            g["n_runs"] += r["n_runs"]
+            g["n_perturbations"] += r["n_perturbations"]
+            g["n_findings"] += r["n_findings"]
+            g["agents"].update(r["agents"])
+            g["last_run_ts"] = max(g["last_run_ts"], r["modified_ts"])
+        systems = sorted(
+            (
+                {**g, "agents": sorted(g["agents"])}
+                for g in by_group.values()
+            ),
+            key=lambda g: g["last_run_ts"],
+            reverse=True,
+        )
+
+        type_counts: dict[str, int] = {}
+        for f in findings:
+            type_counts[f["failure_type"]] = type_counts.get(f["failure_type"], 0) + 1
+
+        return {
+            "totals": {**totals, "systems": len(systems), "agents": len(agents)},
+            "systems": systems,
+            "runs": runs,
+            "findings": findings,
+            "finding_types": sorted(
+                ({"type": k, "count": v} for k, v in type_counts.items()),
+                key=lambda d: d["count"], reverse=True,
+            ),
+        }
+
+    @app.post("/api/report")
+    def build_report(req: ReportRequest) -> Any:
+        """Render a saved run into the self-contained HTML evidence pack.
+
+        Same renderer the `drift report` CLI uses. Returns the HTML inline so
+        the UI can preview it in an iframe or hand it to the user as a
+        download without writing anything to disk.
+        """
+        from drift.report import load_fork_proof, load_run, render_report
+
+        results_root = RESULTS_DIR.resolve()
+
+        def _safe(relpath: str) -> Path:
+            try:
+                full = (results_root / relpath).resolve()
+            except (ValueError, OSError) as e:
+                raise HTTPException(400, f"bad path: {e}")
+            if not str(full).startswith(str(results_root)):
+                raise HTTPException(403, "path escapes results/")
+            if not full.exists() or not full.is_file() or full.suffix != ".json":
+                raise HTTPException(404, "not found")
+            return full
+
+        run_path = _safe(req.path)
+        try:
+            run = load_run(run_path)
+        except Exception as e:
+            raise HTTPException(400, f"not a drift run: {e}")
+
+        fork = None
+        if req.fork_path:
+            try:
+                fork = load_fork_proof(_safe(req.fork_path))
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(400, f"bad fork proof: {e}")
+
+        html_text = render_report(
+            run, fork=fork, title=req.title or None, target_name=req.target or None,
+        )
+        return {
+            "html": html_text,
+            "filename": Path(req.path).stem + ".report.html",
+            "summary": run["summary"],
+        }
 
     @app.get("/api/results/{relpath:path}")
     def results_file(relpath: str) -> Any:
