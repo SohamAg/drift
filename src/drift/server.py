@@ -28,6 +28,17 @@ from pydantic import BaseModel, Field
 
 # Resolved at import so endpoints find paths regardless of CWD.
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
+
+# Every other script in this repo loads .env before touching OPENAI_API_KEY;
+# the server never did, silently requiring the key to already be exported
+# in the launching shell. Load it here too so `python -m drift serve` works
+# the same way `python examples/...` scripts do.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except ImportError:
+    pass
+
 WEB_DIR: Path = PROJECT_ROOT / "web"
 RESULTS_DIR: Path = PROJECT_ROOT / "results"
 MAST_DATASET: Path = PROJECT_ROOT / "data" / "external" / "mast" / "MAD_human_labelled_dataset.json"
