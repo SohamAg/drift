@@ -24,7 +24,7 @@ REQUIRED_ATTRS = (
 
 def test_every_target_imports() -> None:
     mods = all_targets()
-    assert len(mods) == 10
+    assert len(mods) == 4
 
 
 @pytest.mark.parametrize("mod", all_targets(), ids=lambda m: m.NAME)
@@ -53,9 +53,15 @@ def test_initial_state_is_dict_without_llm() -> None:
 
 
 def test_topology_coverage() -> None:
-    """The registry's point is breadth — guard against it collapsing to one shape."""
+    """The registry's point is breadth — guard against it collapsing to one shape.
+
+    Bar is 4 today (supervisor, swarm, tool_dispatch, hierarchical) because
+    every target must be genuine third-party code (docs/targets_setup.md
+    hard rule) — raise this as real third-party targets are added, don't
+    pad it with in-repo constructions to hit a bigger number.
+    """
     topos = {m.TOPOLOGY for m in all_targets()}
-    assert len(topos) >= 5, f"only {len(topos)} topologies covered: {topos}"
+    assert len(topos) >= 4, f"only {len(topos)} topologies covered: {topos}"
     assert "supervisor" in topos
     assert "swarm" in topos
 
@@ -85,5 +91,5 @@ def test_get_unknown_raises() -> None:
 
 def test_registry_shape() -> None:
     rows = registry()
-    assert len(rows) == 10
+    assert len(rows) == 4
     assert all("importable" in r for r in rows)
