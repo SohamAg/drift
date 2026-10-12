@@ -9,6 +9,7 @@ endpoints:
   POST /api/adapter-demo             — run drift_test against a chosen bundled graph
   POST /api/custom-graph-run         — run drift_test against a user-imported module
   POST /api/adapter-fork             — fork-edit-replay a completed run at one step
+  POST /api/trace-ask                — ask a free-text question about one captured trace
   GET  /api/results                  — list saved experiment JSON under results/
   GET  /api/results/{relpath:path}   — fetch one saved result by path
   GET  /api/mast-demos               — list curated MAST demo traces
@@ -205,6 +206,30 @@ class CustomGraphRequest(BaseModel):
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
     max_judge_calls: int = Field(default=10, ge=0, le=100)
     similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+
+
+class TraceAskRequest(BaseModel):
+    """Ask a free-text question about one already-loaded run.
+
+    The data comes from the client (a run it already has loaded — from the
+    Test tab or the Results browser), not re-fetched server-side, so this
+    endpoint has no notion of "current run."
+
+    Most saved runs under results/ predate full-trace capture and only
+    recorded summary stats (step counts, agent names, finding counts) —
+    not the actual per-step trace. Rather than refuse those files, `trace`
+    is optional: when empty, `summary` (the raw loaded JSON, whatever
+    shape it is) is used instead, and the judge is told explicitly it's
+    working from summary data only so it doesn't fabricate step-level
+    detail it was never shown.
+    """
+    trace: list[dict[str, Any]] = Field(default_factory=list)
+    initial_state: dict[str, Any] = Field(default_factory=dict)
+    final_state: dict[str, Any] | None = None
+    summary: dict[str, Any] = Field(default_factory=dict)
+    question: str
+    judge: str = "openai"
+    judge_model: str | None = None
 
 
 class ReportRequest(BaseModel):
@@ -585,6 +610,64 @@ def _shape_adapter_result(
     }
 
 
+# ---- trace Q&A helpers ------------------------------------------------------
+
+
+def _render_trace_for_ask(
+    trace: list[dict[str, Any]],
+    initial_state: dict[str, Any],
+    final_state: dict[str, Any] | None,
+    max_chars: int = 12_000,
+) -> str:
+    """Compact text rendering of one trace for an LLM Q&A prompt.
+
+    Not the same renderer the coordination judge uses (`_render_window` in
+    failures/judge.py) — that one windows by timestep for repeated calls
+    during a run; this renders the WHOLE trace once for a single ad hoc
+    question, so truncation (not windowing) is the right tradeoff here.
+    """
+    lines = ["# Initial state", json.dumps(initial_state, default=str)[:2000], "", "# Trace"]
+    for step in trace:
+        node = step.get("node", "?")
+        upd = step.get("update") or {}
+        lines.append(f"[step {step.get('step')}] {node}: {json.dumps(upd, default=str)[:800]}")
+    if final_state:
+        lines.append("")
+        lines.append("# Final state")
+        lines.append(json.dumps(final_state, default=str)[:2000])
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n...[truncated — trace too long to show in full]"
+    return text
+
+
+def _render_summary_for_ask(summary: dict[str, Any], max_chars: int = 12_000) -> str:
+    """Render a whole loaded result file for Q&A when it has no per-step
+    trace — most of results/ predates trace capture and only saved counts,
+    agent names, and finding lists. Dumps the raw JSON rather than trying
+    to normalize every historical shape; the system prompt tells the judge
+    plainly this is summary data, not a trace, so it answers accordingly.
+    """
+    text = "# Run summary (no per-step trace was saved for this run)\n" + json.dumps(
+        summary, default=str, indent=2
+    )
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n...[truncated — summary too large to show in full]"
+    return text
+
+
+def _extract_json_answer(raw: str) -> str:
+    """Pull `answer` out of the judge's forced-JSON response; fall back to
+    the raw text if it isn't valid JSON (degrade gracefully, never 500)."""
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict) and "answer" in obj:
+            return str(obj["answer"])
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return raw
+
+
 # ---- app ------------------------------------------------------------------
 
 def create_app() -> FastAPI:
@@ -892,6 +975,61 @@ def create_app() -> FastAPI:
             judge=req.judge, judge_model=req.judge_model,
             user_guidelines=req.user_guidelines,
         )
+
+    @app.post("/api/trace-ask")
+    async def trace_ask(req: TraceAskRequest) -> dict[str, Any]:
+        """Answer a free-text question about one already-loaded run.
+
+        Works two ways depending on what the loaded file actually saved:
+        full per-step trace (rich, step-cited answers) or summary-only
+        (most historical results/ files — coarser answers, judge is told
+        plainly that's all it has so it doesn't invent step detail).
+        """
+        from drift.failures.judge import build_judge
+
+        if not req.question.strip():
+            raise HTTPException(400, "question is required")
+        if not req.trace and not req.summary:
+            raise HTTPException(400, "no data to ask about — run or load a run first")
+
+        try:
+            judge_llm = build_judge(req.judge, model=req.judge_model)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if judge_llm is None:
+            raise HTTPException(400, "judge must be 'openai' or 'mock' to answer questions")
+
+        if req.trace:
+            rendered = _render_trace_for_ask(req.trace, req.initial_state, req.final_state)
+            system = (
+                "You are analyzing ONE real execution trace of a multi-agent system. "
+                "Answer the user's question using only evidence in the trace below — "
+                "do not speculate about behavior the trace doesn't show. Cite step "
+                "numbers and node/agent names where relevant. If the trace doesn't "
+                "contain enough information to answer, say so plainly instead of "
+                "guessing.\n\n"
+                'Respond with strict JSON: {"answer": "<your answer, plain text>"}'
+            )
+        else:
+            rendered = _render_summary_for_ask(req.summary)
+            system = (
+                "You are analyzing SUMMARY STATISTICS from one multi-agent test run — "
+                "not the actual per-step trace, which this file never saved (only "
+                "counts, agent names, and finding lists). Answer using only what's "
+                "in the summary below. You CANNOT see individual steps, so never "
+                "cite a specific step number or claim to know what happened at a "
+                "particular point in the run — if the question needs that level of "
+                "detail, say plainly that only summary data is available for this "
+                "run, not a full trace.\n\n"
+                'Respond with strict JSON: {"answer": "<your answer, plain text>"}'
+            )
+        user = f"{rendered}\n\n# Question\n{req.question.strip()}"
+        try:
+            raw = await judge_llm.judge(system=system, user=user)
+        except RuntimeError as e:
+            raise HTTPException(502, str(e))
+
+        return {"answer": _extract_json_answer(raw), "question": req.question}
 
     @app.post("/api/adapter-fork")
     async def adapter_fork(req: AdapterForkRequest) -> dict[str, Any]:
