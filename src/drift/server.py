@@ -5,8 +5,10 @@ After the 2026-06-29 cleanup all native-simulator endpoints (/api/runs,
 along with the simulator. The server now exposes only adapter-shaped
 endpoints:
 
-  GET  /api/adapter-graphs           — list bundled graphs the Adapter tab can run
-  POST /api/adapter-demo             — run drift_test against a chosen graph
+  GET  /api/adapter-graphs           — list bundled graphs the Test tab can run
+  POST /api/adapter-demo             — run drift_test against a chosen bundled graph
+  POST /api/custom-graph-run         — run drift_test against a user-imported module
+  POST /api/adapter-fork             — fork-edit-replay a completed run at one step
   GET  /api/results                  — list saved experiment JSON under results/
   GET  /api/results/{relpath:path}   — fetch one saved result by path
   GET  /api/mast-demos               — list curated MAST demo traces
@@ -146,6 +148,14 @@ class AdapterForkRequest(BaseModel):
     graph_name: str = "ticket_triage"
     state_overrides: dict[str, Any] = Field(default_factory=dict)
 
+    # Set `module` to fork a run that came from /api/custom-graph-run instead
+    # of a bundled graph — takes precedence over graph_name when non-empty.
+    module: str = ""
+    build_fn: str = "build"
+    initial_state_fn: str = "initial_state"
+    query: str = ""
+    model: str | None = None
+
     # Parent baseline the client received from /api/adapter-demo.
     parent_baseline_trace: list[dict[str, Any]] = Field(default_factory=list)
     parent_initial_state: dict[str, Any] = Field(default_factory=dict)
@@ -158,6 +168,43 @@ class AdapterForkRequest(BaseModel):
     # Optional coordination role overrides for the coord detectors on the
     # forked trace.
     coordination_roles: dict[str, str] = Field(default_factory=dict)
+
+
+class CustomGraphRequest(BaseModel):
+    """Run drift_test against a user-supplied, importable LangGraph module.
+
+    SECURITY: this dynamically imports `module` and calls a function on
+    it — arbitrary code execution by design. drift's web server carries no
+    auth and is meant for the machine's own user, same trust model as a
+    Jupyter kernel or `python -c`. Never expose this server on a network
+    you don't fully control.
+
+    `module` must already be importable (on PYTHONPATH / installed) —
+    e.g. a target you wrote under `examples/targets/` yourself, or your
+    own package. `build_fn` is called as `build_fn(model=...)` if `model`
+    is set, else `build_fn()`; must return a compiled graph. `initial_state_fn`
+    is called as `initial_state_fn(query)` if `query` is set, else
+    `initial_state_fn()`; must return a dict.
+    """
+    module: str
+    build_fn: str = "build"
+    initial_state_fn: str = "initial_state"
+    query: str = ""
+    model: str | None = None
+
+    intensity: str = "light"
+    seed: int = 7
+    max_perturbations: int = Field(default=6, ge=1, le=500)
+    auto_chaos_exclude: list[str] = Field(default_factory=list)
+
+    judge: str = "off"
+    judge_model: str | None = None
+    user_guidelines: list[str] = Field(default_factory=list)
+
+    divergence_mode: str = "exact"
+    baseline_rollouts: int = Field(default=1, ge=1, le=10)
+    max_judge_calls: int = Field(default=10, ge=0, le=100)
+    similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
 
 class ReportRequest(BaseModel):
@@ -239,6 +286,44 @@ def _build_demo_graph(name: str, overrides: dict[str, Any]) -> tuple[Any, dict, 
     if name == "langgraph_supervisor":
         return _build_langgraph_supervisor_demo(overrides)
     raise ValueError(f"unknown graph_name {name!r}; see /api/adapter-graphs")
+
+
+def _build_custom_graph(
+    module: str, build_fn_name: str, initial_state_fn_name: str,
+    query: str, model: str | None,
+) -> tuple[Any, dict]:
+    """Dynamically import `module` and call its build()/initial_state().
+
+    Shared by /api/custom-graph-run and /api/adapter-fork (when forking a
+    run that originated from a custom import rather than a bundled graph).
+    See CustomGraphRequest's docstring for the arbitrary-code-execution note.
+    """
+    import importlib
+
+    try:
+        mod = importlib.import_module(module)
+    except Exception as e:
+        raise ImportError(f"could not import {module!r}: {type(e).__name__}: {e}") from e
+
+    build_fn = getattr(mod, build_fn_name, None)
+    if not callable(build_fn):
+        raise AttributeError(f"{module}.{build_fn_name} is not callable")
+    state_fn = getattr(mod, initial_state_fn_name, None)
+
+    try:
+        graph = build_fn(model=model) if model else build_fn()
+    except Exception as e:
+        raise RuntimeError(f"{build_fn_name}() failed: {type(e).__name__}: {e}") from e
+
+    try:
+        initial_state = state_fn(query) if (callable(state_fn) and query) else (
+            state_fn() if callable(state_fn) else {}
+        )
+        initial_state = dict(initial_state)
+    except Exception as e:
+        raise RuntimeError(f"{initial_state_fn_name}() failed: {type(e).__name__}: {e}") from e
+
+    return graph, initial_state
 
 
 def _build_ticket_triage_demo(overrides: dict[str, Any]) -> tuple[Any, dict, dict[str, Any]]:
@@ -394,6 +479,109 @@ def _shape_mast_response(entry: dict[str, Any], result: dict[str, Any], *, mode:
             "recall": recall,
             "f1": f1,
         },
+    }
+
+
+# ---- shared adapter-result shaping ----------------------------------------
+# Used by both /api/adapter-demo (bundled graphs) and /api/custom-graph-run
+# (user-imported graphs) so the two response shapes never drift apart —
+# the frontend renders both with the same code.
+
+
+def _shape_adapter_result(
+    result: Any,
+    *,
+    graph_meta: dict[str, Any],
+    seed: int,
+    judge: str,
+    judge_model: str | None,
+    user_guidelines: list[str],
+) -> dict[str, Any]:
+    def _divergence_dict(d: Any) -> dict[str, Any]:
+        return {
+            "name": d.name,
+            "tier": d.tier,
+            "baseline_value": d.baseline_value,
+            "perturbed_value": d.perturbed_value,
+            "summary": d.summary,
+            "similarity_score": d.similarity_score,
+            "within_noise_band": d.within_noise_band,
+            "judge_equivalent": d.judge_equivalent,
+            "judge_reasoning": d.judge_reasoning,
+        }
+
+    def _baseline_dict(b: Any) -> dict[str, Any]:
+        return {
+            "initial_state": b.initial_state,
+            "final_state": b.final_state,
+            "crashed": b.crashed,
+            "error": b.error,
+            "error_type": b.error_type,
+            "duration_s": round(b.duration_s, 4),
+            "trace": b.trace,
+            "judge_findings": b.judge_findings,
+            "coordination_findings": b.coordination_findings,
+        }
+
+    def _pert_dict(p: Any) -> dict[str, Any]:
+        return {
+            "event_name": p.event_name,
+            "event_summary": p.event_summary,
+            "perturbed_field": p.perturbed_field,
+            "pattern_type": p.pattern_type,
+            "perturbed_initial_state": p.perturbed_initial_state,
+            "final_state": p.final_state,
+            "crashed": p.crashed,
+            "error": p.error,
+            "error_type": p.error_type,
+            "diverged": p.diverged,
+            "divergence_summary": p.divergence_summary,
+            "duration_s": round(p.duration_s, 4),
+            "trace": p.trace,
+            "judge_findings": p.judge_findings,
+            "coordination_findings": p.coordination_findings,
+            "divergence_details": [_divergence_dict(d) for d in p.divergence_details],
+            "filtered_divergences": [_divergence_dict(d) for d in p.filtered_divergences],
+        }
+
+    noise_band_dump = {
+        name: {
+            "name": band.name,
+            "sample_count": band.sample_count,
+            "distinct_values": band.distinct_values,
+            "value_frequencies": band.value_frequencies,
+            "text_min_similarity": band.text_min_similarity,
+            "text_mean_similarity": band.text_mean_similarity,
+            "numeric_min": band.numeric_min,
+            "numeric_max": band.numeric_max,
+        }
+        for name, band in result.noise_band.items()
+    }
+
+    return {
+        "graph_name": graph_meta["name"],
+        "graph_description": graph_meta["description"],
+        "graph_agents": graph_meta.get("agents", []),
+        "intensity": result.intensity,
+        "seed": seed,
+        "judge": judge,
+        "judge_model": judge_model,
+        "n_user_guidelines": len(user_guidelines or []),
+        "divergence_mode": result.divergence_mode,
+        "baseline_rollouts": result.baseline_rollouts,
+        "judge_calls_used": result.judge_calls_used,
+        "judge_calls_budget": result.judge_calls_budget,
+        "noise_band": noise_band_dump,
+        "patterns_total": result.patterns_total,
+        "n_crashed": result.n_crashed,
+        "n_diverged": result.n_diverged,
+        "n_unchanged": result.n_unchanged,
+        "n_judge_findings": result.n_judge_findings,
+        "n_coordination_findings": result.n_coordination_findings,
+        "n_filtered_divergences": result.n_filtered_divergences,
+        "summary_lines": result.summary_lines(),
+        "baseline": _baseline_dict(result.baseline),
+        "perturbations": [_pert_dict(p) for p in result.perturbations],
     }
 
 
@@ -648,92 +836,62 @@ def create_app() -> FastAPI:
         except (TypeError, ValueError) as e:
             raise HTTPException(400, str(e))
 
-        def _divergence_dict(d: Any) -> dict[str, Any]:
-            return {
-                "name": d.name,
-                "tier": d.tier,
-                "baseline_value": d.baseline_value,
-                "perturbed_value": d.perturbed_value,
-                "summary": d.summary,
-                "similarity_score": d.similarity_score,
-                "within_noise_band": d.within_noise_band,
-                "judge_equivalent": d.judge_equivalent,
-                "judge_reasoning": d.judge_reasoning,
-            }
+        return _shape_adapter_result(
+            result, graph_meta=graph_meta, seed=req.seed,
+            judge=req.judge, judge_model=req.judge_model,
+            user_guidelines=req.user_guidelines,
+        )
 
-        def _baseline_dict(b: Any) -> dict[str, Any]:
-            return {
-                "initial_state": b.initial_state,
-                "final_state": b.final_state,
-                "crashed": b.crashed,
-                "error": b.error,
-                "error_type": b.error_type,
-                "duration_s": round(b.duration_s, 4),
-                "trace": b.trace,
-                "judge_findings": b.judge_findings,
-                "coordination_findings": b.coordination_findings,
-            }
+    @app.post("/api/custom-graph-run")
+    async def custom_graph_run(req: CustomGraphRequest) -> dict[str, Any]:
+        """Run drift_test against a user-supplied importable module.
 
-        def _pert_dict(p: Any) -> dict[str, Any]:
-            return {
-                "event_name": p.event_name,
-                "event_summary": p.event_summary,
-                "perturbed_field": p.perturbed_field,
-                "pattern_type": p.pattern_type,
-                "perturbed_initial_state": p.perturbed_initial_state,
-                "final_state": p.final_state,
-                "crashed": p.crashed,
-                "error": p.error,
-                "error_type": p.error_type,
-                "diverged": p.diverged,
-                "divergence_summary": p.divergence_summary,
-                "duration_s": round(p.duration_s, 4),
-                "trace": p.trace,
-                "judge_findings": p.judge_findings,
-                "coordination_findings": p.coordination_findings,
-                "divergence_details": [_divergence_dict(d) for d in p.divergence_details],
-                "filtered_divergences": [_divergence_dict(d) for d in p.filtered_divergences],
-            }
+        Backs the "Import graph" tab. See CustomGraphRequest docstring for
+        the security note — this executes arbitrary local code by design.
+        """
+        from drift.adapters.langgraph import drift_test_async
+        from drift.failures.judge import build_judge
 
-        noise_band_dump = {
-            name: {
-                "name": band.name,
-                "sample_count": band.sample_count,
-                "distinct_values": band.distinct_values,
-                "value_frequencies": band.value_frequencies,
-                "text_min_similarity": band.text_min_similarity,
-                "text_mean_similarity": band.text_mean_similarity,
-                "numeric_min": band.numeric_min,
-                "numeric_max": band.numeric_max,
-            }
-            for name, band in result.noise_band.items()
+        try:
+            graph, initial_state = _build_custom_graph(
+                req.module, req.build_fn, req.initial_state_fn, req.query, req.model,
+            )
+        except (ImportError, AttributeError, RuntimeError) as e:
+            raise HTTPException(400, str(e))
+
+        try:
+            judge_llm = build_judge(req.judge, model=req.judge_model)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+        try:
+            result = await drift_test_async(
+                graph=graph,
+                initial_state=initial_state,
+                intensity=req.intensity,
+                seed=req.seed,
+                auto_chaos_exclude=req.auto_chaos_exclude or None,
+                max_perturbations=req.max_perturbations,
+                judge_llm=judge_llm,
+                user_guidelines=req.user_guidelines or None,
+                divergence_mode=req.divergence_mode,
+                baseline_rollouts=req.baseline_rollouts,
+                max_judge_calls=req.max_judge_calls,
+                similarity_threshold=req.similarity_threshold,
+            )
+        except (TypeError, ValueError) as e:
+            raise HTTPException(400, str(e))
+
+        graph_meta = {
+            "name": f"{req.module}.{req.build_fn}",
+            "description": f"user-imported graph — {req.module}",
+            "agents": [],
         }
-
-        return {
-            "graph_name": graph_meta["name"],
-            "graph_description": graph_meta["description"],
-            "graph_agents": graph_meta.get("agents", []),
-            "intensity": result.intensity,
-            "seed": req.seed,
-            "judge": req.judge,
-            "judge_model": req.judge_model,
-            "n_user_guidelines": len(req.user_guidelines or []),
-            "divergence_mode": result.divergence_mode,
-            "baseline_rollouts": result.baseline_rollouts,
-            "judge_calls_used": result.judge_calls_used,
-            "judge_calls_budget": result.judge_calls_budget,
-            "noise_band": noise_band_dump,
-            "patterns_total": result.patterns_total,
-            "n_crashed": result.n_crashed,
-            "n_diverged": result.n_diverged,
-            "n_unchanged": result.n_unchanged,
-            "n_judge_findings": result.n_judge_findings,
-            "n_coordination_findings": result.n_coordination_findings,
-            "n_filtered_divergences": result.n_filtered_divergences,
-            "summary_lines": result.summary_lines(),
-            "baseline": _baseline_dict(result.baseline),
-            "perturbations": [_pert_dict(p) for p in result.perturbations],
-        }
+        return _shape_adapter_result(
+            result, graph_meta=graph_meta, seed=req.seed,
+            judge=req.judge, judge_model=req.judge_model,
+            user_guidelines=req.user_guidelines,
+        )
 
     @app.post("/api/adapter-fork")
     async def adapter_fork(req: AdapterForkRequest) -> dict[str, Any]:
@@ -754,10 +912,16 @@ def create_app() -> FastAPI:
         )
 
         try:
-            graph, _initial_ignored, graph_meta = _build_demo_graph(
-                req.graph_name, req.state_overrides
-            )
-        except (ValueError, ImportError, RuntimeError) as e:
+            if req.module:
+                graph, _initial_ignored = _build_custom_graph(
+                    req.module, req.build_fn, req.initial_state_fn, req.query, req.model,
+                )
+                graph_meta = {"name": f"{req.module}.{req.build_fn}", "description": ""}
+            else:
+                graph, _initial_ignored, graph_meta = _build_demo_graph(
+                    req.graph_name, req.state_overrides
+                )
+        except (ValueError, ImportError, AttributeError, RuntimeError) as e:
             raise HTTPException(400, str(e))
 
         # Wrap the parent-baseline snapshot into an AdapterResult shape so
