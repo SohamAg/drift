@@ -76,12 +76,13 @@ python examples\targets\verify_targets.py
 
 | Package | Source | Topology | Notes |
 |---|---|---|---|
-| `langgraph-supervisor` | langchain-ai/langgraph-supervisor-py (official) | supervisor | Already validated. Drift found a real bug: the supervisor re-issues requests a specialist is answering. Zero false positives over 12 runs. |
+| `langgraph-supervisor` | langchain-ai/langgraph-supervisor-py (official) | supervisor | Vendor's stock 2-agent README demo (`supervisor_basic.py`). Runs clean — too short (3 super-steps) to surface anything. The real bug (supervisor re-issues a request a specialist is already answering) was found on a hand-extended 5-specialist build on top of this library, which was deleted 2026-08-25 as our-own-construction, not third-party. Open question: does it recur on `tradingagents_debate`. |
 | `langgraph-swarm` | langchain-ai/langgraph-swarm-py (official) | swarm | Peer-to-peer handoff, no central router. **Never run — new topology.** |
 | `deepagents` | langchain-ai/deepagents (official, 25.7k ⭐) | tool_dispatch | **Negative control.** Sub-agents dispatched via tool calls, so drift sees only `model → tools → model`. Keep it: it re-confirms the observation boundary on every run. |
-| `open-deep-research` | langchain-ai/open_deep_research (official) | hierarchical | Installed 2026-08-25, loads clean. |
+| `open-deep-research` | langchain-ai/open_deep_research (official) | hierarchical | Installed 2026-08-25, loads clean. **No registry module written yet.** |
+| `tradingagents` | TauricResearch/TradingAgents (official, third-party) | hierarchical (debate) | Registered 2026-08-26 as `tradingagents_debate.py`. Builds clean — **21 real nodes** confirmed via `verify_targets.py`. Uses free `yfinance` data, no financial-data key needed (doc below was wrong about this — only an LLM key is required). |
 
-`open-deep-research` entry point:
+`open-deep-research` entry point (not yet wired into the registry):
 ```python
 from open_deep_research.deep_researcher import deep_researcher
 # nodes: clarify_with_user, write_research_brief,
@@ -91,20 +92,28 @@ There is also a legacy supervisor variant at `legacy/multi_agent.py`
 exporting `graph` (supervisor + `research_team` subgraph).
 Wants a **Tavily** key for real search.
 
-### Verified, not yet installed
+### `tradingagents_debate` — registered 2026-08-26
 
-**`tradingagents`** — TauricResearch/TradingAgents. The largest target found.
-Confirmed `langgraph>=1.1.10`; graph built in
-`src/tradingagents/graph/setup.py`, ~20 nodes:
+The largest target in the registry. Entry point:
+`examples/targets/tradingagents_debate.py`, wrapping
+`tradingagents.graph.trading_graph.TradingAgentsGraph`. Confirmed 21 nodes on
+build: 4 analyst types (market/social/news/fundamentals, each with its own
+tool round-trip), Situation Summariser, Bull Researcher, Bear Researcher,
+Research Manager, Trader, 3 risk debators (Aggressive/Neutral/Conservative),
+Risk Judge.
 
-- 4 analyst types × 3 nodes each (analyst, msg-clear, tools)
-- Bull Researcher, Bear Researcher, Research Manager
-- Trader
-- Aggressive / Neutral / Conservative analysts under a Risk Judge
+Adversarial-debate structure — Bull and Bear are *designed* to disagree, so
+this is the sharpest available test of whether `coordination_contradiction`
+findings mean anything beyond "the debate happened as intended": the
+interesting failure is a contradiction that survives past the Research
+Manager / Risk Judge into the final call, not disagreement itself.
 
-Adversarial debate structure — the most interesting coordination shape
-available, and the one most likely to surface contradictions. Expect a
-financial-data key (FinnHub or similar).
+Runner: `examples/adapters/run_drift_on_tradingagents.py`. Only needs
+`OPENAI_API_KEY` — market data comes from free `yfinance`, no FinnHub key
+required (this doc previously assumed otherwise). Cost note: even at
+`max_debate_rounds=1, max_risk_discuss_rounds=1` a single invocation is
+~20-30 LLM calls; start with `--max-perturbations 1 --judge off` before a
+full paid sweep.
 
 ### Blocked
 
