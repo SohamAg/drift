@@ -6,5 +6,9 @@
       "Bash(python -m drift analyze examples/traces/support_sample.jsonl --topology support)",
       "Bash(PYTHONPATH=src python -m drift analyze examples/traces/support_sample.jsonl --topology support)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "galileo"
+  ],
+  "enableAllProjectMcpServers": true
 }

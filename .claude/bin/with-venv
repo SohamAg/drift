@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Run a command INSIDE the project venv, regardless of the caller's env.
+# Usage: bash .claude/bin/with-venv python -V
+#        VENV_DIR=/e/drift/.venv-other bash .claude/bin/with-venv pip list
+set -euo pipefail
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+venv="${VENV_DIR:-$repo/.venv-targets}"
+
+# Windows venvs use Scripts/, POSIX use bin/
+if   [ -d "$venv/Scripts" ]; then bindir="$venv/Scripts"
+elif [ -d "$venv/bin" ];     then bindir="$venv/bin"
+else echo "with-venv: no venv at $venv" >&2; exit 1
+fi
+
+# Strip any other venv already on PATH, then prepend ours.
+clean="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v -i -E '/\.?venv[^/]*/(Scripts|bin)$' | paste -sd: -)"
+
+# Export VIRTUAL_ENV in native form (pip/uv on Windows expect a Windows path).
+if command -v cygpath >/dev/null 2>&1; then
+  export VIRTUAL_ENV="$(cygpath -w "$venv")"
+else
+  export VIRTUAL_ENV="$venv"
+fi
+export PATH="$bindir:$clean"
+unset PYTHONHOME 2>/dev/null || true
+
+[ "$#" -eq 0 ] && { echo "VIRTUAL_ENV=$VIRTUAL_ENV"; exit 0; }
+exec "$@"

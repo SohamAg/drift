@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Run a command OUTSIDE any venv (system Python), regardless of the caller's env.
+# Usage: bash .claude/bin/no-venv python -V
+set -euo pipefail
+
+# Drop every venv bin/Scripts dir from PATH.
+clean="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v -i -E '/\.?venv[^/]*/(Scripts|bin)$' | paste -sd: -)"
+
+unset VIRTUAL_ENV PYTHONHOME 2>/dev/null || true
+export PATH="$clean"
+
+[ "$#" -eq 0 ] && { echo "VIRTUAL_ENV=<unset>"; exit 0; }
+exec "$@"
