@@ -1,9 +1,9 @@
 // drift — frontend logic. No build step, no dependencies.
 //
-// Tabs after the 2026-06-29 cleanup: Adapter (run drift_test against a
-// bundled graph), Results (browse saved experiment JSON), Custom (paused
-// while we re-wire @drift.agent to the adapter). Native sim, Runs, Detail,
-// and Compare were removed along with the simulator runtime.
+// Tabs: Test (run drift_test against a bundled graph), Fork & Replay
+// (rewind + edit + rerun any captured trace), Compare (two saved runs
+// side by side), Ask (free-text Q&A grounded in one trace), Import graph
+// (BYOA — point drift at your own module), Results (browse saved JSON).
 
 (() => {
   'use strict';
@@ -63,6 +63,20 @@
     setTimeout(() => t.remove(), 4000);
   }
 
+  function downloadJson(data, filename) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 100);
+  }
+
   // ---------- theme -------------------------------------------------------
 
   const THEME_KEY = 'drift.theme';
@@ -85,166 +99,50 @@
   function activateTab(name) {
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
-    if (name === 'overview') initOverview();
     if (name === 'adapter') initAdapter();
+    if (name === 'fork') initFork();
+    if (name === 'compare') initCompare();
+    if (name === 'ask') initAsk();
+    if (name === 'import') initImport();
     if (name === 'results') initResults();
   }
   $$('.tab').forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
 
-  // ---------- overview tab -----------------------------------------------
+  // ---------- shared "active run" state -----------------------------------
+  //
+  // One run is "active" at a time for cross-tab actions (fork, ask). Set by
+  // whichever tab most recently produced or loaded a run. `forkCtx` records
+  // how to rebuild the graph server-side for a fork: either a bundled
+  // graph_name + state_overrides, or a custom module + build_fn.
 
-  let _overviewLoaded = false;
+  let _activeRun = null;      // shaped adapter-result dict (has .baseline, .perturbations)
+  let _activeForkCtx = null;  // { graph_name, state_overrides } | { module, build_fn, initial_state_fn, query, model }
 
-  const relTime = (ts) => {
-    if (!ts) return '—';
-    const secs = Date.now() / 1000 - ts;
-    if (secs < 3600) return `${Math.max(1, Math.round(secs / 60))}m ago`;
-    if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
-    const days = Math.round(secs / 86400);
-    return days < 30 ? `${days}d ago` : new Date(ts * 1000).toLocaleDateString();
-  };
-
-  function statCard(n, label, tone = '') {
-    return el('div', { class: 'stat' }, [
-      el('div', { class: `stat-n ${tone}`, text: String(n) }),
-      el('div', { class: 'stat-l', text: label }),
-    ]);
+  function setActiveRun(data, forkCtx) {
+    _activeRun = data;
+    _activeForkCtx = forkCtx || null;
   }
 
-  function renderOverviewStats(d) {
-    const t = d.totals;
-    const host = $('#overview-stats');
-    host.replaceChildren(
-      statCard(t.systems, 'systems tested'),
-      statCard(t.runs, 'runs executed'),
-      statCard(t.perturbations, 'chaos perturbations'),
-      statCard(t.diverged, 'diverged', t.diverged ? 'warn' : ''),
-      statCard(t.crashed, 'crashed', t.crashed ? 'crit' : 'ok'),
-      statCard(t.findings, 'findings', t.findings ? 'crit' : 'ok'),
-    );
-  }
-
-  function renderOverviewFindings(d) {
-    const host = $('#overview-findings');
-    $('#overview-findings-count').textContent =
-      d.findings.length ? `· ${d.findings.length}` : '';
-    if (!d.findings.length) {
-      host.className = 'empty';
-      host.textContent = 'No findings yet. Run a test from the Adapter tab.';
-      return;
+  /** Best-effort fork context recovery for a run loaded from Results —
+   * these may predate the fork feature or come from a CLI script, so this
+   * degrades gracefully rather than guaranteeing perfect reconstruction. */
+  function forkCtxFromLoadedResult(data) {
+    const name = data.graph_name || data.name || '';
+    if (name.includes('.')) {
+      const idx = name.lastIndexOf('.');
+      return {
+        module: name.slice(0, idx), build_fn: name.slice(idx + 1),
+        initial_state_fn: 'initial_state', query: data.ticker || data.question || '',
+        model: data.model || null,
+      };
     }
-    host.className = 'finding-feed';
-    host.replaceChildren(...d.findings.map(f =>
-      el('div', { class: 'ov-finding' }, [
-        el('div', { class: 'ov-finding-head' }, [
-          el('span', { class: 'tag-critical', text: f.failure_type }),
-          el('span', { class: 'ov-where', text: f.where || '' }),
-          el('span', { class: 'ov-time', text: relTime(f.modified_ts) }),
-        ]),
-        el('p', { class: 'ov-summary', text: f.summary }),
-        el('button', {
-          class: 'link-btn',
-          text: `↗ ${f.source_path}`,
-          onclick: () => openReportModal(f.source_path),
-        }),
-      ])
-    ));
+    return {
+      graph_name: name || 'ticket_triage',
+      state_overrides: data._state_overrides || (data.question ? { query: data.question } : {}),
+    };
   }
 
-  function renderOverviewSystems(d) {
-    const host = $('#overview-systems');
-    if (!d.systems.length) {
-      host.className = 'empty';
-      host.textContent = 'No runs saved yet.';
-      return;
-    }
-    host.className = 'table-wrap';
-    host.replaceChildren(el('table', { class: 'ov-table' }, [
-      el('thead', {}, el('tr', {}, [
-        el('th', { text: 'System' }),
-        el('th', { text: 'Runs' }),
-        el('th', { text: 'Perturbations' }),
-        el('th', { text: 'Findings' }),
-        el('th', { text: 'Agents' }),
-        el('th', { text: 'Last run' }),
-      ])),
-      el('tbody', {}, d.systems.map(s => el('tr', {}, [
-        el('td', {}, el('span', { class: 'ov-sys', text: s.group })),
-        el('td', { class: 'num', text: String(s.n_runs) }),
-        el('td', { class: 'num', text: String(s.n_perturbations) }),
-        el('td', {}, el('span', {
-          class: s.n_findings ? 'tag-critical' : 'tag-quiet',
-          text: String(s.n_findings),
-        })),
-        el('td', { class: 'ov-agents', text: s.agents.length ? s.agents.join(', ') : '—' }),
-        el('td', { class: 'muted', text: relTime(s.last_run_ts) }),
-      ]))),
-    ]));
-  }
-
-  function renderOverviewRuns(d) {
-    const host = $('#overview-runs');
-    if (!d.runs.length) {
-      host.className = 'empty';
-      host.textContent = 'No runs saved yet.';
-      return;
-    }
-    host.className = 'table-wrap';
-    host.replaceChildren(el('table', { class: 'ov-table' }, [
-      el('thead', {}, el('tr', {}, [
-        el('th', { text: 'Run' }),
-        el('th', { text: 'Model' }),
-        el('th', { text: 'Intensity' }),
-        el('th', { text: 'Scenarios' }),
-        el('th', { text: 'Perturbations' }),
-        el('th', { text: 'Findings' }),
-        el('th', { text: 'When' }),
-        el('th', { text: '' }),
-      ])),
-      el('tbody', {}, d.runs.map(r => el('tr', {}, [
-        el('td', {}, [
-          el('div', { class: 'ov-sys', text: r.group }),
-          el('div', { class: 'ov-runname', text: r.name }),
-        ]),
-        el('td', { class: 'muted', text: r.model || '—' }),
-        el('td', { class: 'muted', text: r.intensity || '—' }),
-        el('td', { class: 'num', text: String(r.n_scenarios) }),
-        el('td', { class: 'num', text: String(r.n_perturbations) }),
-        el('td', {}, el('span', {
-          class: r.n_findings ? 'tag-critical' : 'tag-quiet',
-          text: String(r.n_findings),
-        })),
-        el('td', { class: 'muted', text: relTime(r.modified_ts) }),
-        el('td', {}, el('button', {
-          class: 'ghost-btn sm',
-          text: 'Evidence pack',
-          onclick: () => openReportModal(r.path),
-        })),
-      ]))),
-    ]));
-  }
-
-  async function initOverview(force = false) {
-    if (_overviewLoaded && !force) return;
-    try {
-      const d = await api('/api/overview');
-      renderOverviewStats(d);
-      renderOverviewFindings(d);
-      renderOverviewSystems(d);
-      renderOverviewRuns(d);
-      _overviewLoaded = true;
-    } catch (e) {
-      $('#overview-findings').className = 'empty';
-      $('#overview-findings').textContent = `Could not load overview: ${e.message}`;
-    }
-  }
-
-  $('#overview-refresh').addEventListener('click', () => {
-    toast('Refreshing…');
-    initOverview(true);
-  });
-
-  // ---------- evidence pack modal ----------------------------------------
+  // ---------- evidence pack modal ------------------------------------------
 
   async function openReportModal(path) {
     const backdrop = el('div', { class: 'modal-backdrop', tabindex: '-1' });
@@ -303,7 +201,7 @@
         el('button', { class: 'btn ghost', text: 'Close', onclick: close }),
         el('button', {
           class: 'primary',
-          text: '⇩ Download HTML',
+          text: 'Download HTML',
           onclick: () => {
             if (!currentHtml) return toast('Nothing rendered yet', 'error');
             const blob = new Blob([currentHtml], { type: 'text/html' });
@@ -321,7 +219,76 @@
     build();
   }
 
-  // ---------- adapter tab ------------------------------------------------
+  // ---------- shared: results index (used by Fork / Compare / Ask pickers) -
+
+  // Two caches: the cheap default listing (stat() only, used by the Results
+  // browser) and the with_trace_flag listing (opens every file — used by
+  // Fork & Replay / Ask, which need to filter out the majority of saved
+  // runs that only recorded a step COUNT, not the actual per-step trace).
+  let _resultsCache = null;
+  let _resultsCacheWithTrace = null;
+
+  async function fetchResultsIndex(force = false) {
+    if (_resultsCache && !force) return _resultsCache;
+    const data = await api('/api/results');
+    _resultsCache = data.groups || {};
+    return _resultsCache;
+  }
+
+  async function fetchResultsIndexWithTrace(force = false) {
+    if (_resultsCacheWithTrace && !force) return _resultsCacheWithTrace;
+    const data = await api('/api/results?with_trace_flag=true');
+    _resultsCacheWithTrace = data.groups || {};
+    return _resultsCacheWithTrace;
+  }
+
+  /** requireTrace: true for Fork & Ask (need real per-step data), false for
+   * Compare and the Results browser (which handle trace-less shapes too). */
+  async function populateResultsDropdown(selectEl, placeholder, requireTrace = false) {
+    selectEl.innerHTML = '';
+    selectEl.appendChild(el('option', { value: '', text: placeholder }));
+    try {
+      const groups = requireTrace ? await fetchResultsIndexWithTrace() : await fetchResultsIndex();
+      let anyShown = false;
+      Object.keys(groups).sort().forEach(group => {
+        const entries = requireTrace ? groups[group].filter(e => e.has_trace) : groups[group];
+        if (!entries.length) return;
+        anyShown = true;
+        const grp = el('optgroup', { label: group });
+        entries.forEach(entry => {
+          grp.appendChild(el('option', { value: entry.path, text: entry.name }));
+        });
+        selectEl.appendChild(grp);
+      });
+      if (requireTrace && !anyShown) {
+        selectEl.appendChild(el('option', { value: '', text: '(no saved runs with a full trace yet)', disabled: true }));
+      }
+    } catch (e) {
+      toast('Could not load saved runs: ' + e.message, 'error');
+    }
+  }
+
+  /** Save the currently-active run to disk so it can be reloaded later —
+   * most saved results predate this session and never wrote a full trace,
+   * so this is the one path guaranteed to produce a Fork/Ask-usable file. */
+  async function saveActiveRunToResults() {
+    if (!_activeRun) return toast('Run something first', 'error');
+    try {
+      const res = await api('/api/save-run', {
+        method: 'POST',
+        body: { data: _activeRun, group: 'web_saved', name: `${_activeRun.graph_name}_${Date.now()}` },
+      });
+      _resultsCache = null;
+      _resultsCacheWithTrace = null;
+      toast('Saved to results/' + res.path);
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }
+
+  // ============================================================
+  // TEST tab (chaos + judge against a bundled graph)
+  // ============================================================
 
   const ADAPTER_EXAMPLE_QUERIES = {
     ticket_triage: [
@@ -341,36 +308,20 @@
 
   const ADAPTER_PRESETS = {
     quick: {
-      intensity: 'light',
-      max_perturbations: 4,
-      judge: 'off',
-      divergence_mode: 'exact',
-      baseline_rollouts: 1,
-      max_judge_calls: 0,
+      intensity: 'light', max_perturbations: 4, judge: 'off',
+      divergence_mode: 'exact', baseline_rollouts: 1, max_judge_calls: 0,
     },
     balanced: {
-      intensity: 'aggressive',
-      max_perturbations: 6,
-      judge: 'openai',
-      divergence_mode: 'tiered',
-      baseline_rollouts: 3,
-      max_judge_calls: 10,
+      intensity: 'aggressive', max_perturbations: 6, judge: 'openai',
+      divergence_mode: 'tiered', baseline_rollouts: 3, max_judge_calls: 10,
     },
     thorough: {
-      intensity: 'aggressive',
-      max_perturbations: 12,
-      judge: 'openai',
-      divergence_mode: 'tiered',
-      baseline_rollouts: 5,
-      max_judge_calls: 25,
+      intensity: 'aggressive', max_perturbations: 12, judge: 'openai',
+      divergence_mode: 'tiered', baseline_rollouts: 5, max_judge_calls: 25,
     },
     exhaustive: {
-      intensity: 'exhaustive',
-      max_perturbations: 100,
-      judge: 'openai',
-      divergence_mode: 'tiered',
-      baseline_rollouts: 5,
-      max_judge_calls: 50,
+      intensity: 'exhaustive', max_perturbations: 100, judge: 'openai',
+      divergence_mode: 'tiered', baseline_rollouts: 5, max_judge_calls: 50,
     },
   };
 
@@ -384,13 +335,15 @@
 
   let _adapterWired = false;
   let _adapterGraphs = [];
-  let _lastAdapterRun = null;
 
   async function initAdapter() {
     if (_adapterWired) return;
     _adapterWired = true;
     $('#adapter-run').addEventListener('click', runAdapterDemo);
     $('#adapter-graph').addEventListener('change', onAdapterGraphChange);
+    $('#adapter-to-fork').addEventListener('click', () => sendActiveRunTo('fork'));
+    $('#adapter-to-ask').addEventListener('click', () => sendActiveRunTo('ask'));
+    $('#adapter-save-run').addEventListener('click', saveActiveRunToResults);
     $$('input[name="adapter-preset"]').forEach(input => {
       input.addEventListener('change', () => applyAdapterPreset(input.value));
     });
@@ -417,6 +370,16 @@
       applyAdapterPreset('balanced');
     } catch (e) {
       $('#adapter-graph-help').textContent = 'Could not load graph list: ' + e.message;
+    }
+  }
+
+  function sendActiveRunTo(tabName) {
+    if (!_activeRun) return toast('Run something first', 'error');
+    activateTab(tabName);
+    if (tabName === 'fork') renderForkSource();
+    if (tabName === 'ask') {
+      describeAskSource(_activeRun, _activeRun.graph_name || '(active run)');
+      $('#ask-question').focus();
     }
   }
 
@@ -523,10 +486,8 @@
           similarity_threshold: Number.isFinite(similarity_threshold) ? similarity_threshold : 0.85,
         },
       });
-      // Stash the state_overrides so the fork endpoint can rebuild the
-      // same graph. Client-only side-channel; server won't see this key.
-      data._state_overrides = state_overrides;
-      renderAdapterResult(data);
+      setActiveRun(data, { graph_name, state_overrides });
+      renderAdapterResult(data, 'adapter');
       $('#adapter-result').classList.remove('hidden');
       $('#adapter-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
       const parts = [`${data.perturbations.length} perturbations`];
@@ -535,14 +496,14 @@
       if (data.judge_calls_used) parts.push(`${data.judge_calls_used}/${data.judge_calls_budget} tier-3 calls`);
       status.textContent = `done — ${parts.join(' · ')}`;
     } catch (e) {
-      toast('Adapter run failed: ' + e.message, 'error');
+      toast('Run failed: ' + e.message, 'error');
       status.textContent = '';
     } finally {
       btn.disabled = false;
     }
   }
 
-  // ---- trace rendering helpers ------------------------------------------
+  // ---- trace rendering helpers (shared across Test / Fork / Compare / Import) --
 
   function renderTraceStep(step, opts = {}) {
     const node = step.node || '(unknown)';
@@ -561,7 +522,6 @@
       el('pre', { class: 'mono', text: JSON.stringify(step.state_after || {}, null, 2) }),
     ]);
 
-    // Fork-edit-replay button — only on baseline steps (opts.forkable)
     if (opts.forkable) {
       const forkBtn = el('button', {
         class: 'btn small ghost',
@@ -570,7 +530,7 @@
           e.stopPropagation();
           openForkModal(step);
         },
-      }, ['🔱 fork from here']);
+      }, ['Fork from here']);
       detail.appendChild(forkBtn);
     }
 
@@ -589,6 +549,18 @@
     return row;
   }
 
+  function renderTraceList(trace, opts = {}) {
+    if (!trace || trace.length === 0) {
+      return el('div', {
+        class: 'empty',
+        text: 'No trace captured (the graph likely supports only .invoke(), not .stream() / .astream() — drift can\'t show per-step detail without streaming).',
+      });
+    }
+    const host = el('div', { class: 'trace-list' });
+    trace.forEach(s => host.appendChild(renderTraceStep(s, opts)));
+    return host;
+  }
+
   // ---- fork-edit-replay ---------------------------------------------------
   //
   // Design spec: docs/design/fork_edit_replay_v1.md. v1: state edit + optional
@@ -596,13 +568,12 @@
   // editing (all captured in memory/feature_ideas.md).
 
   function openForkModal(step) {
-    if (!_lastAdapterRun) {
-      toast('No adapter run loaded — run drift_test first', 'error');
+    if (!_activeRun || !_activeForkCtx) {
+      toast('No run loaded — run something first, or load one in the Fork & Replay tab', 'error');
       return;
     }
     const stateAfter = step.state_after || {};
 
-    // Backdrop.
     const backdrop = el('div', { class: 'modal-backdrop', tabindex: '-1' });
     const close = () => backdrop.remove();
     backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
@@ -632,7 +603,6 @@
         statusLine.textContent = 'Invalid JSON: ' + e.message;
         return;
       }
-      // Build sparse edits: whatever the user changed vs original state_after.
       const edits = diffStateForFork(stateAfter, edited);
       if (Object.keys(edits).length === 0) {
         statusLine.textContent = 'No edits detected — modify the JSON above first.';
@@ -644,10 +614,9 @@
         const fork = await api('/api/adapter-fork', {
           method: 'POST',
           body: {
-            graph_name: _lastAdapterRun.graph_name,
-            state_overrides: _lastAdapterRun._state_overrides || {},
-            parent_baseline_trace: _lastAdapterRun.baseline.trace || [],
-            parent_initial_state: _lastAdapterRun.baseline.initial_state || {},
+            ..._activeForkCtx,
+            parent_baseline_trace: _activeRun.baseline.trace || [],
+            parent_initial_state: _activeRun.baseline.initial_state || {},
             fork_step: step.step,
             edits,
             also_apply_at_initial: alsoInitial.checked,
@@ -664,7 +633,7 @@
 
     const modal = el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, [
       el('div', { class: 'modal-head' }, [
-        el('h2', { text: `🔱 Fork from step #${step.step} (${step.node})` }),
+        el('h2', { text: `Fork from step #${step.step} (${step.node})` }),
         el('button', { class: 'btn ghost modal-close', text: '×', onclick: close, 'aria-label': 'close' }),
       ]),
       el('div', { class: 'modal-body' }, [
@@ -685,9 +654,6 @@
   }
 
   function diffStateForFork(before, after) {
-    // Emit only the top-level keys that changed. Deep merge on the server
-    // handles nested; but for edit intent, if the user changed a nested
-    // key we send the whole subtree of that top-level key. Simple.
     const out = {};
     const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
     for (const k of keys) {
@@ -701,19 +667,17 @@
   }
 
   function renderForkResult(fork, forkedFromStep) {
-    // Insert (or replace) a fork-result panel below the baseline trace.
-    const container = $('#adapter-baseline-trace');
+    const container = $('#fork-results-host') || $('#adapter-baseline-trace');
     if (!container) return;
-    // Remove any previous fork panel.
     const prior = document.getElementById('fork-result-panel');
     if (prior) prior.remove();
 
     const panel = el('div', { id: 'fork-result-panel', class: 'card',
-                              style: 'margin-top: 14px; border: 1px solid var(--accent, #7aa2f7);' });
-    panel.appendChild(el('div', { class: 'card-title',
-      text: `🔱 Fork replay — from step #${fork.fork_step} of the baseline` }));
+                              style: 'border: 1px solid var(--accent);' });
+    panel.appendChild(el('h3', { style: 'margin-top: 0;',
+      text: `Fork replay — from step #${fork.fork_step} of the baseline` }));
 
-    const kvHost = el('div', { class: 'kv' });
+    const kvHost = el('div', { class: 'kv-grid' });
     const kvs = [
       ['Edits', Object.keys(fork.edits).join(', ') || '(none)'],
       ['Fork branch',
@@ -737,7 +701,6 @@
     });
     panel.appendChild(kvHost);
 
-    // The two branches side by side.
     const branches = el('div', { class: 'fork-branches' });
     branches.appendChild(renderForkBranch('Fork-edited (from step #' + fork.fork_step + ')', fork.fork_branch));
     if (fork.top_edited_branch) {
@@ -745,7 +708,7 @@
     }
     panel.appendChild(branches);
 
-    container.appendChild(panel);
+    container.prepend(panel);
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
@@ -778,29 +741,16 @@
     return box;
   }
 
-  function renderTraceList(trace, opts = {}) {
-    if (!trace || trace.length === 0) {
-      return el('div', {
-        class: 'empty',
-        text: 'No trace captured (the graph likely supports only .invoke(), not .stream() / .astream() — drift can\'t show per-step detail without streaming).',
-      });
-    }
-    const host = el('div', { class: 'trace-list' });
-    trace.forEach(s => host.appendChild(renderTraceStep(s, opts)));
-    return host;
-  }
-
-  function renderAdapterResult(data) {
-    _lastAdapterRun = data;
-    const dlBtn = $('#adapter-download-json');
+  function renderAdapterResult(data, prefix) {
+    setActiveRun(data, _activeForkCtx);
+    const dlBtn = $(`#${prefix}-download-json`);
     if (dlBtn) {
       dlBtn.onclick = () => downloadJson(
         data,
-        `adapter_${data.graph_name}_${data.seed}_${Date.now()}.json`,
+        `${prefix}_${data.graph_name}_${data.seed}_${Date.now()}.json`.replace(/[^\w.-]/g, '_'),
       );
     }
-    // --- summary kv ---
-    const summary = $('#adapter-summary');
+    const summary = $(`#${prefix}-summary`);
     summary.innerHTML = '';
     const kvs = [
       ['Graph',          data.graph_name],
@@ -842,8 +792,7 @@
       summary.appendChild(el('span', { class: 'v', text: v == null || v === '' ? '—' : String(v) }));
     });
 
-    // --- baseline trace ---
-    const base = $('#adapter-baseline-trace');
+    const base = $(`#${prefix}-baseline-trace`);
     base.innerHTML = '';
     const b = data.baseline;
     if (b.crashed) {
@@ -883,8 +832,8 @@
       base.appendChild(cHost);
     }
 
-    // --- perturbations ---
-    const host = $('#adapter-perturbations');
+    const host = $(`#${prefix}-perturbations`);
+    if (!host) return;
     host.innerHTML = '';
     if (!data.perturbations.length) {
       host.appendChild(el('div', {
@@ -951,7 +900,7 @@
       el('code', { text: p.event_name }),
       el('span', { class: 'muted', text: `(${p.duration_s}s)` }),
       ...findingBadges,
-      el('span', { class: 'muted', style: 'margin-left: auto; font-size: 11px;', text: '▾ click to expand' }),
+      el('span', { class: 'muted', style: 'margin-left: auto; font-size: 11px;', text: 'click to expand' }),
     ]);
 
     const sum = el('div', { class: 'muted', style: 'margin-bottom: 8px; font-size: 13px;', text: p.event_summary });
@@ -1021,20 +970,6 @@
       el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word; font-size: 12px;',
                   text: f.summary || '' }),
     ]);
-  }
-
-  function downloadJson(data, filename) {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 100);
   }
 
   function renderFieldDivergence(d) {
@@ -1138,7 +1073,7 @@
     },
     'subagent_fanout_excess': {
       label: 'Subagent fanout excess',
-      what: 'Orchestrator spawned more subagents than the task warranted — either too many distinct subagents (hard count) or too many subagents per measurable output (ratio rule).',
+      what: 'Orchestrator spawned more subagents than the task warranted — either too many distinct subagents (hard count) or too many subagents per measurable output (ratio rule). Note: this detector attributes fanout to whichever node NAME sounds managerial without checking execution order — on fixed-topology graphs with a node like "Research Manager" positioned mid-pipeline, it can misattribute earlier, unrelated nodes as its "subagents." Treat a fire on a static pipeline as a lead to verify, not a confirmed bug.',
       source: 'Anthropic multi-agent research postmortem (50-subagent incident)',
     },
   };
@@ -1192,7 +1127,351 @@
     return wrap;
   }
 
-  // ---------- results browser tab ----------------------------------------
+  // ============================================================
+  // FORK & REPLAY tab
+  // ============================================================
+
+  let _forkWired = false;
+  async function initFork() {
+    if (!_forkWired) {
+      _forkWired = true;
+      $('#fork-load-btn').addEventListener('click', loadForkSource);
+    }
+    await populateResultsDropdown($('#fork-load-results'), 'Choose a saved run…', true);
+    renderForkSource();
+  }
+
+  async function loadForkSource() {
+    const path = $('#fork-load-results').value;
+    if (!path) return toast('Pick a saved run first', 'error');
+    try {
+      const data = await api('/api/results/' + path);
+      if (!data.baseline || !data.baseline.trace) {
+        return toast('That result has no captured trace to fork from', 'error');
+      }
+      setActiveRun(data, forkCtxFromLoadedResult(data));
+      renderForkSource();
+      toast('Loaded ' + path);
+    } catch (e) {
+      toast('Could not load: ' + e.message, 'error');
+    }
+  }
+
+  function renderForkSource() {
+    const status = $('#fork-source-status');
+    const card = $('#fork-trace-card');
+    const host = $('#fork-trace-list');
+    const resultsHost = $('#fork-results-host');
+    if (resultsHost) resultsHost.innerHTML = '';
+
+    if (!_activeRun) {
+      status.className = 'empty';
+      status.textContent = 'No run loaded yet — run something in the Test tab, or load a saved run below.';
+      card.classList.add('hidden');
+      return;
+    }
+    status.className = 'muted';
+    status.textContent = `Active: ${_activeRun.graph_name || '(unnamed)'} — ${(_activeRun.baseline.trace || []).length} step(s) captured.`;
+    card.classList.remove('hidden');
+    host.innerHTML = '';
+    host.appendChild(renderTraceList(_activeRun.baseline.trace || [], { forkable: true }));
+  }
+
+  // ============================================================
+  // ASK tab
+  // ============================================================
+
+  let _askWired = false;
+  async function initAsk() {
+    if (!_askWired) {
+      _askWired = true;
+      $('#ask-load-btn').addEventListener('click', loadAskSource);
+      $('#ask-submit').addEventListener('click', submitAsk);
+    }
+    // Unlike Fork (which needs a full trace to rewind to), Ask can work
+    // from summary-only files too — list everything, not just trace-havers.
+    await populateResultsDropdown($('#ask-load-results'), 'Choose a saved run…', false);
+    if (_activeRun) describeAskSource(_activeRun, _activeRun.graph_name || '(active run)');
+  }
+
+  function _runHasTrace(run) {
+    return Array.isArray(run?.baseline?.trace) && run.baseline.trace.length > 0;
+  }
+
+  function describeAskSource(run, label) {
+    $('#ask-source-status').className = '';
+    $('#ask-source-status').textContent = _runHasTrace(run)
+      ? `Loaded: ${label} (${run.baseline.trace.length} steps — full trace, step-level answers)`
+      : `Loaded: ${label} (summary only — no per-step trace was saved for this run; answers will be coarser)`;
+  }
+
+  async function loadAskSource() {
+    const path = $('#ask-load-results').value;
+    if (!path) return toast('Pick a saved run first', 'error');
+    try {
+      const data = await api('/api/results/' + path);
+      setActiveRun(data, _activeForkCtx);
+      describeAskSource(data, data.graph_name || path);
+      toast('Loaded ' + path);
+    } catch (e) {
+      toast('Could not load: ' + e.message, 'error');
+    }
+  }
+
+  async function submitAsk() {
+    const question = ($('#ask-question').value || '').trim();
+    if (!question) return toast('Type a question first', 'error');
+    if (!_activeRun) {
+      return toast('Load a run first — run something in Test, or load a saved run above', 'error');
+    }
+    const btn = $('#ask-submit');
+    const status = $('#ask-status');
+    const judge = $('#ask-judge').value;
+    const judge_model = ($('#ask-judge-model').value || '').trim() || null;
+    btn.disabled = true;
+    status.textContent = 'thinking…';
+    try {
+      const hasTrace = _runHasTrace(_activeRun);
+      const body = hasTrace
+        ? {
+            trace: _activeRun.baseline.trace,
+            initial_state: _activeRun.baseline.initial_state || {},
+            final_state: _activeRun.baseline.final_state || null,
+            question, judge, judge_model,
+          }
+        : { summary: _activeRun, question, judge, judge_model };
+      const res = await api('/api/trace-ask', { method: 'POST', body });
+      $('#ask-answer-card').classList.remove('hidden');
+      $('#ask-answer').innerHTML = '';
+      if (!hasTrace) {
+        $('#ask-answer').appendChild(el('div', { class: 'help', style: 'margin-bottom: 6px;',
+          text: 'Answered from summary data only — this run has no saved per-step trace.' }));
+      }
+      $('#ask-answer').appendChild(el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word;', text: res.answer }));
+      $('#ask-answer-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      status.textContent = 'done';
+    } catch (e) {
+      toast('Ask failed: ' + e.message, 'error');
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ============================================================
+  // COMPARE tab
+  // ============================================================
+
+  let _compareWired = false;
+  async function initCompare() {
+    if (!_compareWired) {
+      _compareWired = true;
+      $('#compare-run').addEventListener('click', runCompare);
+    }
+    await populateResultsDropdown($('#compare-a'), 'Choose a saved run…');
+    await populateResultsDropdown($('#compare-b'), 'Choose a saved run…');
+  }
+
+  // This repo's results/ directory holds several incompatible shapes from
+  // different eras of experiment scripts. Rather than force every shape
+  // into one schema (which would silently show "0 findings" for a file
+  // that actually has findings under different key names), recognize the
+  // shapes we know and say plainly when a file's shape isn't one of them —
+  // wrong zeros are worse than an honest "can't compare this."
+  function normalizeForCompare(data, label) {
+    // Shape 1: adapter-shaped — /api/adapter-demo, /api/custom-graph-run,
+    // and the current run_drift_on_*.py scripts all save this shape.
+    if (data && data.baseline && typeof data.baseline === 'object' && !Array.isArray(data.baseline)) {
+      const baseline = data.baseline;
+      const trace = Array.isArray(baseline.trace) ? baseline.trace : [];
+      return {
+        label, supported: true,
+        stats: {
+          'Perturbations': (data.perturbations || []).length,
+          'Crashed': data.n_crashed ?? 0,
+          'Diverged': data.n_diverged ?? 0,
+          'Judge findings': data.n_judge_findings ?? (baseline.judge_findings || []).length,
+          'Coord findings': data.n_coordination_findings ?? (baseline.coordination_findings || []).length,
+          'Baseline trace steps': trace.length || baseline.trace_steps || 0,
+        },
+        findings: [
+          ...(baseline.judge_findings || []).map(f => ({ ...f, _source: 'judge' })),
+          ...(baseline.coordination_findings || []).map(f => ({ ...f, _source: 'coord' })),
+        ],
+        trace,
+      };
+    }
+    // Shape 2: flat legacy shape (baseline_* top-level fields) — older
+    // one-off scripts like the original run_drift_on_deepagents.py.
+    if (data && ('baseline_crashed' in data || 'baseline_trace_steps' in data)) {
+      const judge = data.baseline_judge || [];
+      const coord = data.baseline_coord || [];
+      const asFinding = (f, source) => ({
+        failure_type: f.failure_type || f.type || source,
+        summary: f.summary || JSON.stringify(f),
+        _source: source,
+      });
+      return {
+        label, supported: true,
+        stats: {
+          'Perturbations': (data.perturbations || []).length,
+          'Crashed': data.n_crashed ?? 0,
+          'Diverged': data.n_diverged ?? 0,
+          'Judge findings': data.n_judge ?? judge.length,
+          'Coord findings': data.n_coord ?? coord.length,
+          'Baseline trace steps': data.baseline_trace_steps || 0,
+        },
+        findings: [
+          ...judge.map(f => asFinding(f, 'judge')),
+          ...coord.map(f => asFinding(f, 'coord')),
+        ],
+        trace: [],  // this shape never saved the full per-step trace, only a count
+      };
+    }
+    return { label, supported: false };
+  }
+
+  async function runCompare() {
+    const pathA = $('#compare-a').value;
+    const pathB = $('#compare-b').value;
+    if (!pathA || !pathB) return toast('Pick two saved runs', 'error');
+    const status = $('#compare-status');
+    status.textContent = 'loading…';
+    try {
+      const [dataA, dataB] = await Promise.all([
+        api('/api/results/' + pathA),
+        api('/api/results/' + pathB),
+      ]);
+      const a = normalizeForCompare(dataA, pathA);
+      const b = normalizeForCompare(dataB, pathB);
+      renderCompare(a, b);
+      $('#compare-result').classList.remove('hidden');
+      $('#compare-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      status.textContent = '';
+    } catch (e) {
+      toast('Compare failed: ' + e.message, 'error');
+      status.textContent = '';
+    }
+  }
+
+  function renderCompare(a, b) {
+    const summaryHost = $('#compare-summary');
+    const findingsHost = $('#compare-findings');
+    const traceHost = $('#compare-trace');
+    summaryHost.innerHTML = '';
+    findingsHost.innerHTML = '';
+    traceHost.innerHTML = '';
+
+    if (!a.supported || !b.supported) {
+      const bad = [!a.supported && a.label, !b.supported && b.label].filter(Boolean).join(' and ');
+      summaryHost.appendChild(el('div', { class: 'empty',
+        text: `${bad} — not a recognized result shape for comparison (likely an older experiment-script format with different field names). Open it in the Results tab to view the raw JSON instead.` }));
+      return;
+    }
+
+    const keys = new Set([...Object.keys(a.stats), ...Object.keys(b.stats)]);
+    const table = el('table', { class: 'ov-table' }, [
+      el('thead', {}, el('tr', {}, [
+        el('th', { text: '' }),
+        el('th', { text: a.label }),
+        el('th', { text: b.label }),
+      ])),
+      el('tbody', {}, [...keys].map(k => {
+        const va = a.stats[k], vb = b.stats[k];
+        const differs = va !== vb;
+        return el('tr', {}, [
+          el('td', { text: k }),
+          el('td', { class: differs ? 'num' : 'num muted', text: String(va ?? '—') }),
+          el('td', { class: differs ? 'num' : 'num muted', text: String(vb ?? '—') }),
+        ]);
+      })),
+    ]);
+    summaryHost.appendChild(el('div', { class: 'table-wrap' }, [table]));
+
+    const findingsRow = el('div', { class: 'trace-compare' }, [
+      el('div', { class: 'trace-compare-col' }, [
+        el('h4', { text: `${a.label} (${a.findings.length})` }),
+        a.findings.length
+          ? el('div', {}, a.findings.map(f => f._source === 'judge' ? renderJudgeFinding(f) : renderCoordFinding(f)))
+          : el('div', { class: 'empty', text: 'No findings.' }),
+      ]),
+      el('div', { class: 'trace-compare-col' }, [
+        el('h4', { text: `${b.label} (${b.findings.length})` }),
+        b.findings.length
+          ? el('div', {}, b.findings.map(f => f._source === 'judge' ? renderJudgeFinding(f) : renderCoordFinding(f)))
+          : el('div', { class: 'empty', text: 'No findings.' }),
+      ]),
+    ]);
+    findingsHost.appendChild(findingsRow);
+
+    traceHost.appendChild(el('div', { class: 'trace-compare' }, [
+      el('div', { class: 'trace-compare-col' }, [
+        el('h4', { text: `${a.label} (${a.trace.length} step(s))` }),
+        renderTraceList(a.trace),
+      ]),
+      el('div', { class: 'trace-compare-col' }, [
+        el('h4', { text: `${b.label} (${b.trace.length} step(s))` }),
+        renderTraceList(b.trace),
+      ]),
+    ]));
+  }
+
+  // ============================================================
+  // IMPORT GRAPH tab (BYOA)
+  // ============================================================
+
+  let _importWired = false;
+  function initImport() {
+    if (_importWired) return;
+    _importWired = true;
+    $('#import-run').addEventListener('click', runCustomGraph);
+    $('#import-to-fork').addEventListener('click', () => sendActiveRunTo('fork'));
+    $('#import-to-ask').addEventListener('click', () => sendActiveRunTo('ask'));
+    $('#import-save-run').addEventListener('click', saveActiveRunToResults);
+  }
+
+  async function runCustomGraph() {
+    const module = ($('#import-module').value || '').trim();
+    if (!module) return toast('Module path is required', 'error');
+    const build_fn = ($('#import-build-fn').value || 'build').trim();
+    const initial_state_fn = ($('#import-state-fn').value || 'initial_state').trim();
+    const query = ($('#import-query').value || '').trim();
+    const model = ($('#import-model').value || '').trim() || null;
+    const intensity = $('#import-intensity').value;
+    const judge = $('#import-judge').value;
+    const max_perturbations = parseInt($('#import-max-perturbations').value, 10) || 0;
+
+    const btn = $('#import-run');
+    const status = $('#import-status');
+    btn.disabled = true;
+    status.textContent = 'importing + running (a real graph invocation can take minutes)…';
+    try {
+      const data = await api('/api/custom-graph-run', {
+        method: 'POST',
+        body: {
+          module, build_fn, initial_state_fn, query, model,
+          intensity, judge, max_perturbations,
+        },
+      });
+      setActiveRun(data, { module, build_fn, initial_state_fn, query, model });
+      renderAdapterResult(data, 'import');
+      $('#import-result').classList.remove('hidden');
+      $('#import-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const parts = [`${data.perturbations.length} perturbations`];
+      if (data.n_judge_findings) parts.push(`${data.n_judge_findings} judge finding(s)`);
+      if (data.n_coordination_findings) parts.push(`${data.n_coordination_findings} coord finding(s)`);
+      status.textContent = `done — ${parts.join(' · ')}`;
+    } catch (e) {
+      toast('Run failed: ' + e.message, 'error');
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ============================================================
+  // RESULTS BROWSER tab
+  // ============================================================
 
   let _resultsWired = false;
   async function initResults() {
@@ -1209,13 +1488,12 @@
     host.classList.remove('empty');
     host.innerHTML = 'Loading…';
     try {
-      const data = await api('/api/results');
-      const groups = data.groups || {};
+      const groups = await fetchResultsIndex(true);
       host.innerHTML = '';
       const groupNames = Object.keys(groups).sort();
       if (!groupNames.length) {
         host.classList.add('empty');
-        host.textContent = 'No saved results yet. Run an example script with --save-json to populate this list.';
+        host.textContent = 'No saved results yet. Run something from the Test tab, or an example script with --save-json.';
         return;
       }
       groupNames.forEach(group => {
@@ -1227,15 +1505,20 @@
         entries.forEach(entry => {
           const row = el('div', {
             class: 'trace-step',
-            style: 'cursor: pointer; grid-template-columns: 1fr auto;',
-            onclick: () => openResultsFile(entry.path),
+            style: 'grid-template-columns: 1fr auto; cursor: default;',
           }, [
-            el('div', { class: 'trace-step-body' }, [
+            el('div', {
+              class: 'trace-step-body', style: 'cursor: pointer;',
+              onclick: () => openResultsFile(entry.path),
+            }, [
               el('div', { class: 'trace-step-node', text: entry.name }),
               el('div', { class: 'trace-step-summary', text: entry.path }),
             ]),
-            el('div', { class: 'muted', style: 'text-align: right; font-size: 11px;', text:
-              `${(entry.size_bytes / 1024).toFixed(1)} KB · ${fmt.short(new Date(entry.modified_ts * 1000).toISOString())}` }),
+            el('div', { style: 'display: flex; align-items: center; gap: 10px;' }, [
+              el('span', { class: 'muted', style: 'font-size: 11px;', text:
+                `${(entry.size_bytes / 1024).toFixed(1)} KB · ${fmt.short(new Date(entry.modified_ts * 1000).toISOString())}` }),
+              el('button', { class: 'ghost-btn sm', text: 'Evidence pack', onclick: () => openReportModal(entry.path) }),
+            ]),
           ]);
           list.appendChild(row);
         });
@@ -1340,5 +1623,5 @@
 
   // ---------- start -------------------------------------------------------
 
-  initOverview();
+  initAdapter();
 })();

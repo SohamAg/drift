@@ -10,7 +10,6 @@
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark">d</span>
       <span class="brand-name">drift</span>
     </div>
     <div class="topbar-actions">
@@ -22,54 +21,18 @@
   </header>
 
   <nav class="tabs" role="tablist">
-    <button class="tab active" data-tab="overview" role="tab">Overview</button>
-    <button class="tab"        data-tab="adapter" role="tab">Adapter</button>
+    <button class="tab active" data-tab="adapter" role="tab">Test</button>
+    <button class="tab"        data-tab="fork"    role="tab">Fork &amp; Replay</button>
+    <button class="tab"        data-tab="compare" role="tab">Compare</button>
+    <button class="tab"        data-tab="ask"     role="tab">Ask</button>
+    <button class="tab"        data-tab="import"  role="tab">Import graph</button>
     <button class="tab"        data-tab="results" role="tab">Results</button>
-    <button class="tab"        data-tab="custom"  role="tab">Custom</button>
   </nav>
 
   <main>
 
-    <!-- ===================== OVERVIEW ===================== -->
-    <section id="tab-overview" class="tab-panel active">
-      <div class="overview-head">
-        <div>
-          <h2>Coordination reliability across every system you've tested</h2>
-          <p class="help">
-            Aggregated from every saved run in <code>results/</code>. Each finding links
-            back to the run that surfaced it; any run can be rendered as a shareable
-            evidence pack.
-          </p>
-        </div>
-        <button type="button" id="overview-refresh" class="ghost-btn">↻ Refresh</button>
-      </div>
-
-      <div id="overview-stats" class="stat-row"></div>
-
-      <div class="card">
-        <h3>Findings <span class="muted" id="overview-findings-count"></span></h3>
-        <p class="help">Every coordination failure drift has surfaced, newest first.</p>
-        <div id="overview-findings" class="empty">Loading…</div>
-      </div>
-
-      <div class="card">
-        <h3>Systems under test</h3>
-        <p class="help">One row per target system, with its full chaos history.</p>
-        <div id="overview-systems" class="empty">Loading…</div>
-      </div>
-
-      <div class="card">
-        <h3>Runs</h3>
-        <p class="help">
-          Every adapter run on disk. <strong>Evidence pack</strong> renders a run into a
-          self-contained HTML document — the artifact a reviewer or auditor consumes.
-        </p>
-        <div id="overview-runs" class="empty">Loading…</div>
-      </div>
-    </section>
-
-    <!-- ===================== ADAPTER ===================== -->
-    <section id="tab-adapter" class="tab-panel">
+    <!-- ===================== TEST (chaos + judge against a bundled graph) ===================== -->
+    <section id="tab-adapter" class="tab-panel active">
       <div class="card">
         <h2>Test a multi-agent graph under chaos</h2>
 
@@ -199,7 +162,10 @@
           <h3>Run summary</h3>
           <div id="adapter-summary" class="kv-grid"></div>
           <div class="row" style="margin-top: 8px; gap: 8px;">
-            <button type="button" id="adapter-download-json" class="ghost-btn">⇩ Download raw JSON</button>
+            <button type="button" id="adapter-download-json" class="ghost-btn">Download raw JSON</button>
+            <button type="button" id="adapter-save-run" class="ghost-btn">Save to Results</button>
+            <button type="button" id="adapter-to-fork" class="ghost-btn">Open in Fork &amp; Replay</button>
+            <button type="button" id="adapter-to-ask" class="ghost-btn">Ask about this trace</button>
           </div>
         </div>
 
@@ -216,14 +182,223 @@
       </div>
     </section>
 
+    <!-- ===================== FORK & REPLAY ===================== -->
+    <section id="tab-fork" class="tab-panel">
+      <div class="card">
+        <h2>Counterfactual fork &amp; replay</h2>
+        <p class="help">
+          Rewind a run to any super-step, edit the state (a field value, a message, a flag), and replay
+          forward from there. The server rebuilds the graph and reruns it deterministically past the edit —
+          this isolates whether ONE change explains a divergence, instead of guessing from the final output alone.
+        </p>
+        <div id="fork-source-status" class="empty">No run loaded yet — run something in the <strong>Test</strong> tab, or load a saved run below.</div>
+        <div class="row" style="gap: 8px; margin-top: 10px; align-items: flex-end; flex-wrap: wrap;">
+          <div class="field" style="flex: 1; min-width: 240px;">
+            <label for="fork-load-results">Or load a saved run</label>
+            <select id="fork-load-results"><option value="">Choose a saved run…</option></select>
+            <p class="help">Only lists runs with a full captured trace — most older CLI-script runs under <code>results/</code> only saved step counts. Use <strong>Save to Results</strong> on a Test/Import run to add more here.</p>
+          </div>
+          <button type="button" id="fork-load-btn" class="ghost-btn">Load</button>
+        </div>
+      </div>
+
+      <div id="fork-trace-card" class="card hidden">
+        <h3>Baseline trace — click a step, then "fork from here"</h3>
+        <div id="fork-trace-list"></div>
+      </div>
+
+      <div id="fork-results-host"></div>
+    </section>
+
+    <!-- ===================== COMPARE ===================== -->
+    <section id="tab-compare" class="tab-panel">
+      <div class="card">
+        <h2>Compare two runs</h2>
+        <p class="help">
+          Pick any two saved results — two tickers, two seeds, before/after a fix — and see their headline
+          numbers and findings side by side, plus a step-by-step trace diff.
+        </p>
+        <div class="row two-col">
+          <div class="field">
+            <label for="compare-a">Run A</label>
+            <select id="compare-a"><option value="">Choose a saved run…</option></select>
+          </div>
+          <div class="field">
+            <label for="compare-b">Run B</label>
+            <select id="compare-b"><option value="">Choose a saved run…</option></select>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" id="compare-run" class="primary">Compare</button>
+          <span id="compare-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="compare-result" class="hidden">
+        <div class="card">
+          <h3>Headline diff</h3>
+          <div id="compare-summary"></div>
+        </div>
+        <div class="card">
+          <h3>Findings</h3>
+          <div id="compare-findings"></div>
+        </div>
+        <div class="card">
+          <h3>Trace</h3>
+          <div id="compare-trace"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== ASK ===================== -->
+    <section id="tab-ask" class="tab-panel">
+      <div class="card">
+        <h2>Ask about a real trace</h2>
+        <p class="help">
+          Free-text question, answered by an LLM grounded only in one captured trace — not general knowledge.
+          Good for "why did the Risk Judge override the trader here" or "did any agent see stale data" without
+          reading the raw JSON yourself.
+        </p>
+        <div id="ask-source-status" class="empty">No trace loaded — run something in the <strong>Test</strong> tab, or load a saved run below.</div>
+        <div class="row" style="gap: 8px; margin-top: 10px; align-items: flex-end; flex-wrap: wrap;">
+          <div class="field" style="flex: 1; min-width: 240px;">
+            <label for="ask-load-results">Or load a saved run</label>
+            <select id="ask-load-results"><option value="">Choose a saved run…</option></select>
+            <p class="help">Works with any saved run. Ones with a full captured trace (via <strong>Save to Results</strong> on a Test/Import run) get step-cited answers; older summary-only files still answer, just coarser.</p>
+          </div>
+          <button type="button" id="ask-load-btn" class="ghost-btn">Load</button>
+        </div>
+
+        <div class="field" style="margin-top: 14px;">
+          <label for="ask-question">Question</label>
+          <textarea id="ask-question" rows="2" placeholder="e.g. Did the Bull and Bear researchers actually respond to each other's arguments, or talk past each other?"></textarea>
+        </div>
+        <div class="row two-col">
+          <div class="field">
+            <label for="ask-judge">Judge</label>
+            <select id="ask-judge">
+              <option value="openai" selected>OpenAI (real)</option>
+              <option value="mock">Mock (no API)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="ask-judge-model">Model</label>
+            <input type="text" id="ask-judge-model" placeholder="gpt-4o-mini" />
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" id="ask-submit" class="primary">Ask</button>
+          <span id="ask-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="ask-answer-card" class="card hidden">
+        <h3>Answer</h3>
+        <div id="ask-answer"></div>
+      </div>
+    </section>
+
+    <!-- ===================== IMPORT GRAPH (BYOA) ===================== -->
+    <section id="tab-import" class="tab-panel">
+      <div class="card">
+        <h2>Import your own LangGraph</h2>
+        <p class="help">
+          Point drift at any importable Python module exposing a <code>build(model=...)</code> function
+          (returns a compiled graph) and an <code>initial_state(query)</code> function (returns a dict) —
+          the same contract used by <code>examples/targets/</code>. Runs the same chaos + judge pipeline
+          as the Test tab against it.
+        </p>
+        <p class="help" style="color: var(--warning);">
+          This dynamically imports and executes local code — same trust model as a Jupyter kernel.
+          Only point it at code you wrote or trust; never expose this server beyond your own machine.
+        </p>
+
+        <div class="row two-col">
+          <div class="field">
+            <label for="import-module">Module <span class="muted">(importable, e.g. on PYTHONPATH)</span></label>
+            <input type="text" id="import-module" class="mono" placeholder="examples.targets.tradingagents_debate" />
+          </div>
+          <div class="field">
+            <label for="import-query">Query <span class="muted">(passed to initial_state)</span></label>
+            <input type="text" id="import-query" placeholder="NVDA" />
+          </div>
+        </div>
+        <div class="row two-col">
+          <div class="field">
+            <label for="import-build-fn">Build function</label>
+            <input type="text" id="import-build-fn" value="build" />
+          </div>
+          <div class="field">
+            <label for="import-state-fn">Initial-state function</label>
+            <input type="text" id="import-state-fn" value="initial_state" />
+          </div>
+        </div>
+        <div class="row two-col">
+          <div class="field">
+            <label for="import-model">Model override <span class="muted">(optional — module's default if blank)</span></label>
+            <input type="text" id="import-model" placeholder="" />
+          </div>
+          <div class="field">
+            <label for="import-intensity">Chaos intensity</label>
+            <select id="import-intensity">
+              <option value="off">off (baseline only)</option>
+              <option value="light" selected>light</option>
+              <option value="moderate">moderate</option>
+              <option value="aggressive">aggressive</option>
+            </select>
+          </div>
+        </div>
+        <div class="row two-col">
+          <div class="field">
+            <label for="import-judge">LLM judge over traces</label>
+            <select id="import-judge">
+              <option value="off" selected>off</option>
+              <option value="openai">OpenAI (real)</option>
+              <option value="mock">Mock (no API)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="import-max-perturbations">Max perturbations</label>
+            <input type="number" id="import-max-perturbations" value="1" min="0" max="200" />
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="import-run" class="primary">Run drift_test</button>
+          <span id="import-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="import-result" class="hidden">
+        <div class="card">
+          <h3>Run summary</h3>
+          <div id="import-summary" class="kv-grid"></div>
+          <div class="row" style="margin-top: 8px; gap: 8px;">
+            <button type="button" id="import-download-json" class="ghost-btn">Download raw JSON</button>
+            <button type="button" id="import-save-run" class="ghost-btn">Save to Results</button>
+            <button type="button" id="import-to-fork" class="ghost-btn">Open in Fork &amp; Replay</button>
+            <button type="button" id="import-to-ask" class="ghost-btn">Ask about this trace</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Baseline trace</h3>
+          <div id="import-baseline-trace"></div>
+        </div>
+        <div class="card">
+          <h3>Perturbations</h3>
+          <div id="import-perturbations" class="failure-list"></div>
+        </div>
+      </div>
+    </section>
+
     <!-- ===================== RESULTS BROWSER ===================== -->
     <section id="tab-results" class="tab-panel">
       <div class="card">
         <h2>Raw experiment results</h2>
         <p class="help">
-          Every <code>--save-json</code> run from the example scripts lands in
-          <code>results/&lt;experiment&gt;/</code> and shows up here. Click a file
-          to load it in-place; download for offline inspection.
+          Every <code>--save-json</code> run from the example scripts, plus anything run from the Test or
+          Import tabs, lands in <code>results/&lt;experiment&gt;/</code> and shows up here. Click a file to
+          load it in-place; download for offline inspection.
         </p>
         <div id="results-index" class="empty">Loading…</div>
       </div>
@@ -232,28 +407,11 @@
         <div class="card">
           <h3 id="results-viewer-title">Result</h3>
           <div class="row" style="gap: 8px; margin-bottom: 8px;">
-            <button type="button" id="results-download" class="ghost-btn">⇩ Download JSON</button>
+            <button type="button" id="results-download" class="ghost-btn">Download JSON</button>
             <button type="button" id="results-close" class="ghost-btn">Close</button>
           </div>
           <div id="results-viewer-body"></div>
         </div>
-      </div>
-    </section>
-
-    <!-- ===================== CUSTOM (BYOA — being re-wired) ===================== -->
-    <section id="tab-custom" class="tab-panel">
-      <div class="card">
-        <h2>Bring your own agents <span class="muted" style="font-size: 13px;">— rewiring</span></h2>
-        <p class="help">
-          The <code>@drift.agent</code> decorator + Custom tab predated the LangGraph adapter. After the
-          2026-06-29 cleanup the native simulator was removed, so this tab is paused while we re-wire it
-          to run user-supplied agents through the adapter path.
-        </p>
-        <p class="help">
-          The decorator <code>@drift.agent</code> still imports as a data shape; only the runtime path is
-          paused. Want to test your agents now? Wire them into a LangGraph and use the Adapter tab, or call
-          <code>drift_test</code> from a Python script (see <code>examples/adapters/</code>).
-        </p>
       </div>
     </section>
 
