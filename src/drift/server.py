@@ -10,6 +10,7 @@ endpoints:
   POST /api/custom-graph-run         — run drift_test against a user-imported module
   POST /api/adapter-fork             — fork-edit-replay a completed run at one step
   POST /api/trace-ask                — ask a free-text question about one captured trace
+  POST /api/save-run                 — persist a run's full JSON so it's loadable later
   GET  /api/results                  — list saved experiment JSON under results/
   GET  /api/results/{relpath:path}   — fetch one saved result by path
   GET  /api/mast-demos               — list curated MAST demo traces
@@ -206,6 +207,18 @@ class CustomGraphRequest(BaseModel):
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
     max_judge_calls: int = Field(default=10, ge=0, le=100)
     similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+
+
+class SaveRunRequest(BaseModel):
+    """Persist a run's full JSON to disk under results/ so it can be
+    reloaded later by Fork & Replay / Ask / Compare.
+
+    `data` is the exact object the client got back from /api/adapter-demo
+    or /api/custom-graph-run — saved verbatim, not re-shaped server-side.
+    """
+    data: dict[str, Any]
+    group: str = "web_saved"
+    name: str = ""
 
 
 class TraceAskRequest(BaseModel):
@@ -472,6 +485,25 @@ def _build_langgraph_supervisor_demo(overrides: dict[str, Any]) -> tuple[Any, di
     return graph, initial_state, meta
 
 
+def _file_has_trace(path: Path) -> bool:
+    """Cheap check: does this saved result carry a full per-step trace?
+
+    Most historical CLI-script runs saved only `baseline_trace_steps`
+    (an int) rather than `baseline.trace` (the actual list) — see
+    docs note in results_index(). Returns False on any parse error rather
+    than raising, since this backs a UI filter, not a hard guarantee.
+    """
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    baseline = d.get("baseline") if isinstance(d, dict) else None
+    if not isinstance(baseline, dict):
+        return False
+    trace = baseline.get("trace")
+    return isinstance(trace, list) and len(trace) > 0
+
+
 # ---- MAST helpers ---------------------------------------------------------
 
 def _shape_mast_response(entry: dict[str, Any], result: dict[str, Any], *, mode: str) -> dict[str, Any]:
@@ -682,9 +714,17 @@ def create_app() -> FastAPI:
         return {"graphs": _list_adapter_graphs()}
 
     @app.get("/api/results")
-    def results_index() -> dict[str, Any]:
+    def results_index(with_trace_flag: bool = False) -> dict[str, Any]:
         """List every saved experiment JSON under results/, grouped by
-        experiment subdirectory. Powers the Results browser in the UI."""
+        experiment subdirectory. Powers the Results browser in the UI.
+
+        `with_trace_flag=true` additionally opens each file to check whether
+        it saved a full per-step trace (`baseline.trace` as a non-empty
+        list) — most older CLI-script runs only saved a step COUNT, so this
+        lets the Fork & Replay / Ask tabs filter to files that are actually
+        usable instead of offering hundreds of dead ends. Off by default
+        because it means parsing every file, not just stat()-ing it.
+        """
         groups: dict[str, list[dict[str, Any]]] = {}
         if RESULTS_DIR.exists():
             for path in sorted(RESULTS_DIR.rglob("*.json")):
@@ -694,15 +734,46 @@ def create_app() -> FastAPI:
                     continue
                 rel = path.relative_to(RESULTS_DIR)
                 group = rel.parts[0] if len(rel.parts) > 1 else "(root)"
-                groups.setdefault(group, []).append({
+                entry = {
                     "name": rel.name,
                     "path": str(rel).replace("\\", "/"),
                     "size_bytes": stat.st_size,
                     "modified_ts": stat.st_mtime,
-                })
+                }
+                if with_trace_flag:
+                    entry["has_trace"] = _file_has_trace(path)
+                groups.setdefault(group, []).append(entry)
         for entries in groups.values():
             entries.sort(key=lambda e: e["modified_ts"], reverse=True)
         return {"groups": groups}
+
+    @app.post("/api/save-run")
+    def save_run(req: SaveRunRequest) -> dict[str, Any]:
+        """Persist a run's full JSON (as returned by /api/adapter-demo or
+        /api/custom-graph-run) under results/, so it becomes loadable later
+        by Fork & Replay / Ask / Compare — those need the full per-step
+        trace this endpoint's caller already has in the browser, which
+        nothing else currently writes to disk.
+        """
+        import re
+        import time
+
+        safe_group = re.sub(r"[^A-Za-z0-9_-]+", "_", req.group or "web_saved").strip("_") or "web_saved"
+        safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", req.name or "").strip("_")
+        if not safe_name:
+            safe_name = f"run_{int(time.time())}"
+        if not safe_name.endswith(".json"):
+            safe_name += ".json"
+
+        out_dir = (RESULTS_DIR / safe_group).resolve()
+        if not str(out_dir).startswith(str(RESULTS_DIR.resolve())):
+            raise HTTPException(400, "invalid group")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / safe_name
+
+        out_path.write_text(json.dumps(req.data, indent=2, default=str), encoding="utf-8")
+        rel = out_path.relative_to(RESULTS_DIR)
+        return {"path": str(rel).replace("\\", "/")}
 
     @app.get("/api/overview")
     def overview() -> dict[str, Any]:
