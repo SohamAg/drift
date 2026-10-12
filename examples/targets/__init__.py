@@ -41,17 +41,13 @@ TOPOLOGIES = (
 )
 
 #: Module names under examples.targets, in registry order.
+#: Every entry here must be genuine third-party code (see docs/targets_setup.md
+#: hard rule) — no in-repo constructions transcribed from tutorials.
 _TARGET_MODULES = (
     "supervisor_basic",
-    "supervisor_extended",
     "swarm_peer",
-    "hierarchical_teams",
-    "collaboration_pair",
-    "plan_execute",
-    "reflection_loop",
-    "map_reduce_fanout",
-    "hitl_interrupt",
     "deepagents_tooldispatch",
+    "tradingagents_debate",
 )
 
 
