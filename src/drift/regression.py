@@ -166,6 +166,7 @@ class RegressionReport:
 
     def to_json(self) -> dict[str, Any]:
         d = asdict(self)
+        d["is_regression"] = self.is_regression
         return d
 
 
