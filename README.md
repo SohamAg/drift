@@ -122,7 +122,33 @@ Six-category taxonomy (`coordination_contradiction`, `grounding_failure`,
 the per-super-step trace. Catches semantic coordination issues a single-step
 detector can't see. Add custom rules in plain English via `user_guidelines=`.
 
-### 5. Evidence packs — `drift report`
+### 5. Regression tracking — over time, not just one-shot
+Everything above answers "is this graph robust right now." Regression
+tracking answers the question that actually catches a bad prompt edit
+before it ships: "did the LAST change make it worse?"
+
+```python
+from drift.adapters.langgraph import drift_test
+from drift import regression
+
+result = drift_test(graph=my_compiled_graph, initial_state={...})
+report = regression.track(result, graph_signature="my_graph")
+
+if report.is_regression:
+    for flag in report.flags:
+        print(f"[{flag.severity}] {flag.summary}")
+```
+
+`track()` condenses the run into a small snapshot (never the full trace),
+appends it to a per-graph history file under `results/_history/`, and diffs
+it against the most recent prior run for that same `graph_signature`: new
+coordination-finding types, finding types that stopped firing, crash/
+divergence rate jumps, and perturbation runtime jumps. The web UI exposes
+this as a **"Track for regression"** checkbox on the Test and Import-graph
+tabs; `drift history <graph_signature>` replays the same comparison from
+the terminal without re-running anything.
+
+### 6. Evidence packs — `drift report`
 A run's raw JSON is not what a reviewer, auditor, or insurer consumes. `drift
 report` renders it into a single self-contained HTML document: what was tested,
 what chaos was applied, what diverged, every finding with its evidence, the
