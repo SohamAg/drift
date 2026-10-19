@@ -475,6 +475,7 @@
     const judgeOn = judge !== 'off' || divergence_mode === 'tiered';
     status.textContent = judgeOn ? 'running (judge on, may take a minute)…' : 'running…';
     try {
+      const track_history = $('#adapter-track-history').checked;
       const data = await api('/api/adapter-demo', {
         method: 'POST',
         body: {
@@ -484,6 +485,7 @@
           divergence_mode, baseline_rollouts,
           max_judge_calls: Number.isFinite(max_judge_calls) ? max_judge_calls : 10,
           similarity_threshold: Number.isFinite(similarity_threshold) ? similarity_threshold : 0.85,
+          track_history,
         },
       });
       setActiveRun(data, { graph_name, state_overrides });
@@ -741,6 +743,48 @@
     return box;
   }
 
+  // Severity -> existing .pill modifier class (see styles.css).
+  const REGRESSION_PILL_CLASS = { crash: 'danger', regression: 'warning', info: 'info' };
+
+  function renderRegressionPanel(regression, prefix) {
+    const host = $(`#${prefix}-regression`);
+    if (!host) return;
+    host.innerHTML = '';
+    if (!regression) {
+      host.classList.add('hidden');
+      return;
+    }
+    host.classList.remove('hidden');
+
+    if (!regression.has_previous) {
+      host.appendChild(el('h3', { text: 'Regression tracking' }));
+      host.appendChild(el('div', { class: 'muted',
+        text: 'First tracked run for this graph — saved as the baseline for next time.' }));
+      return;
+    }
+
+    const flags = regression.flags || [];
+    host.appendChild(el('h3', { text: 'Regression tracking' }));
+    host.appendChild(el('div', { class: 'muted',
+      text: `vs. last tracked run (${fmt.short(regression.previous_timestamp * 1000)}):` }));
+
+    if (!flags.length) {
+      host.appendChild(el('div', { style: 'margin-top: 8px;' }, [
+        el('span', { class: 'pill success', text: 'no regression' }),
+      ]));
+      return;
+    }
+
+    const list = el('div', { class: 'regression-flags' });
+    flags.forEach(f => {
+      list.appendChild(el('div', { class: 'regression-flag' }, [
+        el('span', { class: `pill ${REGRESSION_PILL_CLASS[f.severity] || 'same'}`, text: f.severity }),
+        el('span', { text: f.summary }),
+      ]));
+    });
+    host.appendChild(list);
+  }
+
   function renderAdapterResult(data, prefix) {
     setActiveRun(data, _activeForkCtx);
     const dlBtn = $(`#${prefix}-download-json`);
@@ -791,6 +835,8 @@
       summary.appendChild(el('span', { class: 'k', text: k }));
       summary.appendChild(el('span', { class: 'v', text: v == null || v === '' ? '—' : String(v) }));
     });
+
+    renderRegressionPanel(data.regression, prefix);
 
     const base = $(`#${prefix}-baseline-trace`);
     base.innerHTML = '';
@@ -1440,6 +1486,7 @@
     const intensity = $('#import-intensity').value;
     const judge = $('#import-judge').value;
     const max_perturbations = parseInt($('#import-max-perturbations').value, 10) || 0;
+    const track_history = $('#import-track-history').checked;
 
     const btn = $('#import-run');
     const status = $('#import-status');
@@ -1450,7 +1497,7 @@
         method: 'POST',
         body: {
           module, build_fn, initial_state_fn, query, model,
-          intensity, judge, max_perturbations,
+          intensity, judge, max_perturbations, track_history,
         },
       });
       setActiveRun(data, { module, build_fn, initial_state_fn, query, model });

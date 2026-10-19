@@ -148,6 +148,14 @@
               <textarea id="adapter-user-guidelines" class="mono" rows="3"
                         placeholder="agent must escalate when sentiment drops below 0.3"></textarea>
             </div>
+
+            <div class="field">
+              <label class="checkbox-row" for="adapter-track-history">
+                <input type="checkbox" id="adapter-track-history" />
+                Track for regression
+                <span class="muted">— compare this run against this graph's last tracked run</span>
+              </label>
+            </div>
           </details>
 
           <div class="actions">
@@ -168,6 +176,8 @@
             <button type="button" id="adapter-to-ask" class="ghost-btn">Ask about this trace</button>
           </div>
         </div>
+
+        <div id="adapter-regression" class="card hidden"></div>
 
         <div class="card">
           <h3>Baseline trace</h3>
@@ -363,6 +373,14 @@
           </div>
         </div>
 
+        <div class="field">
+          <label class="checkbox-row" for="import-track-history">
+            <input type="checkbox" id="import-track-history" />
+            Track for regression
+            <span class="muted">— compare this run against this graph's last tracked run</span>
+          </label>
+        </div>
+
         <div class="actions">
           <button type="button" id="import-run" class="primary">Run drift_test</button>
           <span id="import-status" class="muted"></span>
@@ -380,6 +398,7 @@
             <button type="button" id="import-to-ask" class="ghost-btn">Ask about this trace</button>
           </div>
         </div>
+        <div id="import-regression" class="card hidden"></div>
         <div class="card">
           <h3>Baseline trace</h3>
           <div id="import-baseline-trace"></div>
