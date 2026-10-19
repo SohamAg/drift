@@ -45,6 +45,12 @@ except ImportError:
 
 WEB_DIR: Path = PROJECT_ROOT / "web"
 RESULTS_DIR: Path = PROJECT_ROOT / "results"
+# Per-graph regression history (see drift.regression). A module-level
+# constant rather than relying on drift.regression's own default so tests
+# can monkeypatch `drift.server.HISTORY_DIR` — regression.track()'s default
+# argument is bound once at import time and wouldn't see a patched module
+# constant on drift.regression itself.
+HISTORY_DIR: Path = RESULTS_DIR / "_history"
 MAST_DATASET: Path = PROJECT_ROOT / "data" / "external" / "mast" / "MAD_human_labelled_dataset.json"
 MAST_CACHED_RESULTS_DIR: Path = PROJECT_ROOT / "results" / "mast_judge" / "full"
 
@@ -132,6 +138,10 @@ class AdapterDemoRequest(BaseModel):
     max_judge_calls: int = Field(default=10, ge=0, le=100)
     similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
+    # Regression tracking — compare this run against the same graph's
+    # history (see drift.regression) and persist this run to that history.
+    track_history: bool = False
+
 
 class AdapterForkRequest(BaseModel):
     """Fork-edit-replay a completed adapter run at a specific step.
@@ -207,6 +217,8 @@ class CustomGraphRequest(BaseModel):
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
     max_judge_calls: int = Field(default=10, ge=0, le=100)
     similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+
+    track_history: bool = False
 
 
 class SaveRunRequest(BaseModel):
@@ -553,6 +565,7 @@ def _shape_adapter_result(
     judge: str,
     judge_model: str | None,
     user_guidelines: list[str],
+    track_history: bool = False,
 ) -> dict[str, Any]:
     def _divergence_dict(d: Any) -> dict[str, Any]:
         return {
@@ -615,6 +628,14 @@ def _shape_adapter_result(
         for name, band in result.noise_band.items()
     }
 
+    regression_report = None
+    if track_history:
+        from drift import regression
+
+        regression_report = regression.track(
+            result, graph_meta["name"], history_dir=HISTORY_DIR
+        ).to_json()
+
     return {
         "graph_name": graph_meta["name"],
         "graph_description": graph_meta["description"],
@@ -639,6 +660,7 @@ def _shape_adapter_result(
         "summary_lines": result.summary_lines(),
         "baseline": _baseline_dict(result.baseline),
         "perturbations": [_pert_dict(p) for p in result.perturbations],
+        "regression": regression_report,
     }
 
 
@@ -994,6 +1016,7 @@ def create_app() -> FastAPI:
             result, graph_meta=graph_meta, seed=req.seed,
             judge=req.judge, judge_model=req.judge_model,
             user_guidelines=req.user_guidelines,
+            track_history=req.track_history,
         )
 
     @app.post("/api/custom-graph-run")
@@ -1045,6 +1068,7 @@ def create_app() -> FastAPI:
             result, graph_meta=graph_meta, seed=req.seed,
             judge=req.judge, judge_model=req.judge_model,
             user_guidelines=req.user_guidelines,
+            track_history=req.track_history,
         )
 
     @app.post("/api/trace-ask")

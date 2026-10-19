@@ -237,3 +237,14 @@ def test_regression_flag_and_report_are_plain_dataclasses() -> None:
     report = RegressionReport(has_previous=False, previous_timestamp=None, flags=[flag])
     d = report.to_json()
     assert d["flags"][0]["summary"] == "x"
+
+
+def test_report_to_json_includes_is_regression_property() -> None:
+    # is_regression is a @property, not a dataclass field — asdict() alone
+    # would silently drop it from the API response. Guard the fix.
+    report = RegressionReport(
+        has_previous=True, previous_timestamp=1.0,
+        flags=[RegressionFlag("regression", "x")],
+    )
+    d = report.to_json()
+    assert d["is_regression"] is True
