@@ -31,6 +31,7 @@ from drift.failures.library import (
     contradictory_decisions,
     hallucinated_reference,
     infinite_handoff,
+    policy_inconsistency_across_steps,
     premature_termination,
     role_drift,
     stale_state_reference,
@@ -56,6 +57,7 @@ ALL_DETECTORS = [
     role_drift,
     context_loss_on_handoff,
     premature_termination,
+    policy_inconsistency_across_steps,
 ]
 
 
@@ -136,6 +138,7 @@ __all__ = [
     "hallucinated_reference",
     "infinite_handoff",
     "mast_mode_map",
+    "policy_inconsistency_across_steps",
     "premature_termination",
     "role_drift",
     "run_all_on_text",

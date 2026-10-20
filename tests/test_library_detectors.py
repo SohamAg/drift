@@ -16,6 +16,7 @@ from drift.failures.library import (
     contradictory_decisions,
     hallucinated_reference,
     infinite_handoff,
+    policy_inconsistency_across_steps,
     premature_termination,
     role_drift,
     run_all_on_trace,
@@ -1252,6 +1253,99 @@ def test_premature_termination_from_text_is_always_a_no_op():
     """No config channel in the raw-text path — documented, not a bug."""
     assert premature_termination.detect_from_text("triage: flagged it") == []
     assert premature_termination.detect_from_text("") == []
+
+
+# ---------------------------------------------------------------------------
+# Detector 10: policy_inconsistency_across_steps
+# ---------------------------------------------------------------------------
+
+
+def test_policy_inconsistency_positive_stale_citation():
+    trace = _trace([
+        ("updater", {"policy_version": "v2"}),
+        ("worker",  {"rationale": "applying rule from v1"}),
+    ])
+    out = policy_inconsistency_across_steps.detect(_ctx(
+        trace, initial_state={"policy_version": "v1"}, policy_field="policy_version",
+    ))
+    assert len(out) == 1
+    assert out[0].failure_type == "policy_inconsistency_across_steps"
+    assert out[0].agents_involved == ["worker"]
+    assert "v1" in out[0].summary
+
+
+def test_policy_inconsistency_negative_references_current_version():
+    trace = _trace([
+        ("updater", {"policy_version": "v2"}),
+        ("worker",  {"rationale": "applying rule from v2"}),
+    ])
+    out = policy_inconsistency_across_steps.detect(_ctx(
+        trace, initial_state={"policy_version": "v1"}, policy_field="policy_version",
+    ))
+    assert out == []
+
+
+def test_policy_inconsistency_negative_without_declared_field():
+    """No policy_field declared — no basis to know which field is the
+    version key, so it stays silent even on an otherwise-matching trace."""
+    trace = _trace([
+        ("updater", {"policy_version": "v2"}),
+        ("worker",  {"rationale": "applying rule from v1"}),
+    ])
+    out = policy_inconsistency_across_steps.detect(
+        _ctx(trace, initial_state={"policy_version": "v1"})
+    )
+    assert out == []
+
+
+def test_policy_inconsistency_negative_no_known_current_value():
+    trace = _trace([("worker", {"rationale": "applying rule from v1"})])
+    out = policy_inconsistency_across_steps.detect(
+        _ctx(trace, policy_field="policy_version")
+    )
+    assert out == []
+
+
+def test_policy_inconsistency_fires_once_per_agent():
+    trace = _trace([
+        ("updater", {"policy_version": "v2"}),
+        ("worker",  {"rationale": "applying rule from v1"}),
+        ("worker",  {"rationale": "still referencing v1 here"}),
+    ])
+    out = policy_inconsistency_across_steps.detect(_ctx(
+        trace, initial_state={"policy_version": "v1"}, policy_field="policy_version",
+    ))
+    assert len(out) == 1
+
+
+def test_policy_inconsistency_checks_any_prior_version_not_just_previous():
+    trace = _trace([
+        ("updater", {"policy_version": "v2"}),
+        ("updater", {"policy_version": "v3"}),
+        ("worker",  {"rationale": "applying rule from v1"}),
+    ])
+    out = policy_inconsistency_across_steps.detect(_ctx(
+        trace, initial_state={"policy_version": "v1"}, policy_field="policy_version",
+    ))
+    assert len(out) == 1
+
+
+def test_policy_inconsistency_ignores_single_char_versions():
+    """Single-character version values are excluded from matching —
+    too likely to collide with unrelated text (a bare "1" anywhere)."""
+    trace = _trace([
+        ("updater", {"policy_version": "2"}),
+        ("worker",  {"rationale": "the number 1 appears here randomly"}),
+    ])
+    out = policy_inconsistency_across_steps.detect(_ctx(
+        trace, initial_state={"policy_version": "1"}, policy_field="policy_version",
+    ))
+    assert out == []
+
+
+def test_policy_inconsistency_from_text_is_always_a_no_op():
+    assert policy_inconsistency_across_steps.detect_from_text("policy v1 still cited") == []
+    assert policy_inconsistency_across_steps.detect_from_text("") == []
 
 
 # ---------------------------------------------------------------------------
