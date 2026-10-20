@@ -16,6 +16,7 @@ from drift.failures.library import (
     contradictory_decisions,
     hallucinated_reference,
     infinite_handoff,
+    premature_termination,
     role_drift,
     run_all_on_trace,
     stale_state_reference,
@@ -1166,6 +1167,91 @@ def test_context_loss_from_text_negative_when_referenced():
 
 def test_context_loss_from_text_empty_returns_nothing():
     assert context_loss_on_handoff.detect_from_text("") == []
+
+
+# ---------------------------------------------------------------------------
+# Detector 9: premature_termination
+# ---------------------------------------------------------------------------
+
+
+def test_premature_termination_positive_no_followup_within_window():
+    trace = _trace([
+        ("triage", {"status": "flagged"}),
+        ("other", {"x": 1}),
+        ("other", {"x": 2}),
+    ])
+    out = premature_termination.detect(
+        _ctx(trace, required_followups={"triage": "escalate"})
+    )
+    assert len(out) == 1
+    assert out[0].failure_type == "premature_termination"
+    assert out[0].agents_involved == ["triage"]
+    assert out[0].timestep == 1
+
+
+def test_premature_termination_negative_followup_occurs():
+    trace = _trace([
+        ("triage", {"status": "flagged"}),
+        ("escalate", {"status": "escalated"}),
+    ])
+    out = premature_termination.detect(
+        _ctx(trace, required_followups={"triage": "escalate"})
+    )
+    assert out == []
+
+
+def test_premature_termination_negative_without_declared_config():
+    """No required_followups declared at all — the detector has no basis
+    to guess what's required, so it stays silent even on an orphaned
+    pattern that would otherwise match a plausible rule."""
+    trace = _trace([
+        ("triage", {"status": "flagged"}),
+        ("other", {}),
+        ("other", {}),
+    ])
+    assert premature_termination.detect(_ctx(trace)) == []
+
+
+def test_premature_termination_followup_just_inside_window_does_not_fire():
+    steps = [("triage", {"status": "flagged"})]
+    steps += [(f"filler_{i}", {}) for i in range(4)]
+    steps.append(("escalate", {"status": "escalated"}))  # 5th step after trigger
+    trace = _trace(steps)
+    out = premature_termination.detect(
+        _ctx(trace, required_followups={"triage": "escalate"})
+    )
+    assert out == []
+
+
+def test_premature_termination_followup_just_outside_window_fires():
+    steps = [("triage", {"status": "flagged"})]
+    steps += [(f"filler_{i}", {}) for i in range(5)]
+    steps.append(("escalate", {"status": "escalated"}))  # 6th step after trigger
+    trace = _trace(steps)
+    out = premature_termination.detect(
+        _ctx(trace, required_followups={"triage": "escalate"})
+    )
+    assert len(out) == 1
+
+
+def test_premature_termination_fires_once_per_trigger_agent():
+    trace = _trace([
+        ("triage", {"a": 1}),
+        ("other", {}),
+        ("triage", {"a": 2}),
+        ("other", {}),
+    ])
+    out = premature_termination.detect(
+        _ctx(trace, required_followups={"triage": "escalate"})
+    )
+    assert len(out) == 1
+    assert out[0].timestep == 1
+
+
+def test_premature_termination_from_text_is_always_a_no_op():
+    """No config channel in the raw-text path — documented, not a bug."""
+    assert premature_termination.detect_from_text("triage: flagged it") == []
+    assert premature_termination.detect_from_text("") == []
 
 
 # ---------------------------------------------------------------------------
