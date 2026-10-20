@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from drift.failures.library import (
     ALL_DETECTORS,
+    context_loss_on_handoff,
     contradictory_decisions,
     hallucinated_reference,
     infinite_handoff,
@@ -1054,6 +1055,117 @@ def test_role_drift_from_text_speaker_name_fallback():
 
 def test_role_drift_from_text_empty_returns_nothing():
     assert role_drift.detect_from_text("") == []
+
+
+# ---------------------------------------------------------------------------
+# Detector 8: context_loss_on_handoff
+# ---------------------------------------------------------------------------
+
+
+def test_context_loss_positive_id_shape_anchor_dropped_twice():
+    trace = _trace([
+        ("worker_a", {"rationale": "found issue in TICKET-42"}),
+        ("worker_b", {"rationale": "proceeding with next task"}),
+        ("worker_a", {"rationale": "found issue in TICKET-43"}),
+        ("worker_b", {"rationale": "proceeding with next task"}),
+    ])
+    out = context_loss_on_handoff.detect(_ctx(trace))
+    assert len(out) == 1
+    assert out[0].failure_type == "context_loss_on_handoff"
+    assert out[0].agents_involved == ["worker_a", "worker_b"]
+    assert "ticket-42" in out[0].summary.lower()
+
+
+def test_context_loss_negative_receiver_references_the_anchor():
+    trace = _trace([
+        ("worker_a", {"rationale": "found issue in TICKET-42"}),
+        ("worker_b", {"rationale": "looking into TICKET-42 now"}),
+        ("worker_a", {"rationale": "found issue in TICKET-43"}),
+        ("worker_b", {"rationale": "looking into TICKET-43 now"}),
+    ])
+    out = context_loss_on_handoff.detect(_ctx(trace))
+    assert out == []
+
+
+def test_context_loss_negative_same_agent_is_not_a_handoff():
+    trace = _trace([
+        ("worker", {"rationale": "found issue in TICKET-42"}),
+        ("worker", {"rationale": "continuing investigation, unrelated"}),
+        ("worker", {"rationale": "found issue in TICKET-43"}),
+        ("worker", {"rationale": "continuing investigation, unrelated"}),
+    ])
+    out = context_loss_on_handoff.detect(_ctx(trace))
+    assert out == []
+
+
+def test_context_loss_negative_single_miss_below_threshold():
+    trace = _trace([
+        ("worker_a", {"rationale": "found issue in TICKET-42"}),
+        ("worker_b", {"rationale": "unrelated work entirely"}),
+    ])
+    out = context_loss_on_handoff.detect(_ctx(trace))
+    assert out == []
+
+
+def test_context_loss_detects_new_key_value_anchor_not_just_ids():
+    """Anchors aren't limited to id-shaped tokens — a short new discrete
+    state value (a classification/decision write) counts too."""
+    trace = _trace([
+        ("classifier", {"severity": "urgent-escalation"}),
+        ("responder",  {"status": "ok"}),
+        ("classifier", {"category": "billing-dispute"}),
+        ("responder",  {"status": "ok"}),
+    ])
+    out = context_loss_on_handoff.detect(_ctx(trace))
+    assert len(out) == 1
+
+
+def test_context_loss_respects_min_misses_override():
+    trace = _trace([
+        ("worker_a", {"rationale": "found issue in TICKET-42"}),
+        ("worker_b", {"rationale": "unrelated"}),
+        ("worker_a", {"rationale": "found issue in TICKET-43"}),
+        ("worker_b", {"rationale": "unrelated"}),
+    ])
+    assert context_loss_on_handoff.detect(_ctx(trace), min_misses=3) == []
+    assert len(context_loss_on_handoff.detect(_ctx(trace), min_misses=2)) == 1
+
+
+def test_context_loss_does_not_fire_without_trackable_content():
+    """Non-string field values (bool/int) never become anchors — nothing
+    concrete enough was introduced to expect a citation of, so this isn't
+    a handoff miss at all, just two agents writing unrelated scalars."""
+    trace = _trace([
+        ("agent_a", {"flag": True}),
+        ("agent_b", {"count": 5}),
+        ("agent_a", {"flag": False}),
+        ("agent_b", {"count": 6}),
+    ])
+    assert context_loss_on_handoff.detect(_ctx(trace)) == []
+
+
+def test_context_loss_from_text_positive():
+    transcript = (
+        "WorkerA: found issue in TICKET-42\n"
+        "WorkerB: proceeding with next task\n"
+        "WorkerA: found issue in TICKET-43\n"
+        "WorkerB: proceeding with next task\n"
+    )
+    out = context_loss_on_handoff.detect_from_text(transcript)
+    assert len(out) == 1
+    assert out[0].failure_type == "context_loss_on_handoff"
+
+
+def test_context_loss_from_text_negative_when_referenced():
+    transcript = (
+        "WorkerA: found issue in TICKET-42\n"
+        "WorkerB: looking into TICKET-42 now\n"
+    )
+    assert context_loss_on_handoff.detect_from_text(transcript) == []
+
+
+def test_context_loss_from_text_empty_returns_nothing():
+    assert context_loss_on_handoff.detect_from_text("") == []
 
 
 # ---------------------------------------------------------------------------

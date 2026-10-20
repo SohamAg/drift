@@ -27,6 +27,7 @@ from typing import Any
 
 from drift.failures.base import FailureRecord
 from drift.failures.library import (
+    context_loss_on_handoff,
     contradictory_decisions,
     hallucinated_reference,
     infinite_handoff,
@@ -52,6 +53,7 @@ ALL_DETECTORS = [
     contradictory_decisions,
     stale_state_reference,
     role_drift,
+    context_loss_on_handoff,
 ]
 
 
@@ -120,6 +122,7 @@ __all__ = [
     "CoordinationDetector",
     "CoordinationDetectorContext",
     "TraceStep",
+    "context_loss_on_handoff",
     "contradictory_decisions",
     "detector_names",
     "from_adapter_trace",
