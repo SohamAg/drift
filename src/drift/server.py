@@ -132,6 +132,11 @@ class AdapterDemoRequest(BaseModel):
     judge_model: str | None = None
     user_guidelines: list[str] = Field(default_factory=list)
 
+    # Agent/node name -> role label (e.g. "verifier", "executor"). Powers
+    # role-aware library detectors (role_drift); falls back to name-pattern
+    # matching when empty. Same shape as AdapterForkRequest's field below.
+    coordination_roles: dict[str, str] = Field(default_factory=dict)
+
     # Divergence cascade.
     divergence_mode: str = "exact"
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
@@ -212,6 +217,8 @@ class CustomGraphRequest(BaseModel):
     judge: str = "off"
     judge_model: str | None = None
     user_guidelines: list[str] = Field(default_factory=list)
+
+    coordination_roles: dict[str, str] = Field(default_factory=dict)
 
     divergence_mode: str = "exact"
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
@@ -1008,6 +1015,7 @@ def create_app() -> FastAPI:
                 baseline_rollouts=req.baseline_rollouts,
                 max_judge_calls=req.max_judge_calls,
                 similarity_threshold=req.similarity_threshold,
+                coordination_roles=req.coordination_roles or None,
             )
         except (TypeError, ValueError) as e:
             raise HTTPException(400, str(e))
@@ -1055,6 +1063,7 @@ def create_app() -> FastAPI:
                 baseline_rollouts=req.baseline_rollouts,
                 max_judge_calls=req.max_judge_calls,
                 similarity_threshold=req.similarity_threshold,
+                coordination_roles=req.coordination_roles or None,
             )
         except (TypeError, ValueError) as e:
             raise HTTPException(400, str(e))
