@@ -928,6 +928,8 @@ def _run_coordination_library(
     *,
     enabled: bool = True,
     roles_by_agent: dict[str, str] | None = None,
+    required_followups: dict[str, str] | None = None,
+    policy_field: str | None = None,
 ) -> list[dict]:
     """Run the curated coordination-failure detector library over one trace.
 
@@ -942,6 +944,8 @@ def _run_coordination_library(
         initial_state=initial_state,
         baseline_state=baseline_state,
         roles_by_agent=roles_by_agent,
+        required_followups=required_followups,
+        policy_field=policy_field,
     )
     return [f.model_dump(mode="json") for f in findings]
 
@@ -963,6 +967,8 @@ async def drift_test_async(
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     run_coordination_detectors: bool = True,
     coordination_roles: dict[str, str] | None = None,
+    required_followups: dict[str, str] | None = None,
+    policy_field: str | None = None,
 ) -> AdapterResult:
     """Async variant of drift_test. Use from inside an existing event loop.
 
@@ -1051,6 +1057,8 @@ async def drift_test_async(
         btrace, initial_state, bfinal,
         enabled=run_coordination_detectors,
         roles_by_agent=coordination_roles,
+        required_followups=required_followups,
+        policy_field=policy_field,
     )
     baseline = BaselineResult(
         initial_state=baseline_input,
@@ -1110,6 +1118,8 @@ async def drift_test_async(
             ptrace, post_state, baseline.final_state,
             enabled=run_coordination_detectors,
             roles_by_agent=coordination_roles,
+            required_followups=required_followups,
+            policy_field=policy_field,
         )
 
         perturbations.append(
@@ -1164,6 +1174,8 @@ def drift_test(
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     run_coordination_detectors: bool = True,
     coordination_roles: dict[str, str] | None = None,
+    required_followups: dict[str, str] | None = None,
+    policy_field: str | None = None,
 ) -> AdapterResult:
     """Run drift's auto-chaos against a compiled graph and report results.
 
@@ -1238,6 +1250,16 @@ def drift_test(
             fields, 0..1. Default 0.85. Effective threshold is
             max(this, measured baseline-vs-baseline floor) so text fields
             with naturally high variance get a tighter band automatically.
+        coordination_roles: agent/node name -> role label (e.g. "verifier",
+            "executor"). Powers role-aware library detectors (role_drift);
+            falls back to name-pattern matching when omitted.
+        required_followups: trigger agent/node name -> required follow-up
+            agent/node name. Powers `premature_termination` — see that
+            detector's docstring. Provisional single-hint config, not a
+            general rule DSL; omit to leave that detector silent.
+        policy_field: state field name holding a policy/config version
+            (e.g. "policy_version"). Powers `policy_inconsistency_across_steps`
+            — see that detector's docstring. Omit to leave it silent.
 
     Returns:
         AdapterResult with .baseline and .perturbations; see those
@@ -1275,6 +1297,8 @@ def drift_test(
             similarity_threshold=similarity_threshold,
             run_coordination_detectors=run_coordination_detectors,
             coordination_roles=coordination_roles,
+            required_followups=required_followups,
+            policy_field=policy_field,
         )
     )
 

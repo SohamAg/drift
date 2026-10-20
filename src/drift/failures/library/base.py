@@ -74,12 +74,25 @@ class CoordinationDetectorContext:
     (only present inside the adapter context, where it anchors delta-style
     detectors). When neither is present, detectors that need one degrade
     gracefully (emit nothing rather than crash).
+
+    required_followups and policy_field are provisional, single-hint config
+    for the two detectors that can't run without SOME user-declared
+    structure (premature_termination, policy_inconsistency_across_steps).
+    Both are plain dict[str, str] / str — not a general rule DSL — because
+    building the real extensible DSL is separate, larger, future work; this
+    is the minimal shape that makes those two detectors usable today. Empty
+    by default, in which case both detectors correctly emit nothing rather
+    than guessing at structure nobody declared.
     """
 
     steps: list[TraceStep]
     initial_state: dict[str, Any] | None = None
     baseline_state: dict[str, Any] | None = None
     roles_by_agent: dict[str, str] = field(default_factory=dict)
+    # trigger agent/node name -> required follow-up agent/node name.
+    required_followups: dict[str, str] = field(default_factory=dict)
+    # state field name holding a policy/config version, e.g. "policy_version".
+    policy_field: str = ""
 
     # ---- helpers ---------------------------------------------------------
 
@@ -109,6 +122,8 @@ def from_adapter_trace(
     initial_state: dict | None = None,
     baseline_state: dict | None = None,
     roles_by_agent: dict[str, str] | None = None,
+    required_followups: dict[str, str] | None = None,
+    policy_field: str | None = None,
 ) -> CoordinationDetectorContext:
     """Build a coordination context from an adapter-shaped trace.
 
@@ -140,6 +155,8 @@ def from_adapter_trace(
         initial_state=initial_state,
         baseline_state=baseline_state,
         roles_by_agent=dict(roles_by_agent or {}),
+        required_followups=dict(required_followups or {}),
+        policy_field=policy_field or "",
     )
 
 
@@ -147,6 +164,8 @@ def from_native(
     ctx: DetectorContext,
     *,
     roles_by_agent: dict[str, str] | None = None,
+    required_followups: dict[str, str] | None = None,
+    policy_field: str | None = None,
 ) -> CoordinationDetectorContext:
     """Build a coordination context from drift's native DetectorContext.
 
@@ -182,6 +201,8 @@ def from_native(
         initial_state=None,
         baseline_state=None,
         roles_by_agent=dict(roles_by_agent or {}),
+        required_followups=dict(required_followups or {}),
+        policy_field=policy_field or "",
     )
 
 

@@ -63,6 +63,8 @@ def run_all_on_trace(
     initial_state: dict | None = None,
     baseline_state: dict | None = None,
     roles_by_agent: dict[str, str] | None = None,
+    required_followups: dict[str, str] | None = None,
+    policy_field: str | None = None,
 ) -> list[FailureRecord]:
     """Run every library detector over an adapter trace, return concatenated findings."""
     ctx = from_adapter_trace(
@@ -70,6 +72,8 @@ def run_all_on_trace(
         initial_state=initial_state,
         baseline_state=baseline_state,
         roles_by_agent=roles_by_agent,
+        required_followups=required_followups,
+        policy_field=policy_field,
     )
     out: list[FailureRecord] = []
     for module in ALL_DETECTORS:
