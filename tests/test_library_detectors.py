@@ -15,6 +15,7 @@ from drift.failures.library import (
     contradictory_decisions,
     hallucinated_reference,
     infinite_handoff,
+    role_drift,
     run_all_on_trace,
     stale_state_reference,
     subagent_fanout_excess,
@@ -942,6 +943,117 @@ def test_specificity_other_fixtures_do_not_fire_hallucination():
     for fx in (verifier_fx, handoff_fx, fanout_fx):
         types = [f.failure_type for f in run_all_on_trace(fx)]
         assert "hallucinated_reference" not in types
+
+
+# ---------------------------------------------------------------------------
+# Detector 7: role_drift
+# ---------------------------------------------------------------------------
+
+
+def test_role_drift_positive_declared_verifier_executes():
+    trace = _trace([
+        ("planner",  {"task": "ship feature x"}),
+        ("verifier", {"rationale": "looks good, merged it myself"}),
+    ])
+    out = role_drift.detect(_ctx(trace, roles_by_agent={"verifier": "verifier"}))
+    assert len(out) == 1
+    assert out[0].failure_type == "role_drift"
+    assert out[0].agents_involved == ["verifier"]
+    assert "merged" in out[0].summary
+
+
+def test_role_drift_positive_name_pattern_fallback_no_declared_roles():
+    """No coordination_roles declared at all — falls back to name-pattern
+    matching on the agent name itself."""
+    trace = _trace([
+        ("planner",       {"task": "ship feature x"}),
+        ("code_reviewer", {"rationale": "approved and deployed to prod"}),
+    ])
+    out = role_drift.detect(_ctx(trace))
+    assert len(out) == 1
+    assert out[0].agents_involved == ["code_reviewer"]
+
+
+def test_role_drift_positive_executor_renders_verdict():
+    trace = _trace([
+        ("planner", {"task": "fix bug"}),
+        ("worker",  {"rationale": "fixed it, verified the patch myself"}),
+    ])
+    out = role_drift.detect(_ctx(trace, roles_by_agent={"worker": "executor"}))
+    assert len(out) == 1
+    assert out[0].agents_involved == ["worker"]
+
+
+def test_role_drift_negative_verifier_only_renders_verdicts():
+    trace = _trace([
+        ("planner",  {"task": "ship feature x"}),
+        ("verifier", {"rationale": "looks fine", "verdict": "approve"}),
+        ("planner",  {"task": "ship feature y"}),
+        ("verifier", {"rationale": "needs changes", "verdict": "reject"}),
+    ])
+    out = role_drift.detect(_ctx(trace, roles_by_agent={"verifier": "verifier"}))
+    assert out == []
+
+
+def test_role_drift_negative_executor_only_does_work():
+    trace = _trace([
+        ("planner", {"task": "fix bug"}),
+        ("worker",  {"rationale": "patched the null check and ran tests"}),
+    ])
+    out = role_drift.detect(_ctx(trace, roles_by_agent={"worker": "executor"}))
+    assert out == []
+
+
+def test_role_drift_fires_at_most_once_per_agent():
+    trace = _trace([
+        ("verifier", {"rationale": "merged change 1"}),
+        ("verifier", {"rationale": "merged change 2"}),
+        ("verifier", {"rationale": "merged change 3"}),
+    ])
+    out = role_drift.detect(_ctx(trace, roles_by_agent={"verifier": "verifier"}))
+    assert len(out) == 1
+    assert out[0].timestep == 1
+
+
+def test_role_drift_declared_role_overrides_name_pattern():
+    """Agent named like an executor but explicitly declared as verifier —
+    declared role wins, so executor-forbidden verbs don't apply to it."""
+    trace = _trace([
+        ("worker_bot", {"rationale": "reviewed and approved the change"}),
+    ])
+    out = role_drift.detect(_ctx(trace, roles_by_agent={"worker_bot": "verifier"}))
+    assert out == []
+
+
+def test_role_drift_specificity_does_not_fire_on_unrelated_fixtures():
+    verifier_fx = _trace([
+        ("planner",  {"task": "issue-101"}),
+        ("verifier", {"verdict": "approve", "rationale": "looks fine"}),
+        ("planner",  {"task": "issue-102"}),
+        ("verifier", {"verdict": "approve", "rationale": "looks fine"}),
+    ])
+    hallu_fx = _trace([
+        ("planner",  {"rationale": "starting queue triage"}),
+        ("worker_a", {"rationale": "closing TICKET-42 as duplicate"}),
+    ])
+    for fx in (verifier_fx, hallu_fx):
+        types = [f.failure_type for f in run_all_on_trace(fx)]
+        assert "role_drift" not in types
+
+
+def test_role_drift_from_text_speaker_name_fallback():
+    transcript = (
+        "Reviewer: looks fine, deployed it to production.\n"
+        "Planner: next task is the billing fix.\n"
+    )
+    out = role_drift.detect_from_text(transcript)
+    assert len(out) == 1
+    assert out[0].failure_type == "role_drift"
+    assert out[0].agents_involved == ["Reviewer"]
+
+
+def test_role_drift_from_text_empty_returns_nothing():
+    assert role_drift.detect_from_text("") == []
 
 
 # ---------------------------------------------------------------------------
