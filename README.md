@@ -81,6 +81,15 @@ Currently shipped:
 | `hallucinated_reference` | MAST 2.x grounding failures + Anthropic subagent hallucination |
 | `contradictory_decisions` | MAST 3.2 + Cognition principle 2 (conflicting decisions carry bad results) |
 | `stale_state_reference` | MAST 1.5 parallel-agent state race + Cognition open problem #2 |
+| `role_drift` | MAST 1.2 (Disobey Role Specification) |
+| `context_loss_on_handoff` | MAST 1.4 + 2.5 (lost history / ignored input) |
+| `premature_termination`¹ | MAST 4.1 (termination errors) |
+| `policy_inconsistency_across_steps`¹ | MAST 1.5 (configuration drift) |
+
+¹ requires a small config hint (`required_followups=` / `policy_field=`
+on `drift_test`) — silent without it, by design. Python-API-only for
+now; not yet wired into the server/web UI. See each detector's doc
+under `docs/detectors/` for the full config shape.
 
 Each detector ships a structured `detect()` (over the adapter trace) plus a
 text-only `detect_from_text()` (for MAST-style transcripts) plus a curated
