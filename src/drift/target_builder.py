@@ -26,8 +26,9 @@ existing arbitrary-code-execution trust model already covers that).
 """
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 TOPOLOGY_MIN_AGENTS: dict[str, int] = {
     "supervisor": 2,
@@ -328,3 +329,161 @@ def generate_target_source(
     )
 
     return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# AI-assisted proposal — turn a free-text scenario into a starting roster
+# for the Build tab. generate_target_source() above does all the real
+# codegen and all the real validation; this only drafts its input. The
+# user reviews/edits the draft in the same agent-row UI the manual flow
+# already has before ever calling Generate, so a proposal that's slightly
+# off (wrong agent count for the topology, awkward names) is never fatal —
+# it's a starting point, not a contract.
+# ---------------------------------------------------------------------------
+
+
+class ScenarioProposalError(ValueError):
+    """Raised when a scenario can't be turned into a usable draft — empty
+    input, an LLM call failure, or a response that doesn't parse into the
+    expected shape. Always surfaced as an error, never silently swallowed
+    into an empty-but-valid-looking proposal."""
+
+
+@dataclass
+class ProposedTarget:
+    """An LLM's DRAFT starting point for the Build tab. Deliberately not
+    validated against TOPOLOGY_MIN_AGENTS/TOPOLOGY_MAX_AGENTS here — that
+    validation already lives in generate_target_source() and runs when
+    the user actually clicks Generate, after they've had a chance to
+    review and edit this draft in the UI."""
+    topology: str
+    agents: list[dict[str, str]] = field(default_factory=list)  # [{"name", "role"}, ...]
+    suggested_name: str = ""
+    suggested_query: str = ""
+    rationale: str = ""
+
+    def to_json(self) -> dict:
+        return {
+            "topology": self.topology,
+            "agents": self.agents,
+            "suggested_name": self.suggested_name,
+            "suggested_query": self.suggested_query,
+            "rationale": self.rationale,
+        }
+
+
+def _proposal_system_prompt() -> str:
+    topo_lines = "\n".join(
+        f"- {name}: {TOPOLOGY_DESCRIPTIONS[name]}. {TOPOLOGY_AGENT_ORDER_HINTS[name]} "
+        f"(needs {TOPOLOGY_MIN_AGENTS[name]}"
+        + (f"-{TOPOLOGY_MAX_AGENTS[name]}" if name in TOPOLOGY_MAX_AGENTS else "+")
+        + " agents)"
+        for name in TOPOLOGY_MIN_AGENTS
+    )
+    return (
+        "You design multi-agent system ROSTERS for a chaos-testing tool. "
+        "Given a one-line scenario, propose which coordination topology "
+        "fits best and a short roster of agents to simulate it — this is "
+        "NOT a final answer to the scenario, it's a cast of agents whose "
+        "work/debate would explore it.\n\n"
+        "Available topologies:\n"
+        f"{topo_lines}\n\n"
+        "Pick the topology whose SHAPE genuinely matches how this scenario "
+        "should be explored — e.g. a scenario that's naturally a back-and-"
+        "forth between a couple of peers suits swarm or loop; one with a "
+        "clear central decision-maker delegating to specialists suits "
+        "supervisor; one needing several independent angles explored at "
+        "once before converging suits fanout.\n\n"
+        "Respond with STRICT JSON, no markdown fencing, exactly this shape:\n"
+        '{"topology": "<one of the names above>", '
+        '"rationale": "<one sentence: why this topology fits>", '
+        '"suggested_name": "<short snake_case name>", '
+        '"suggested_query": "<a concrete example input for this system>", '
+        '"agents": [{"name": "<snake_case>", "role": "<1-2 sentence role '
+        'description, written as instructions TO that agent>"}, ...]}'
+    )
+
+
+async def _call_proposal_llm(system: str, user: str, model: str) -> str:
+    """Deliberately separate from drift.failures.judge.OpenAIJudge: that
+    class degrades a transient failure to '{"failures": []}', which is
+    the right call for coordination judging (an empty-findings default is
+    always safe) but wrong here — a silently empty proposal would just
+    look like an unexplained parse failure downstream. Errors propagate
+    instead, so the caller can surface a real message."""
+    import os
+
+    from openai import AsyncOpenAI  # lazy import — openai is optional
+
+    client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    try:
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.4,
+            max_tokens=1200,
+        )
+    except Exception as e:
+        raise ScenarioProposalError(
+            f"LLM call failed ({type(e).__name__}): {e}. "
+            "Check OPENAI_API_KEY, billing, and model name."
+        ) from e
+    return resp.choices[0].message.content or "{}"
+
+
+def _parse_proposal(raw: str) -> ProposedTarget:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ScenarioProposalError(f"model did not return valid JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise ScenarioProposalError("model's JSON response was not an object")
+
+    topology = str(data.get("topology", "")).strip().lower()
+    if topology not in TOPOLOGY_MIN_AGENTS:
+        raise ScenarioProposalError(
+            f"model proposed an unrecognized topology {topology!r}; expected "
+            f"one of {sorted(TOPOLOGY_MIN_AGENTS)}"
+        )
+
+    raw_agents = data.get("agents")
+    if not isinstance(raw_agents, list) or not raw_agents:
+        raise ScenarioProposalError("model's proposal had no agents")
+    agents: list[dict[str, str]] = []
+    for a in raw_agents:
+        if not isinstance(a, dict):
+            continue
+        name = str(a.get("name", "")).strip()
+        role = str(a.get("role", "")).strip()
+        if name and role:
+            agents.append({"name": name, "role": role})
+    if not agents:
+        raise ScenarioProposalError("model's proposal had no usable agents (needs both name and role)")
+
+    return ProposedTarget(
+        topology=topology,
+        agents=agents,
+        suggested_name=str(data.get("suggested_name", "")).strip(),
+        suggested_query=str(data.get("suggested_query", "")).strip(),
+        rationale=str(data.get("rationale", "")).strip(),
+    )
+
+
+async def propose_target(scenario: str, *, model: str = DEFAULT_MODEL) -> ProposedTarget:
+    """Ask an LLM to draft a topology + agent roster for a free-text
+    scenario description. Returns a ProposedTarget shaped to drop
+    straight into the Build tab's existing review-then-generate flow.
+
+    Never calls generate_target_source() and never writes anything —
+    this is a second, upstream step that produces a DRAFT for a human to
+    review, not a second code-generation path.
+    """
+    scenario = scenario.strip()
+    if not scenario:
+        raise ScenarioProposalError("scenario description is required")
+    raw = await _call_proposal_llm(_proposal_system_prompt(), scenario, model)
+    return _parse_proposal(raw)

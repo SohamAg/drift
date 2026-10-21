@@ -19,15 +19,21 @@ own name with its own __dict__.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import json
 import uuid
 
 import pytest
 
+import drift.target_builder as target_builder_module
 from drift.target_builder import (
     TOPOLOGY_MIN_AGENTS,
+    ScenarioProposalError,
     TargetBuilderError,
+    _parse_proposal,
     generate_target_source,
+    propose_target,
     slugify_agent_name,
     validate_target_name,
 )
@@ -201,3 +207,115 @@ def test_validate_target_name():
     assert validate_target_name("My Cool System") == "my_cool_system"
     with pytest.raises(TargetBuilderError):
         validate_target_name("a")  # too short after slugifying
+
+
+# ---------------------------------------------------------------------------
+# AI-assisted proposal (propose_target) — the LLM call itself is mocked via
+# monkeypatching _call_proposal_llm, never a real API call. End-to-end proof
+# that a real proposal flows into the real generator was done manually
+# during development (scenario "how would a new sci-fi action movie do in
+# theaters" -> fanout topology, 5 agents, compiled and ran for real).
+# ---------------------------------------------------------------------------
+
+
+VALID_PROPOSAL_JSON = """{
+    "topology": "fanout",
+    "rationale": "Several independent angles can be explored in parallel.",
+    "suggested_name": "movie_success",
+    "suggested_query": "How would a new sci-fi action movie do in theaters?",
+    "agents": [
+        {"name": "dispatcher", "role": "Split the question into angles."},
+        {"name": "marketing", "role": "Assess marketing strength."},
+        {"name": "star_power", "role": "Assess cast/director draw."},
+        {"name": "merge", "role": "Combine all findings into one verdict."}
+    ]
+}"""
+
+
+def test_parse_proposal_valid():
+    result = _parse_proposal(VALID_PROPOSAL_JSON)
+    assert result.topology == "fanout"
+    assert result.suggested_name == "movie_success"
+    assert len(result.agents) == 4
+    assert result.agents[0] == {"name": "dispatcher", "role": "Split the question into angles."}
+
+
+def test_parse_proposal_rejects_invalid_json():
+    with pytest.raises(ScenarioProposalError):
+        _parse_proposal("not json at all")
+
+
+def test_parse_proposal_rejects_non_object_json():
+    with pytest.raises(ScenarioProposalError):
+        _parse_proposal("[1, 2, 3]")
+
+
+def test_parse_proposal_rejects_unknown_topology():
+    with pytest.raises(ScenarioProposalError):
+        _parse_proposal('{"topology": "made_up", "agents": [{"name": "a", "role": "b"}]}')
+
+
+def test_parse_proposal_rejects_empty_agent_list():
+    with pytest.raises(ScenarioProposalError):
+        _parse_proposal('{"topology": "pipeline", "agents": []}')
+
+
+def test_parse_proposal_skips_malformed_agent_entries_but_keeps_valid_ones():
+    raw = json.dumps({
+        "topology": "pipeline",
+        "agents": [
+            {"name": "good", "role": "does something"},
+            {"name": "", "role": "missing a name"},
+            "not even a dict",
+            {"name": "also_good", "role": "does something else"},
+        ],
+    })
+    result = _parse_proposal(raw)
+    assert [a["name"] for a in result.agents] == ["good", "also_good"]
+
+
+def test_parse_proposal_defaults_missing_optional_fields_to_empty_string():
+    raw = json.dumps({"topology": "swarm", "agents": [{"name": "a", "role": "b"}]})
+    result = _parse_proposal(raw)
+    assert result.rationale == ""
+    assert result.suggested_name == ""
+    assert result.suggested_query == ""
+
+
+def test_propose_target_rejects_empty_scenario():
+    # No pytest-asyncio in this project (see module docstring note) — every
+    # other async test here goes through asyncio.run(), matching how the
+    # rest of the codebase tests async code (drift_test wraps
+    # drift_test_async the same way).
+    with pytest.raises(ScenarioProposalError):
+        asyncio.run(propose_target("   "))
+
+
+def test_propose_target_parses_the_llm_response(monkeypatch: pytest.MonkeyPatch):
+    async def fake_call(system, user, model):
+        assert "movie" in user.lower()
+        return VALID_PROPOSAL_JSON
+    monkeypatch.setattr(target_builder_module, "_call_proposal_llm", fake_call)
+
+    result = asyncio.run(propose_target("how would a new sci-fi movie do in theaters"))
+    assert result.topology == "fanout"
+    assert len(result.agents) == 4
+
+
+def test_propose_target_propagates_llm_call_failures(monkeypatch: pytest.MonkeyPatch):
+    async def failing_call(system, user, model):
+        raise ScenarioProposalError("LLM call failed (RuntimeError): no API key")
+    monkeypatch.setattr(target_builder_module, "_call_proposal_llm", failing_call)
+
+    with pytest.raises(ScenarioProposalError):
+        asyncio.run(propose_target("any scenario"))
+
+
+def test_proposed_agents_feed_directly_into_generate_target_source():
+    """The contract that matters: a parsed proposal's (topology, agents)
+    must be exactly what generate_target_source() already accepts — no
+    adapter/transform layer in between."""
+    proposal = _parse_proposal(VALID_PROPOSAL_JSON)
+    source = generate_target_source(proposal.topology, proposal.agents)
+    assert "def build(" in source
+    assert "dispatcher" in source and "merge" in source
