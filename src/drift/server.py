@@ -15,12 +15,15 @@ endpoints:
   GET  /api/results/{relpath:path}   — fetch one saved result by path
   GET  /api/mast-demos               — list curated MAST demo traces
   POST /api/mast-analyze             — judge one MAST trace (cached or live)
+  GET  /api/targets                  — list the examples/targets/ registry
+  POST /api/suite-run                — run drift against several targets in one pass
 
 The HTML/CSS/JS frontend is served from /web/.
 """
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +45,15 @@ try:
     load_dotenv(PROJECT_ROOT / ".env")
 except ImportError:
     pass
+
+# examples/targets/ is imported as the top-level `targets` package (not
+# `examples.targets` — examples/ has no __init__.py) by every script that
+# already touches the registry (tests/test_target_registry.py,
+# examples/targets/verify_targets.py). Match that convention here so
+# /api/targets and /api/suite-run can import it the same way.
+_EXAMPLES_DIR = str(PROJECT_ROOT / "examples")
+if _EXAMPLES_DIR not in sys.path:
+    sys.path.insert(0, _EXAMPLES_DIR)
 
 WEB_DIR: Path = PROJECT_ROOT / "web"
 RESULTS_DIR: Path = PROJECT_ROOT / "results"
@@ -224,6 +236,30 @@ class CustomGraphRequest(BaseModel):
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
     max_judge_calls: int = Field(default=10, ge=0, le=100)
     similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+
+    track_history: bool = False
+
+
+class SuiteRunRequest(BaseModel):
+    """Run drift against several examples/targets/ registry entries in
+    one pass. Backs the Test Suite tab.
+
+    Each target runs independently with the SAME chaos/judge config —
+    this is a breadth pass across topologies, not a per-target tuning
+    surface. One target failing to build/run doesn't stop the others;
+    per-target failures are reported in the response, not raised.
+    """
+    target_names: list[str] = Field(..., min_length=1)
+    # Optional per-target query override (target NAME -> query string);
+    # targets not listed here use their own DEFAULT_QUERY.
+    query_overrides: dict[str, str] = Field(default_factory=dict)
+
+    intensity: str = "light"
+    seed: int = 7
+    max_perturbations: int = Field(default=6, ge=1, le=500)
+
+    judge: str = "off"
+    judge_model: str | None = None
 
     track_history: bool = False
 
@@ -742,6 +778,15 @@ def create_app() -> FastAPI:
         descriptions, default state shape, and availability (deps + API key)."""
         return {"graphs": _list_adapter_graphs()}
 
+    @app.get("/api/targets")
+    def list_targets() -> dict[str, Any]:
+        """List the examples/targets/ registry — real third-party
+        multi-agent systems drift can run against, with live
+        dependency/availability status. Backs the Test Suite tab."""
+        from targets import registry as target_registry
+
+        return {"targets": target_registry()}
+
     @app.get("/api/results")
     def results_index(with_trace_flag: bool = False) -> dict[str, Any]:
         """List every saved experiment JSON under results/, grouped by
@@ -1079,6 +1124,82 @@ def create_app() -> FastAPI:
             user_guidelines=req.user_guidelines,
             track_history=req.track_history,
         )
+
+    @app.post("/api/suite-run")
+    async def suite_run(req: SuiteRunRequest) -> dict[str, Any]:
+        """Run drift against several examples/targets/ registry entries in
+        one pass. Backs the Test Suite tab. Each target is built and run
+        independently; a target that's missing dependencies is skipped
+        (not attempted), and a target that fails to build or run reports
+        its error without stopping the rest of the suite.
+        """
+        from targets import describe as describe_target, get as get_target
+
+        from drift.adapters.langgraph import drift_test_async
+        from drift.failures.judge import build_judge
+
+        try:
+            judge_llm = build_judge(req.judge, model=req.judge_model)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+        results: list[dict[str, Any]] = []
+        for name in req.target_names:
+            try:
+                mod = get_target(name)
+            except KeyError as e:
+                results.append({
+                    "target_name": name, "status": "error", "error": str(e), "result": None,
+                })
+                continue
+
+            info = describe_target(mod)
+            if not info["importable"]:
+                results.append({
+                    "target_name": name, "status": "skipped",
+                    "error": f"missing dependencies: {', '.join(info['missing_deps'])}",
+                    "result": None,
+                })
+                continue
+
+            query = req.query_overrides.get(name) or mod.DEFAULT_QUERY
+            try:
+                graph, initial_state = _build_custom_graph(
+                    info["module"], "build", "initial_state", query, None,
+                )
+            except (ImportError, AttributeError, RuntimeError) as e:
+                results.append({
+                    "target_name": name, "status": "error", "error": str(e), "result": None,
+                })
+                continue
+
+            try:
+                result = await drift_test_async(
+                    graph=graph,
+                    initial_state=initial_state,
+                    intensity=req.intensity,
+                    seed=req.seed,
+                    max_perturbations=req.max_perturbations,
+                    judge_llm=judge_llm,
+                )
+            except (TypeError, ValueError) as e:
+                results.append({
+                    "target_name": name, "status": "error", "error": str(e), "result": None,
+                })
+                continue
+
+            graph_meta = {"name": mod.NAME, "description": mod.DESCRIPTION, "agents": []}
+            shaped = _shape_adapter_result(
+                result, graph_meta=graph_meta, seed=req.seed,
+                judge=req.judge, judge_model=req.judge_model,
+                user_guidelines=[],
+                track_history=req.track_history,
+            )
+            results.append({
+                "target_name": name, "status": "ok", "error": None, "result": shaped,
+            })
+
+        return {"results": results}
 
     @app.post("/api/trace-ask")
     async def trace_ask(req: TraceAskRequest) -> dict[str, Any]:

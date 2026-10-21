@@ -93,3 +93,15 @@ def test_registry_shape() -> None:
     rows = registry()
     assert len(rows) == 4
     assert all("importable" in r for r in rows)
+
+
+def test_registry_module_path_is_importable():
+    """`module` must be the real importable path (mod.__name__), not an
+    assumption that NAME matches the file's basename — used by the server
+    to build()/initial_state() a target by module path."""
+    import importlib
+
+    for row in registry():
+        assert row["module"].startswith("targets.")
+        mod = importlib.import_module(row["module"])
+        assert mod.NAME == row["name"]

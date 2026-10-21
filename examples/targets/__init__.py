@@ -78,6 +78,7 @@ def describe(mod: Any) -> dict[str, Any]:
             missing.append(dep)
     return {
         "name": mod.NAME,
+        "module": mod.__name__,  # importable path, e.g. "targets.supervisor_basic"
         "description": mod.DESCRIPTION,
         "topology": mod.TOPOLOGY,
         "source": mod.SOURCE,
