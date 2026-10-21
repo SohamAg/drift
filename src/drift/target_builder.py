@@ -394,6 +394,12 @@ def _proposal_system_prompt() -> str:
         "clear central decision-maker delegating to specialists suits "
         "supervisor; one needing several independent angles explored at "
         "once before converging suits fanout.\n\n"
+        "The agent order matters and must literally match the role you "
+        "give each one — for fanout, agents[0]'s role must BE the act of "
+        "splitting the task into angles (not one of the angles itself), "
+        "and the LAST agent's role must BE synthesizing everyone else's "
+        "output; for loop, agents[0] generates/revises and agents[1] "
+        "reviews and renders a verdict.\n\n"
         "Respond with STRICT JSON, no markdown fencing, exactly this shape:\n"
         '{"topology": "<one of the names above>", '
         '"rationale": "<one sentence: why this topology fits>", '

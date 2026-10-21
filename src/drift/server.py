@@ -17,6 +17,7 @@ endpoints:
   POST /api/mast-analyze             — judge one MAST trace (cached or live)
   GET  /api/targets                  — list the examples/targets/ registry
   POST /api/suite-run                — run drift against several targets in one pass
+  POST /api/propose-target             — ask an LLM to draft a topology + agent roster from a scenario
   POST /api/build-target              — generate a LangGraph target from topology + agents
   POST /api/save-target               — write a generated target to examples/targets/user_generated/
 
@@ -268,6 +269,15 @@ class SuiteRunRequest(BaseModel):
     judge_model: str | None = None
 
     track_history: bool = False
+
+
+class ProposeTargetRequest(BaseModel):
+    """Ask an LLM to draft a topology + agent roster for a free-text
+    scenario. Backs the Build tab's "Suggest agents" step — the result
+    is a DRAFT the user reviews/edits before /api/build-target ever
+    runs; this endpoint never generates or saves anything."""
+    scenario: str
+    model: str = "gpt-4o-mini"
 
 
 class BuildTargetRequest(BaseModel):
@@ -811,6 +821,19 @@ def create_app() -> FastAPI:
         from targets import registry as target_registry
 
         return {"targets": target_registry()}
+
+    @app.post("/api/propose-target")
+    async def propose_target_endpoint(req: ProposeTargetRequest) -> dict[str, Any]:
+        """Ask an LLM to draft a topology + agent roster for a free-text
+        scenario. Backs the Build tab's "Suggest agents" step. Returns a
+        draft only — writes nothing, generates no code."""
+        from drift.target_builder import ScenarioProposalError, propose_target
+
+        try:
+            proposal = await propose_target(req.scenario, model=req.model)
+        except ScenarioProposalError as e:
+            raise HTTPException(400, str(e))
+        return proposal.to_json()
 
     @app.post("/api/build-target")
     def build_target(req: BuildTargetRequest) -> dict[str, Any]:

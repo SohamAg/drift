@@ -1,11 +1,15 @@
-"""Tests for POST /api/build-target and POST /api/save-target.
+"""Tests for POST /api/propose-target, POST /api/build-target, and
+POST /api/save-target.
 
-/api/build-target is pure codegen (drift.target_builder, already
-exhaustively tested) exposed over HTTP — these tests cover the HTTP
-wiring (success/error status codes, request validation) rather than
-re-testing generation logic. /api/save-target tests write into a
-monkeypatched USER_GENERATED_DIR (tmp_path) so the real
-examples/targets/user_generated/ is never touched by the test suite.
+/api/build-target and /api/propose-target are thin HTTP wrapping over
+drift.target_builder (already exhaustively tested at the module level,
+including propose_target's LLM-call mocking) — these tests cover the
+HTTP wiring (status codes, request validation, error propagation) only.
+/api/propose-target tests monkeypatch drift.target_builder.propose_target
+directly so no real LLM call happens here either.
+/api/save-target tests write into a monkeypatched USER_GENERATED_DIR
+(tmp_path) so the real examples/targets/user_generated/ is never
+touched by the test suite.
 """
 from __future__ import annotations
 
@@ -15,7 +19,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 import drift.server as server_module
+import drift.target_builder as target_builder_module
 from drift.server import create_app
+from drift.target_builder import ProposedTarget, ScenarioProposalError
 
 PIPELINE_AGENTS = [
     {"name": "draft", "role": "Draft a response."},
@@ -101,3 +107,46 @@ def test_save_target_accepts_hand_edited_code_not_from_build_target(
     assert resp.status_code == 200
     saved = (tmp_path / "user_generated" / "hand_edited.py").read_text(encoding="utf-8")
     assert saved == edited
+
+
+def test_propose_target_returns_the_draft(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_propose(scenario, *, model):
+        return ProposedTarget(
+            topology="fanout",
+            agents=[
+                {"name": "dispatcher", "role": "split the task"},
+                {"name": "a", "role": "angle a"},
+                {"name": "b", "role": "angle b"},
+                {"name": "merge", "role": "combine"},
+            ],
+            suggested_name="movie_success",
+            suggested_query="how would a sci-fi movie do?",
+            rationale="parallel angles fit fanout",
+        )
+    monkeypatch.setattr(target_builder_module, "propose_target", fake_propose)
+
+    resp = client.post("/api/propose-target", json={"scenario": "how would a movie do"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["topology"] == "fanout"
+    assert len(data["agents"]) == 4
+    assert data["suggested_name"] == "movie_success"
+
+
+def test_propose_target_surfaces_proposal_errors_as_400(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def failing_propose(scenario, *, model):
+        raise ScenarioProposalError("model did not return valid JSON")
+    monkeypatch.setattr(target_builder_module, "propose_target", failing_propose)
+
+    resp = client.post("/api/propose-target", json={"scenario": "anything"})
+    assert resp.status_code == 400
+    assert "valid JSON" in resp.json()["detail"]
+
+
+def test_propose_target_requires_a_scenario_field(client: TestClient) -> None:
+    resp = client.post("/api/propose-target", json={})
+    assert resp.status_code == 422  # pydantic: scenario is required, no default
