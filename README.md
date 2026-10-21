@@ -191,7 +191,7 @@ python -m drift serve
 
 Opens at **http://127.0.0.1:8765**.
 
-Seven tabs:
+Eight tabs:
 
 - **Test** — pick a graph (bundled ticket-triage demo or the
   langgraph-supervisor math+research demo), type a query, pick a preset
@@ -214,6 +214,14 @@ Seven tabs:
   against it. Executes arbitrary local code by design — same trust model
   as a Jupyter kernel; never expose this server on a network you don't
   control.
+- **Build** — pick a coordination topology (supervisor, swarm, pipeline,
+  loop, fanout), name a few agents, give each a short role description,
+  get back a real runnable LangGraph file (every agent is a real LLM
+  call) in an editable preview. Routing is fixed by position for every
+  topology except loop's generator/critic stop condition — this is a
+  starting point, not a finished system; edit the generated code before
+  saving if you want to change anything. Save it and it's immediately
+  testable via Import graph.
 - **Test Suite** — run drift against several `examples/targets/` registry
   entries (real third-party multi-agent systems, not synthetic fixtures)
   in one pass with shared chaos/judge settings. A target missing a
