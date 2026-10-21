@@ -221,7 +221,11 @@ Eight tabs:
   topology except loop's generator/critic stop condition — this is a
   starting point, not a finished system; edit the generated code before
   saving if you want to change anything. Save it and it's immediately
-  testable via Import graph.
+  testable via Import graph. Or skip naming agents by hand: describe a
+  scenario in plain English ("how would a new sci-fi action movie do in
+  theaters?") and **Suggest agents** asks an LLM to draft the topology +
+  roster for you — same review-then-generate flow, AI just writes the
+  first draft.
 - **Test Suite** — run drift against several `examples/targets/` registry
   entries (real third-party multi-agent systems, not synthetic fixtures)
   in one pass with shared chaos/judge settings. A target missing a
