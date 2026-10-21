@@ -1579,6 +1579,8 @@
 
   let _buildWired = false;
   let _buildAgents = [];  // [{name, role}, ...] — current form state
+  let _buildSuggestedName = '';   // from the last /api/propose-target call, if any
+  let _buildSuggestedQuery = '';  // ditto — surfaced for manual use in Import graph's Query field
 
   function initBuild() {
     if (_buildWired) return;
@@ -1587,7 +1589,51 @@
     $('#build-add-agent').addEventListener('click', addBuildAgentRow);
     $('#build-generate').addEventListener('click', generateBuildTarget);
     $('#build-save').addEventListener('click', saveBuildTarget);
+    $('#build-suggest').addEventListener('click', suggestBuildAgents);
     onBuildTopologyChange();  // seed default agents for the preselected topology
+  }
+
+  async function suggestBuildAgents() {
+    const scenario = ($('#build-scenario').value || '').trim();
+    if (!scenario) return toast('Describe a scenario first', 'error');
+
+    const btn = $('#build-suggest');
+    const status = $('#build-suggest-status');
+    const rationaleEl = $('#build-suggest-rationale');
+    btn.disabled = true;
+    status.textContent = 'thinking…';
+    rationaleEl.classList.add('hidden');
+    try {
+      const data = await api('/api/propose-target', {
+        method: 'POST',
+        body: { scenario },
+      });
+      // Setting .value directly does NOT fire the 'change' listener (that
+      // only fires on user interaction), so onBuildTopologyChange — which
+      // would reset _buildAgents to the topology's generic defaults — never
+      // runs here. Set the agent roster straight from the proposal instead.
+      $('#build-topology').value = data.topology;
+      $('#build-topology-hint').textContent = BUILD_TOPOLOGY_META[data.topology].hint;
+      _buildAgents = data.agents.map(a => ({ name: a.name, role: a.role }));
+      _buildSuggestedName = data.suggested_name || '';
+      _buildSuggestedQuery = data.suggested_query || '';
+      renderBuildAgentRows();
+      const notes = [];
+      if (data.rationale) notes.push(`Why ${data.topology}: ${data.rationale}`);
+      if (_buildSuggestedQuery) {
+        notes.push(`Suggested test query (paste into Import graph's Query field once saved): "${_buildSuggestedQuery}"`);
+      }
+      if (notes.length) {
+        rationaleEl.textContent = notes.join(' ');
+        rationaleEl.classList.remove('hidden');
+      }
+      status.textContent = 'drafted — review/edit the roster below, then Generate';
+    } catch (e) {
+      toast('Suggest failed: ' + e.message, 'error');
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   function onBuildTopologyChange() {
@@ -1660,8 +1706,8 @@
       $('#build-code').value = data.code;
       $('#build-preview').classList.remove('hidden');
       $('#build-save-result').classList.add('hidden');
-      const suggested = `${topology}_${agents.map(a => a.name.toLowerCase().replace(/\s+/g, '_')).join('_')}`
-        .slice(0, 50);
+      const suggested = _buildSuggestedName
+        || `${topology}_${agents.map(a => a.name.toLowerCase().replace(/\s+/g, '_')).join('_')}`.slice(0, 50);
       $('#build-save-name').value = suggested;
       $('#build-preview').scrollIntoView({ behavior: 'smooth', block: 'start' });
       status.textContent = 'generated — review/edit the code below, then save it';
