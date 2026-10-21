@@ -23,3 +23,8 @@ data/
 .env
 # target-system venv (disposable)
 .venv-targets/
+
+# Build tab's generated targets — arbitrary user experiments, not curated
+# third-party code (see examples/targets/user_generated/__init__.py)
+examples/targets/user_generated/*.py
+!examples/targets/user_generated/__init__.py

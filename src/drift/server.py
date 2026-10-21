@@ -17,6 +17,8 @@ endpoints:
   POST /api/mast-analyze             — judge one MAST trace (cached or live)
   GET  /api/targets                  — list the examples/targets/ registry
   POST /api/suite-run                — run drift against several targets in one pass
+  POST /api/build-target              — generate a LangGraph target from topology + agents
+  POST /api/save-target               — write a generated target to examples/targets/user_generated/
 
 The HTML/CSS/JS frontend is served from /web/.
 """
@@ -63,6 +65,10 @@ RESULTS_DIR: Path = PROJECT_ROOT / "results"
 # argument is bound once at import time and wouldn't see a patched module
 # constant on drift.regression itself.
 HISTORY_DIR: Path = RESULTS_DIR / "_history"
+# Build tab's generated targets (see drift.target_builder). Gitignored
+# except its own __init__.py — these are arbitrary user experiments, not
+# the curated third-party-only registry under examples/targets/.
+USER_GENERATED_DIR: Path = PROJECT_ROOT / "examples" / "targets" / "user_generated"
 MAST_DATASET: Path = PROJECT_ROOT / "data" / "external" / "mast" / "MAD_human_labelled_dataset.json"
 MAST_CACHED_RESULTS_DIR: Path = PROJECT_ROOT / "results" / "mast_judge" / "full"
 
@@ -262,6 +268,25 @@ class SuiteRunRequest(BaseModel):
     judge_model: str | None = None
 
     track_history: bool = False
+
+
+class BuildTargetRequest(BaseModel):
+    """Generate a runnable LangGraph target from a topology + agent list.
+    Backs the Build tab. See drift.target_builder for what's actually
+    generated and why routing is fixed except for the loop topology."""
+    topology: str
+    agents: list[dict[str, str]] = Field(..., min_length=1)  # [{"name": ..., "role": ...}, ...]
+    model: str = "gpt-4o-mini"
+
+
+class SaveTargetRequest(BaseModel):
+    """Write a Build-tab-generated (or hand-edited) target to disk under
+    examples/targets/user_generated/ so it's importable via the
+    Import-graph tab. `code` is saved verbatim — the Build tab's code
+    preview is editable, so this is not necessarily what /api/build-target
+    returned."""
+    name: str
+    code: str
 
 
 class SaveRunRequest(BaseModel):
@@ -786,6 +811,58 @@ def create_app() -> FastAPI:
         from targets import registry as target_registry
 
         return {"targets": target_registry()}
+
+    @app.post("/api/build-target")
+    def build_target(req: BuildTargetRequest) -> dict[str, Any]:
+        """Generate a runnable LangGraph target from a topology + agent
+        list. Backs the Build tab's "Generate" step — returns source code
+        only, writes nothing to disk (see /api/save-target for that)."""
+        from drift.target_builder import TargetBuilderError, generate_target_source
+
+        try:
+            code = generate_target_source(req.topology, req.agents, model=req.model)
+        except TargetBuilderError as e:
+            raise HTTPException(400, str(e))
+        return {"code": code}
+
+    @app.post("/api/save-target")
+    def save_target(req: SaveTargetRequest) -> dict[str, Any]:
+        """Write a (possibly hand-edited) generated target to disk under
+        examples/targets/user_generated/, so it becomes importable via the
+        Import-graph tab. Refuses to save code that doesn't even parse."""
+        from drift.target_builder import TargetBuilderError, validate_target_name
+
+        try:
+            safe_name = validate_target_name(req.name)
+        except TargetBuilderError as e:
+            raise HTTPException(400, str(e))
+
+        try:
+            compile(req.code, f"<{safe_name}>", "exec")
+        except SyntaxError as e:
+            raise HTTPException(400, f"generated code has a syntax error: {e}")
+
+        USER_GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+        init_file = USER_GENERATED_DIR / "__init__.py"
+        if not init_file.exists():
+            init_file.write_text("", encoding="utf-8")
+
+        out_path = USER_GENERATED_DIR / f"{safe_name}.py"
+        out_path.write_text(req.code, encoding="utf-8")
+
+        try:
+            display_path = str(out_path.relative_to(PROJECT_ROOT)).replace("\\", "/")
+        except ValueError:
+            # USER_GENERATED_DIR isn't under PROJECT_ROOT — never true in
+            # production (it's defined as PROJECT_ROOT / ...), but tests
+            # monkeypatch it to an isolated tmp dir, so degrade gracefully
+            # rather than let a display-only field crash the request.
+            display_path = str(out_path)
+
+        return {
+            "module": f"targets.user_generated.{safe_name}",
+            "path": display_path,
+        }
 
     @app.get("/api/results")
     def results_index(with_trace_flag: bool = False) -> dict[str, Any]:
