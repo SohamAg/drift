@@ -26,6 +26,7 @@
     <button class="tab"        data-tab="compare" role="tab">Compare</button>
     <button class="tab"        data-tab="ask"     role="tab">Ask</button>
     <button class="tab"        data-tab="import"  role="tab">Import graph</button>
+    <button class="tab"        data-tab="suite"   role="tab">Test Suite</button>
     <button class="tab"        data-tab="results" role="tab">Results</button>
   </nav>
 
@@ -418,6 +419,90 @@
         <div class="card">
           <h3>Perturbations</h3>
           <div id="import-perturbations" class="failure-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== TEST SUITE ===================== -->
+    <section id="tab-suite" class="tab-panel">
+      <div class="card">
+        <h2>Test multiple systems at once</h2>
+        <p class="help">
+          Runs drift against several registered multi-agent systems in one pass, pulled
+          from <code>examples/targets/</code> — real third-party systems (a LangGraph
+          supervisor demo, a swarm handoff system, deepagents, TradingAgents' debate
+          graph), not synthetic fixtures. Each target runs with the same chaos/judge
+          settings below; a target missing a dependency is skipped, not attempted.
+        </p>
+        <div id="suite-target-list" class="empty">Loading targets…</div>
+      </div>
+
+      <div class="card">
+        <h3>Shared run settings</h3>
+        <div class="row two-col">
+          <div class="field">
+            <label for="suite-intensity">Chaos intensity</label>
+            <select id="suite-intensity">
+              <option value="off">off (baseline only)</option>
+              <option value="light" selected>light</option>
+              <option value="moderate">moderate</option>
+              <option value="aggressive">aggressive</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="suite-seed">Seed</label>
+            <input type="number" id="suite-seed" value="7" />
+          </div>
+        </div>
+        <div class="row two-col">
+          <div class="field">
+            <label for="suite-max-perturbations">Max perturbations per target</label>
+            <input type="number" id="suite-max-perturbations" value="3" min="0" max="200" />
+          </div>
+          <div class="field">
+            <label for="suite-judge">LLM judge over traces</label>
+            <select id="suite-judge">
+              <option value="off" selected>off</option>
+              <option value="openai">OpenAI (real)</option>
+              <option value="mock">Mock (no API)</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label class="checkbox-row" for="suite-track-history">
+            <input type="checkbox" id="suite-track-history" />
+            Track for regression
+            <span class="muted">— compare each target against its own last tracked run</span>
+          </label>
+        </div>
+        <div class="actions">
+          <button type="button" id="suite-run" class="primary">Run suite</button>
+          <span id="suite-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="suite-results" class="card hidden">
+        <h3>Results</h3>
+        <div id="suite-results-list"></div>
+      </div>
+
+      <div id="suite-detail" class="hidden">
+        <div class="card">
+          <h3>Target detail — <span id="suite-detail-title"></span></h3>
+          <div id="suite-summary" class="kv-grid"></div>
+          <div class="row" style="margin-top: 8px; gap: 8px;">
+            <button type="button" id="suite-download-json" class="ghost-btn">Download raw JSON</button>
+            <button type="button" id="suite-close-detail" class="ghost-btn">Close</button>
+          </div>
+        </div>
+        <div id="suite-regression" class="card hidden"></div>
+        <div class="card">
+          <h3>Baseline trace</h3>
+          <div id="suite-baseline-trace"></div>
+        </div>
+        <div class="card">
+          <h3>Perturbations</h3>
+          <div id="suite-perturbations" class="failure-list"></div>
         </div>
       </div>
     </section>

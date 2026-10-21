@@ -118,6 +118,7 @@
     if (name === 'compare') initCompare();
     if (name === 'ask') initAsk();
     if (name === 'import') initImport();
+    if (name === 'suite') initSuite();
     if (name === 'results') initResults();
   }
   $$('.tab').forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
@@ -1531,6 +1532,162 @@
     } finally {
       btn.disabled = false;
     }
+  }
+
+  // ============================================================
+  // TEST SUITE tab
+  // ============================================================
+
+  let _suiteWired = false;
+  let _suiteTargets = [];  // cached rows from GET /api/targets
+
+  function initSuite() {
+    if (_suiteWired) return;
+    _suiteWired = true;
+    $('#suite-run').addEventListener('click', runSuite);
+    $('#suite-close-detail').addEventListener('click', () => {
+      $('#suite-detail').classList.add('hidden');
+    });
+    loadSuiteTargets();
+  }
+
+  async function loadSuiteTargets() {
+    const host = $('#suite-target-list');
+    host.classList.remove('empty');
+    host.innerHTML = 'Loading…';
+    try {
+      const data = await api('/api/targets');
+      _suiteTargets = data.targets || [];
+      renderSuiteTargetList();
+    } catch (e) {
+      host.classList.add('empty');
+      host.textContent = 'Failed to load targets: ' + e.message;
+    }
+  }
+
+  function renderSuiteTargetList() {
+    const host = $('#suite-target-list');
+    host.innerHTML = '';
+    if (!_suiteTargets.length) {
+      host.classList.add('empty');
+      host.textContent = 'No targets registered under examples/targets/.';
+      return;
+    }
+    host.classList.remove('empty');
+    const list = el('div', { class: 'trace-list' });
+    _suiteTargets.forEach(t => {
+      const disabled = !t.importable;
+      const badges = [el('span', { class: 'pill', text: t.topology })];
+      if (disabled) {
+        badges.push(el('span', { class: 'pill danger', text: 'missing: ' + t.missing_deps.join(', ') }));
+      } else if (t.needs_api_key) {
+        badges.push(el('span', { class: 'pill warning', text: 'needs API key' }));
+      }
+      const checkbox = el('input', {
+        type: 'checkbox', class: 'suite-target-checkbox',
+      });
+      checkbox.dataset.name = t.name;
+      if (disabled) checkbox.disabled = true;
+      const row = el('label', {
+        class: 'trace-step',
+        style: `grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; `
+          + `cursor: ${disabled ? 'not-allowed' : 'pointer'}; opacity: ${disabled ? 0.55 : 1};`,
+      }, [
+        checkbox,
+        el('div', {}, [
+          el('div', { class: 'trace-step-node', text: t.name }),
+          el('div', { class: 'trace-step-summary', text: t.description }),
+        ]),
+        el('div', { style: 'display: flex; gap: 6px; align-items: center;' }, badges),
+      ]);
+      list.appendChild(row);
+    });
+    host.appendChild(list);
+  }
+
+  function selectedSuiteTargets() {
+    return $$('.suite-target-checkbox:checked').map(cb => cb.dataset.name);
+  }
+
+  async function runSuite() {
+    const target_names = selectedSuiteTargets();
+    if (!target_names.length) return toast('Select at least one target', 'error');
+
+    const intensity = $('#suite-intensity').value;
+    const seed = parseInt($('#suite-seed').value, 10) || 7;
+    const max_perturbations = parseInt($('#suite-max-perturbations').value, 10) || 0;
+    const judge = $('#suite-judge').value;
+    const track_history = $('#suite-track-history').checked;
+
+    const btn = $('#suite-run');
+    const status = $('#suite-status');
+    btn.disabled = true;
+    status.textContent = `running ${target_names.length} target(s) sequentially — this can take a while…`;
+    try {
+      const data = await api('/api/suite-run', {
+        method: 'POST',
+        body: { target_names, intensity, seed, max_perturbations, judge, track_history },
+      });
+      const results = data.results || [];
+      renderSuiteResults(results);
+      const ok = results.filter(r => r.status === 'ok').length;
+      const skipped = results.filter(r => r.status === 'skipped').length;
+      const errored = results.filter(r => r.status === 'error').length;
+      status.textContent = `done — ${ok} ok · ${skipped} skipped · ${errored} error(s)`;
+    } catch (e) {
+      toast('Suite run failed: ' + e.message, 'error');
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  const SUITE_STATUS_PILL = { ok: 'success', skipped: 'warning', error: 'danger' };
+
+  function renderSuiteResults(results) {
+    const card = $('#suite-results');
+    const host = $('#suite-results-list');
+    host.innerHTML = '';
+    card.classList.remove('hidden');
+
+    results.forEach(r => {
+      const summaryParts = [];
+      if (r.result) {
+        summaryParts.push(`${r.result.n_crashed} crashed`, `${r.result.n_diverged} diverged`);
+        if (r.result.n_coordination_findings) {
+          summaryParts.push(`${r.result.n_coordination_findings} coord finding(s)`);
+        }
+        if (r.result.n_judge_findings) {
+          summaryParts.push(`${r.result.n_judge_findings} judge finding(s)`);
+        }
+      } else if (r.error) {
+        summaryParts.push(r.error);
+      }
+
+      const row = el('div', { class: 'card tight', style: 'margin-bottom: 8px;' }, [
+        el('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 10px;' }, [
+          el('div', { style: 'font-weight: 600;', text: r.target_name }),
+          el('span', { class: `pill ${SUITE_STATUS_PILL[r.status] || 'same'}`, text: r.status }),
+        ]),
+        el('div', { class: 'muted', style: 'font-size: 12.5px; margin-top: 4px;',
+                    text: summaryParts.join(' · ') || '—' }),
+      ]);
+
+      if (r.result) {
+        row.appendChild(el('button', {
+          class: 'ghost-btn sm', text: 'View full result', style: 'margin-top: 8px;',
+          onclick: () => showSuiteDetail(r),
+        }));
+      }
+      host.appendChild(row);
+    });
+  }
+
+  function showSuiteDetail(r) {
+    $('#suite-detail-title').textContent = r.target_name;
+    renderAdapterResult(r.result, 'suite');
+    $('#suite-detail').classList.remove('hidden');
+    $('#suite-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   // ============================================================
