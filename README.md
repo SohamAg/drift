@@ -191,17 +191,36 @@ python -m drift serve
 
 Opens at **http://127.0.0.1:8765**.
 
-Three tabs:
+Seven tabs:
 
-- **Adapter** — pick a graph (bundled ticket-triage demo or the
+- **Test** — pick a graph (bundled ticket-triage demo or the
   langgraph-supervisor math+research demo), type a query, pick a preset
   (Quick / Balanced / Thorough / Exhaustive), run. Get every super-step of
   baseline + every per-perturbation trace side-by-side, every finding with
   a click-to-expand explanation, raw JSON download. Exhaustive is the
   "every applicable pattern in the schema, no sampling" pre-deploy gate.
-- **Results** — browse every saved experiment JSON from `results/`.
-- **Custom** — currently paused while we re-wire `@drift.agent` to the
-  adapter path (was previously powered by the now-removed native simulator).
+  Advanced settings expose agent roles (`coordination_roles`, powers
+  `role_drift`) and "Track for regression."
+- **Fork & Replay** — load a run (fresh or from Results), click a trace
+  step, edit the state, re-run forward from there — with an optional
+  top-vs-bottom comparison against applying the same edit at the initial
+  state instead. See "Fork-edit-replay" above.
+- **Compare** — two saved runs side by side: headline stat diff, findings,
+  trace.
+- **Ask** — free-text Q&A over a loaded run's trace (or summary-only data
+  for older saved runs that predate full-trace capture).
+- **Import graph** — point drift at any importable Python module exposing
+  `build(model=...)` / `initial_state(query)`, run the same pipeline
+  against it. Executes arbitrary local code by design — same trust model
+  as a Jupyter kernel; never expose this server on a network you don't
+  control.
+- **Test Suite** — run drift against several `examples/targets/` registry
+  entries (real third-party multi-agent systems, not synthetic fixtures)
+  in one pass with shared chaos/judge settings. A target missing a
+  dependency is skipped, not attempted; one target failing doesn't stop
+  the rest.
+- **Results** — browse every saved experiment JSON from `results/`,
+  generate an evidence pack from any of them.
 
 ---
 
