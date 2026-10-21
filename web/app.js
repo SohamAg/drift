@@ -118,6 +118,7 @@
     if (name === 'compare') initCompare();
     if (name === 'ask') initAsk();
     if (name === 'import') initImport();
+    if (name === 'build') initBuild();
     if (name === 'suite') initSuite();
     if (name === 'results') initResults();
   }
@@ -1529,6 +1530,179 @@
     } catch (e) {
       toast('Run failed: ' + e.message, 'error');
       status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ============================================================
+  // BUILD tab
+  // ============================================================
+
+  const BUILD_TOPOLOGY_META = {
+    supervisor: { min: 2, max: null,
+      hint: 'First agent is the coordinator; the rest are specialists it delegates to in order.' },
+    swarm: { min: 2, max: null,
+      hint: 'Agents hand off in the order listed, peer to peer.' },
+    pipeline: { min: 2, max: null,
+      hint: 'Agents run as sequential stages in the order listed.' },
+    loop: { min: 2, max: 2,
+      hint: 'Exactly 2 agents: first is the generator, second is the critic.' },
+    fanout: { min: 4, max: null,
+      hint: 'First agent is the dispatcher, last is the merge step; everyone in between runs in parallel (at least 2 workers).' },
+  };
+  const BUILD_DEFAULT_AGENTS = {
+    supervisor: [
+      { name: 'coordinator', role: 'Break the task into subtasks and decide what each specialist should cover.' },
+      { name: 'researcher', role: 'Research facts relevant to the task.' },
+      { name: 'writer', role: 'Write the final answer using what the team found.' },
+    ],
+    swarm: [
+      { name: 'intake', role: 'Understand the request and note what it actually needs.' },
+      { name: 'solver', role: 'Solve the request based on what intake found.' },
+    ],
+    pipeline: [
+      { name: 'draft', role: 'Draft a first-pass response to the task.' },
+      { name: 'finalize', role: 'Polish the draft into a final response.' },
+    ],
+    loop: [
+      { name: 'generator', role: 'Generate a solution. If revising, improve on the critic\'s feedback.' },
+      { name: 'critic', role: 'Review the solution. Say APPROVED if it is good, else say REVISE with specific feedback.' },
+    ],
+    fanout: [
+      { name: 'dispatcher', role: 'Split the task into independent angles for the workers to cover.' },
+      { name: 'worker_a', role: 'Cover one angle of the task.' },
+      { name: 'worker_b', role: 'Cover a different angle of the task.' },
+      { name: 'merge', role: "Combine all workers' findings into one final answer." },
+    ],
+  };
+
+  let _buildWired = false;
+  let _buildAgents = [];  // [{name, role}, ...] — current form state
+
+  function initBuild() {
+    if (_buildWired) return;
+    _buildWired = true;
+    $('#build-topology').addEventListener('change', onBuildTopologyChange);
+    $('#build-add-agent').addEventListener('click', addBuildAgentRow);
+    $('#build-generate').addEventListener('click', generateBuildTarget);
+    $('#build-save').addEventListener('click', saveBuildTarget);
+    onBuildTopologyChange();  // seed default agents for the preselected topology
+  }
+
+  function onBuildTopologyChange() {
+    const topology = $('#build-topology').value;
+    const meta = BUILD_TOPOLOGY_META[topology];
+    $('#build-topology-hint').textContent = meta.hint;
+    _buildAgents = BUILD_DEFAULT_AGENTS[topology].map(a => ({ ...a }));
+    renderBuildAgentRows();
+  }
+
+  function renderBuildAgentRows() {
+    const topology = $('#build-topology').value;
+    const meta = BUILD_TOPOLOGY_META[topology];
+    const host = $('#build-agent-rows');
+    host.innerHTML = '';
+    _buildAgents.forEach((agent, i) => {
+      const nameInput = el('input', { type: 'text', value: agent.name, placeholder: 'agent name' });
+      nameInput.addEventListener('input', () => { _buildAgents[i].name = nameInput.value; });
+      const roleInput = el('textarea', { class: 'mono', rows: '2', text: agent.role,
+        placeholder: 'what this agent should do' });
+      roleInput.addEventListener('input', () => { _buildAgents[i].role = roleInput.value; });
+      const removeBtn = el('button', {
+        type: 'button', class: 'ghost-btn sm', text: '✕',
+        onclick: () => removeBuildAgentRow(i),
+      });
+      if (_buildAgents.length <= meta.min) {
+        removeBtn.disabled = true;
+      }
+      host.appendChild(el('div', {
+        class: 'row', style: 'display: grid; grid-template-columns: 1fr 2fr auto; gap: 8px; align-items: start; margin-bottom: 8px;',
+      }, [nameInput, roleInput, removeBtn]));
+    });
+    const addBtn = $('#build-add-agent');
+    addBtn.disabled = meta.max != null && _buildAgents.length >= meta.max;
+  }
+
+  function addBuildAgentRow() {
+    const topology = $('#build-topology').value;
+    const meta = BUILD_TOPOLOGY_META[topology];
+    if (meta.max != null && _buildAgents.length >= meta.max) return;
+    _buildAgents.push({ name: '', role: '' });
+    renderBuildAgentRows();
+  }
+
+  function removeBuildAgentRow(index) {
+    const topology = $('#build-topology').value;
+    const meta = BUILD_TOPOLOGY_META[topology];
+    if (_buildAgents.length <= meta.min) return;
+    _buildAgents.splice(index, 1);
+    renderBuildAgentRows();
+  }
+
+  async function generateBuildTarget() {
+    const topology = $('#build-topology').value;
+    const model = ($('#build-model').value || 'gpt-4o-mini').trim();
+    const agents = _buildAgents.map(a => ({ name: a.name.trim(), role: a.role.trim() }));
+    if (agents.some(a => !a.name || !a.role)) {
+      return toast('Every agent needs both a name and a role description', 'error');
+    }
+
+    const btn = $('#build-generate');
+    const status = $('#build-status');
+    btn.disabled = true;
+    status.textContent = 'generating…';
+    try {
+      const data = await api('/api/build-target', {
+        method: 'POST',
+        body: { topology, agents, model },
+      });
+      $('#build-code').value = data.code;
+      $('#build-preview').classList.remove('hidden');
+      $('#build-save-result').classList.add('hidden');
+      const suggested = `${topology}_${agents.map(a => a.name.toLowerCase().replace(/\s+/g, '_')).join('_')}`
+        .slice(0, 50);
+      $('#build-save-name').value = suggested;
+      $('#build-preview').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      status.textContent = 'generated — review/edit the code below, then save it';
+    } catch (e) {
+      toast('Generate failed: ' + e.message, 'error');
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function saveBuildTarget() {
+    const name = ($('#build-save-name').value || '').trim();
+    const code = $('#build-code').value;
+    if (!name) return toast('Name is required', 'error');
+
+    const btn = $('#build-save');
+    const resultHost = $('#build-save-result');
+    btn.disabled = true;
+    try {
+      const data = await api('/api/save-target', {
+        method: 'POST',
+        body: { name, code },
+      });
+      resultHost.innerHTML = '';
+      resultHost.classList.remove('hidden');
+      resultHost.appendChild(el('div', { class: 'help',
+        text: `Saved as ${data.module} (${data.path}).` }));
+      resultHost.appendChild(el('button', {
+        class: 'ghost-btn', style: 'margin-top: 6px;', text: 'Test it in Import graph →',
+        onclick: () => {
+          activateTab('import');
+          $('#import-module').value = data.module;
+          $('#import-build-fn').value = 'build';
+          $('#import-state-fn').value = 'initial_state';
+          toast('Module path filled in — set a query and run when ready', 'info');
+        },
+      }));
+      toast('Saved', 'success');
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
     } finally {
       btn.disabled = false;
     }

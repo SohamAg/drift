@@ -26,6 +26,7 @@
     <button class="tab"        data-tab="compare" role="tab">Compare</button>
     <button class="tab"        data-tab="ask"     role="tab">Ask</button>
     <button class="tab"        data-tab="import"  role="tab">Import graph</button>
+    <button class="tab"        data-tab="build"   role="tab">Build</button>
     <button class="tab"        data-tab="suite"   role="tab">Test Suite</button>
     <button class="tab"        data-tab="results" role="tab">Results</button>
   </nav>
@@ -420,6 +421,66 @@
           <h3>Perturbations</h3>
           <div id="import-perturbations" class="failure-list"></div>
         </div>
+      </div>
+    </section>
+
+    <!-- ===================== BUILD ===================== -->
+    <section id="tab-build" class="tab-panel">
+      <div class="card">
+        <h2>Build your own multi-agent system</h2>
+        <p class="help">
+          Pick a coordination topology, name a few agents, give each a short role
+          description — get back a real, runnable LangGraph file with a real LLM
+          call per agent. This is a <strong>starting point</strong>, not a finished
+          system: edit the generated code below before saving if you want to tweak
+          anything. Routing between agents is fixed (not LLM-conditional) for every
+          topology except loop's generator/critic stop condition.
+        </p>
+
+        <div class="field">
+          <label for="build-topology">Topology</label>
+          <select id="build-topology">
+            <option value="supervisor">Supervisor — a coordinator delegates to specialists in sequence, then synthesizes</option>
+            <option value="swarm">Swarm — agents hand off directly to each other, no central router</option>
+            <option value="pipeline" selected>Pipeline — fixed sequential stages, each building on the last</option>
+            <option value="loop">Loop — two agents (generator, critic) cycle until the critic approves</option>
+            <option value="fanout">Fanout — one dispatcher, several workers in parallel, then a merge</option>
+          </select>
+          <p class="help" id="build-topology-hint"></p>
+        </div>
+
+        <div class="field">
+          <label for="build-model">Model <span class="muted">(every agent calls this; real tokens, needs OPENAI_API_KEY)</span></label>
+          <input type="text" id="build-model" value="gpt-4o-mini" />
+        </div>
+
+        <div class="field">
+          <label>Agents</label>
+          <div id="build-agent-rows"></div>
+          <div class="row" style="gap: 8px; margin-top: 8px;">
+            <button type="button" id="build-add-agent" class="ghost-btn">+ Add agent</button>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="build-generate" class="primary">Generate</button>
+          <span id="build-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="build-preview" class="card hidden">
+        <h3>Generated code <span class="muted">— editable, tweak before saving</span></h3>
+        <textarea id="build-code" class="mono" rows="22" style="font-size: 12px;" spellcheck="false"></textarea>
+        <div class="row two-col" style="margin-top: 10px;">
+          <div class="field">
+            <label for="build-save-name">Save as</label>
+            <input type="text" id="build-save-name" placeholder="my_research_team" />
+          </div>
+          <div class="field" style="display: flex; align-items: flex-end;">
+            <button type="button" id="build-save" class="primary">Save target</button>
+          </div>
+        </div>
+        <div id="build-save-result" class="hidden" style="margin-top: 10px;"></div>
       </div>
     </section>
 
