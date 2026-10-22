@@ -28,6 +28,7 @@
     <button class="tab"        data-tab="import"  role="tab">Import graph</button>
     <button class="tab"        data-tab="build"   role="tab">Build</button>
     <button class="tab"        data-tab="suite"   role="tab">Test Suite</button>
+    <button class="tab"        data-tab="simulate" role="tab">Simulate</button>
     <button class="tab"        data-tab="results" role="tab">Results</button>
   </nav>
 
@@ -577,6 +578,80 @@
           <h3>Perturbations</h3>
           <div id="suite-perturbations" class="failure-list"></div>
         </div>
+      </div>
+    </section>
+
+    <!-- ===================== SIMULATE (historical grounding + calibration) ===================== -->
+    <section id="tab-simulate" class="tab-panel">
+      <div class="card">
+        <h2>Simulate a scenario against real historical outcomes</h2>
+        <p class="help">
+          Describe a scenario — an announcement, an event, a piece of news — and get a
+          structured prediction from a multi-agent debate, grounded in real historical
+          stock-reaction data instead of pure LLM guessing. This is a research tool, not
+          financial advice: the dataset is 7 real, verified events, not a statistically
+          powerful one — see the calibration panel below for what that actually buys you.
+        </p>
+        <div class="field">
+          <label for="simulate-scenario">Scenario</label>
+          <textarea id="simulate-scenario" rows="2"
+                    placeholder="e.g. a major chip export ban is announced, affecting an AI chipmaker"></textarea>
+        </div>
+        <div class="field">
+          <label class="checkbox-row" for="simulate-ground">
+            <input type="checkbox" id="simulate-ground" checked />
+            Ground in real historical precedent
+            <span class="muted">— retrieves similar real past events before predicting</span>
+          </label>
+        </div>
+        <div class="actions">
+          <button type="button" id="simulate-run" class="primary">Simulate</button>
+          <span id="simulate-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="simulate-result" class="card hidden">
+        <h3>Verdict</h3>
+        <div id="simulate-verdict" class="kv-grid"></div>
+        <div id="simulate-grounding" class="hidden" style="margin-top: 12px;">
+          <div class="muted" style="margin-bottom: 6px;">Grounded on real historical precedent:</div>
+          <div id="simulate-grounding-list"></div>
+        </div>
+        <details style="margin-top: 12px;">
+          <summary class="help">Agent notes (raw)</summary>
+          <pre id="simulate-notes" class="mono" style="font-size: 11px; max-height: 240px; overflow: auto;"></pre>
+        </details>
+        <div class="row" style="margin-top: 10px; gap: 8px;">
+          <button type="button" id="simulate-download-json" class="ghost-btn">Download raw JSON</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Calibration — does grounding actually help?</h3>
+        <p class="help">
+          Runs a fixed stock-reaction simulation against all <span id="calibrate-event-count">7</span>
+          real held-out historical events (outcomes already known) and checks whether each
+          predicted direction matches what actually happened. Makes real LLM calls for every
+          event — realistically 20-35 calls total, can take a few minutes, is not free.
+        </p>
+        <div class="field">
+          <label class="checkbox-row" for="calibrate-ground">
+            <input type="checkbox" id="calibrate-ground" checked />
+            Ground each scoring run in the other events
+            <span class="muted">— leave-one-out: never uses an event as its own precedent</span>
+          </label>
+        </div>
+        <div class="actions">
+          <button type="button" id="calibrate-run" class="ghost-btn">Run calibration</button>
+          <span id="calibrate-status" class="muted"></span>
+        </div>
+        <div id="calibrate-result" class="hidden" style="margin-top: 12px;"></div>
+      </div>
+
+      <div class="card">
+        <h3>Historical event dataset</h3>
+        <p class="help">Real data, fetched live from Yahoo Finance — see docs/ or drift.historical_grounding for provenance.</p>
+        <div id="historical-events-list"></div>
       </div>
     </section>
 

@@ -120,6 +120,7 @@
     if (name === 'import') initImport();
     if (name === 'build') initBuild();
     if (name === 'suite') initSuite();
+    if (name === 'simulate') initSimulate();
     if (name === 'results') initResults();
   }
   $$('.tab').forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
@@ -1908,6 +1909,174 @@
     renderAdapterResult(r.result, 'suite');
     $('#suite-detail').classList.remove('hidden');
     $('#suite-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // ============================================================
+  // SIMULATE tab (historical grounding + calibration)
+  // ============================================================
+
+  let _simulateWired = false;
+  let _lastSimulateResult = null;
+
+  function initSimulate() {
+    if (_simulateWired) return;
+    _simulateWired = true;
+    $('#simulate-run').addEventListener('click', runSimulate);
+    $('#calibrate-run').addEventListener('click', runCalibration);
+    $('#simulate-download-json').addEventListener('click', () => {
+      if (_lastSimulateResult) downloadJson(_lastSimulateResult, `simulate_${Date.now()}.json`);
+    });
+    loadHistoricalEvents();
+  }
+
+  async function loadHistoricalEvents() {
+    const host = $('#historical-events-list');
+    host.innerHTML = 'Loading…';
+    try {
+      const data = await api('/api/historical-events');
+      const events = data.events || [];
+      $('#calibrate-event-count').textContent = events.length;
+      host.innerHTML = '';
+      const list = el('div', { class: 'trace-list' });
+      events.forEach(e => {
+        const pillClass = e.actual_direction === 'up' ? 'success'
+          : e.actual_direction === 'down' ? 'danger' : 'same';
+        list.appendChild(el('div', { class: 'trace-step', style: 'grid-template-columns: auto 1fr auto; gap: 10px; align-items: center;' }, [
+          el('div', { class: 'trace-step-node', text: e.ticker }),
+          el('div', { class: 'trace-step-summary', text: `${e.reaction_date}: ${e.description}` }),
+          el('span', { class: `pill ${pillClass}`, text: `${e.actual_move_pct > 0 ? '+' : ''}${e.actual_move_pct.toFixed(1)}%` }),
+        ]));
+      });
+      host.appendChild(list);
+    } catch (e) {
+      host.textContent = 'Failed to load historical events: ' + e.message;
+    }
+  }
+
+  async function runSimulate() {
+    const scenario = ($('#simulate-scenario').value || '').trim();
+    if (!scenario) return toast('Describe a scenario first', 'error');
+    const ground = $('#simulate-ground').checked;
+
+    const btn = $('#simulate-run');
+    const status = $('#simulate-status');
+    btn.disabled = true;
+    status.textContent = 'thinking — proposing a roster, grounding, then running the simulation (can take a minute)…';
+    try {
+      const data = await api('/api/simulate-scenario', {
+        method: 'POST',
+        body: { scenario, ground },
+      });
+      _lastSimulateResult = data;
+      renderSimulateResult(data);
+      status.textContent = `done — ${data.topology} topology`;
+    } catch (e) {
+      toast('Simulate failed: ' + e.message, 'error');
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderSimulateResult(data) {
+    const card = $('#simulate-result');
+    card.classList.remove('hidden');
+
+    const verdictHost = $('#simulate-verdict');
+    verdictHost.innerHTML = '';
+    const verdict = data.verdict || {};
+    const directionPill = verdict.direction === 'up' ? 'success'
+      : verdict.direction === 'down' ? 'danger' : 'same';
+    const kvs = [
+      ['Topology', data.topology],
+      ['Why this topology', data.rationale],
+    ];
+    kvs.forEach(([k, v]) => {
+      verdictHost.appendChild(el('span', { class: 'k', text: k }));
+      verdictHost.appendChild(el('span', { class: 'v', text: v || '—' }));
+    });
+    verdictHost.appendChild(el('span', { class: 'k', text: 'Direction' }));
+    verdictHost.appendChild(el('span', { class: 'v' }, [
+      el('span', { class: `pill ${directionPill}`, text: verdict.direction || 'unknown' }),
+    ]));
+    if (verdict.magnitude_pct != null) {
+      verdictHost.appendChild(el('span', { class: 'k', text: 'Magnitude' }));
+      verdictHost.appendChild(el('span', { class: 'v', text: `${verdict.magnitude_pct}%` }));
+    }
+    if (verdict.confidence) {
+      verdictHost.appendChild(el('span', { class: 'k', text: 'Confidence' }));
+      verdictHost.appendChild(el('span', { class: 'v', text: verdict.confidence }));
+    }
+    if (verdict.reasoning) {
+      verdictHost.appendChild(el('span', { class: 'k', text: 'Reasoning' }));
+      verdictHost.appendChild(el('span', { class: 'v', text: verdict.reasoning }));
+    }
+
+    const groundingHost = $('#simulate-grounding');
+    const groundingList = $('#simulate-grounding-list');
+    groundingList.innerHTML = '';
+    const analogues = data.grounded_on || [];
+    if (analogues.length) {
+      groundingHost.classList.remove('hidden');
+      analogues.forEach(e => {
+        groundingList.appendChild(el('div', { class: 'card tight', style: 'margin-bottom: 6px;' }, [
+          el('div', { style: 'font-weight: 600;', text: `${e.ticker} — ${e.reaction_date}` }),
+          el('div', { class: 'muted', style: 'font-size: 12.5px;', text: e.description }),
+          el('div', { class: 'mono', style: 'font-size: 12px; margin-top: 4px;',
+                      text: `actual result: ${e.actual_move_pct > 0 ? '+' : ''}${e.actual_move_pct.toFixed(1)}% (${e.actual_direction})` }),
+        ]));
+      });
+    } else {
+      groundingHost.classList.add('hidden');
+    }
+
+    $('#simulate-notes').textContent = JSON.stringify(data.notes || {}, null, 2);
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  async function runCalibration() {
+    const ground = $('#calibrate-ground').checked;
+    const btn = $('#calibrate-run');
+    const status = $('#calibrate-status');
+    btn.disabled = true;
+    status.textContent = 'running against every historical event — this makes ~20-35 real LLM calls and can take a few minutes…';
+    try {
+      const data = await api('/api/calibrate', {
+        method: 'POST',
+        body: { ground },
+      });
+      renderCalibrationResult(data);
+      const pct = data.accuracy != null ? `${(data.accuracy * 100).toFixed(0)}%` : 'n/a';
+      status.textContent = `done — accuracy ${pct} (${data.n_matched}/${data.n_scored} scored, ${data.n_total} total)`;
+    } catch (e) {
+      toast('Calibration failed: ' + e.message, 'error');
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderCalibrationResult(data) {
+    const host = $('#calibrate-result');
+    host.innerHTML = '';
+    host.classList.remove('hidden');
+
+    const pct = data.accuracy != null ? `${(data.accuracy * 100).toFixed(0)}%` : 'n/a';
+    host.appendChild(el('div', { style: 'font-weight: 600; margin-bottom: 8px;',
+      text: `Accuracy: ${pct} (${data.n_matched}/${data.n_scored} scored correctly, ${data.n_total} events total)` }));
+
+    (data.results || []).forEach(r => {
+      const statusPill = r.error ? 'warning' : (r.matched ? 'success' : (r.predicted_direction ? 'danger' : 'same'));
+      const statusText = r.error ? 'error' : (r.predicted_direction ? (r.matched ? 'matched' : 'missed') : 'unscored');
+      host.appendChild(el('div', { class: 'card tight', style: 'margin-bottom: 6px;' }, [
+        el('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 10px;' }, [
+          el('div', { style: 'font-weight: 600;', text: `${r.event.ticker} — actual: ${r.event.actual_direction}` }),
+          el('span', { class: `pill ${statusPill}`, text: statusText }),
+        ]),
+        el('div', { class: 'muted', style: 'font-size: 12.5px; margin-top: 4px;',
+                    text: r.error || `predicted: ${r.predicted_direction || 'unparseable'}` }),
+      ]));
+    });
   }
 
   // ============================================================
