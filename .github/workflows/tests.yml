@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # [dev] -> pytest. [web] -> fastapi/uvicorn for server.py and its
+      # tests. [openai] -> the OpenAI SDK the judge/target-builder/
+      # historical-grounding modules lazily import. [validation] ->
+      # langgraph + langchain-openai, needed because target_builder's
+      # generated code imports both at module level (even for tests that
+      # only build() a graph and never invoke it) — see
+      # tests/test_target_builder.py.
+      - name: Install drift with test dependencies
+        run: pip install -e ".[dev,web,openai,validation]"
+
+      - name: Run test suite
+        run: pytest -q
