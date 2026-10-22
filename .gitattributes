@@ -1,0 +1,6 @@
+# Normalize line endings to LF in the repository regardless of each
+# contributor's local core.autocrlf setting — stops every commit from
+# warning "LF will be replaced by CRLF" on checkout. Windows editors and
+# tools handle LF files fine; this just keeps the canonical form in git
+# consistent across contributors instead of depending on local config.
+* text=auto eol=lf
