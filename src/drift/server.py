@@ -18,6 +18,9 @@ endpoints:
   GET  /api/targets                  — list the examples/targets/ registry
   POST /api/suite-run                — run drift against several targets in one pass
   POST /api/propose-target             — ask an LLM to draft a topology + agent roster from a scenario
+  GET  /api/historical-events          — the real seed dataset for grounding/calibration
+  POST /api/simulate-scenario          — propose + ground + generate + run a verdict for a scenario
+  POST /api/calibrate                  — score a verdict-producing target against real held-out history
   POST /api/build-target              — generate a LangGraph target from topology + agents
   POST /api/save-target               — write a generated target to examples/targets/user_generated/
 
@@ -280,6 +283,29 @@ class ProposeTargetRequest(BaseModel):
     model: str = "gpt-4o-mini"
 
 
+class SimulateScenarioRequest(BaseModel):
+    """Propose a roster, optionally ground it in real historical
+    precedent, generate a verdict-producing target, and actually run it
+    — one call, ephemeral (nothing saved to disk; pass the returned
+    `code` to /api/save-target if you want to keep it). Backs the
+    Historical Grounding / "Simulate" panel."""
+    scenario: str
+    ground: bool = True
+    model: str = "gpt-4o-mini"
+
+
+class CalibrateRequest(BaseModel):
+    """Score a verdict-producing target against the real held-out
+    historical event dataset (drift.historical_grounding). Defaults to
+    a fixed stock-reaction roster so repeated runs are comparable; pass
+    your own topology/agents to calibrate something else, as long as it
+    makes sense against this dataset's up/down/flat vocabulary."""
+    topology: str = "fanout"
+    agents: list[dict[str, str]] | None = None
+    model: str = "gpt-4o-mini"
+    ground: bool = True
+
+
 class BuildTargetRequest(BaseModel):
     """Generate a runnable LangGraph target from a topology + agent list.
     Backs the Build tab. See drift.target_builder for what's actually
@@ -414,6 +440,47 @@ def _build_demo_graph(name: str, overrides: dict[str, Any]) -> tuple[Any, dict, 
     if name == "langgraph_supervisor":
         return _build_langgraph_supervisor_demo(overrides)
     raise ValueError(f"unknown graph_name {name!r}; see /api/adapter-graphs")
+
+
+def _load_generated_module(code: str, label: str) -> Any:
+    """Load freshly-generated target source (from target_builder) as a
+    real importable module — never a bare exec(code, {}) into a
+    throwaway dict.
+
+    Bare exec() intermittently breaks: the generated module's State
+    TypedDict uses Annotated[...] field reducers, and LangGraph's
+    get_type_hints() call resolves those against the class's registered
+    module in sys.modules. A throwaway dict exec'd repeatedly within one
+    long-running process (this server, across many requests) doesn't
+    reliably give each generated "State" class a distinct, correctly
+    resolvable module identity — confirmed by reproducing a real
+    NameError: name 'Annotated' is not defined that didn't reproduce in
+    a single fresh interpreter process, only under repeated exec() calls
+    in one running server. Writing to a real file and importing via
+    importlib (same mechanism _build_custom_graph already uses for saved
+    targets) sidesteps this entirely: each module gets a real,
+    sys.modules-registered identity.
+
+    `label` only affects the ephemeral module's generated name/filename
+    (for debugging a traceback) — these files accumulate under the OS
+    temp dir and are not meant to be curated; nothing reads them back by
+    name.
+    """
+    import importlib.util
+    import tempfile
+    import uuid
+
+    tmp_dir = Path(tempfile.gettempdir()) / "drift_ephemeral_targets"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    mod_name = f"drift_ephemeral_{label}_{uuid.uuid4().hex}"
+    path = tmp_dir / f"{mod_name}.py"
+    path.write_text(code, encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _build_custom_graph(
@@ -834,6 +901,117 @@ def create_app() -> FastAPI:
         except ScenarioProposalError as e:
             raise HTTPException(400, str(e))
         return proposal.to_json()
+
+    @app.get("/api/historical-events")
+    def list_historical_events() -> dict[str, Any]:
+        """The real, verified seed dataset (drift.historical_grounding) —
+        what retrieval-grounding draws analogues from and what
+        /api/calibrate scores against."""
+        from drift.historical_grounding import load_events
+
+        return {"events": [e.to_json() for e in load_events()]}
+
+    @app.post("/api/simulate-scenario")
+    async def simulate_scenario(req: SimulateScenarioRequest) -> dict[str, Any]:
+        """Propose a roster for a scenario, optionally ground it in real
+        historical precedent, generate a verdict-producing target, and
+        run it once. Ephemeral — nothing is saved to disk; the returned
+        `code` can be passed to /api/save-target if the user wants to
+        keep it.
+        """
+        from drift.historical_grounding import (
+            STOCK_VERDICT_SCHEMA,
+            GroundingError,
+            build_grounded_query,
+            retrieve_similar_events,
+        )
+        from drift.target_builder import (
+            ScenarioProposalError,
+            TargetBuilderError,
+            generate_target_source,
+            propose_target,
+        )
+
+        try:
+            proposal = await propose_target(req.scenario, model=req.model)
+        except ScenarioProposalError as e:
+            raise HTTPException(400, str(e))
+
+        analogues = []
+        if req.ground:
+            try:
+                analogues = await retrieve_similar_events(req.scenario, model=req.model)
+            except GroundingError as e:
+                raise HTTPException(400, f"grounding failed: {e}")
+
+        query = build_grounded_query(req.scenario, analogues) if req.ground else req.scenario
+
+        try:
+            code = generate_target_source(
+                proposal.topology, proposal.agents, model=req.model,
+                verdict_schema=STOCK_VERDICT_SCHEMA,
+            )
+        except TargetBuilderError as e:
+            raise HTTPException(400, str(e))
+
+        try:
+            module = _load_generated_module(code, "simulate")
+            graph = module.build(req.model)
+            state = module.initial_state(query)
+            final_state = await graph.ainvoke(state)
+        except Exception as e:
+            raise HTTPException(502, f"simulation run failed: {type(e).__name__}: {e}")
+
+        return {
+            "topology": proposal.topology,
+            "rationale": proposal.rationale,
+            "verdict": final_state.get("verdict", {}),
+            "notes": final_state.get("notes", {}),
+            "grounded_on": [a.to_json() for a in analogues],
+            "code": code,
+        }
+
+    @app.post("/api/calibrate")
+    async def calibrate_endpoint(req: CalibrateRequest) -> dict[str, Any]:
+        """Score a verdict-producing target against the real held-out
+        historical event dataset. Makes real LLM calls — one full
+        simulation run per event (several calls each) plus one
+        retrieval call per event if grounding is on; realistically
+        20-35 calls for the full 7-event seed dataset. Not fast, not free.
+        """
+        from drift.calibration import CalibrationError, run_calibration
+        from drift.historical_grounding import (
+            DEFAULT_STOCK_REACTION_AGENTS,
+            DEFAULT_STOCK_REACTION_TOPOLOGY,
+            STOCK_VERDICT_SCHEMA,
+        )
+        from drift.target_builder import TargetBuilderError, generate_target_source
+
+        agents = req.agents if req.agents is not None else list(DEFAULT_STOCK_REACTION_AGENTS)
+        topology = req.topology or DEFAULT_STOCK_REACTION_TOPOLOGY
+
+        try:
+            code = generate_target_source(
+                topology, agents, model=req.model, verdict_schema=STOCK_VERDICT_SCHEMA,
+            )
+        except TargetBuilderError as e:
+            raise HTTPException(400, str(e))
+
+        try:
+            module = _load_generated_module(code, "calibrate")
+        except Exception as e:
+            raise HTTPException(502, f"generated target failed to load: {type(e).__name__}: {e}")
+
+        try:
+            report = await run_calibration(
+                module.build, module.initial_state, model=req.model, ground=req.ground,
+            )
+        except CalibrationError as e:
+            raise HTTPException(400, str(e))
+
+        result = report.to_json()
+        result["code"] = code
+        return result
 
     @app.post("/api/build-target")
     def build_target(req: BuildTargetRequest) -> dict[str, Any]:

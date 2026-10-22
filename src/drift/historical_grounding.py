@@ -49,6 +49,24 @@ STOCK_VERDICT_SCHEMA: dict[str, str] = {
     "reasoning": "1-2 sentence explanation citing what the team found",
 }
 
+# A fixed, reusable roster for calibration (drift.calibration) — unlike
+# /api/simulate-scenario's per-scenario AI-proposed roster, calibration
+# needs ONE consistent system under repeated test across all held-out
+# events, not 7 different ad-hoc rosters that would each need their own
+# calibration run to mean anything.
+DEFAULT_STOCK_REACTION_TOPOLOGY = "fanout"
+DEFAULT_STOCK_REACTION_AGENTS: tuple[dict[str, str], ...] = (
+    {"name": "dispatcher", "role": (
+        "Split the scenario into the angles the team should each "
+        "investigate: market/trading reaction, public sentiment, and "
+        "underlying business fundamentals."
+    )},
+    {"name": "market_analyst", "role": "Assess the likely market/trading reaction to this scenario."},
+    {"name": "sentiment_analyst", "role": "Assess the likely public and social sentiment reaction to this scenario."},
+    {"name": "fundamentals_analyst", "role": "Assess this scenario's impact on the underlying business fundamentals."},
+    {"name": "verdict_synth", "role": "Synthesize all analysts' findings into one final stock-reaction prediction."},
+)
+
 
 @dataclass(frozen=True)
 class HistoricalEvent:
