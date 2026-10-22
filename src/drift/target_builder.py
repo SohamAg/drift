@@ -171,6 +171,43 @@ def _route_after_critic(state: dict) -> str:
     return "retry"
 '''
 
+_VERDICT_NODE_FACTORY_SOURCE = '''
+
+def _verdict_node(name: str, role: str, model: str, schema: dict):
+    """Like _agent_node, but requests STRUCTURED JSON matching `schema`
+    instead of free text, and writes it to state["verdict"] (not just
+    state["notes"][name]) — meant to be the graph's final node,
+    synthesizing everything the team found into one machine-readable
+    verdict. On a malformed response, degrades to an "error" verdict
+    rather than raising — a bad LLM response shouldn't crash the graph,
+    it should be visible in the output."""
+    def node(state: dict) -> dict:
+        llm = ChatOpenAI(model=model, temperature=0)
+        notes = state.get("notes", {})
+        context = "\\n\\n".join(f"[{k}]: {v}" for k, v in notes.items()) or "(nothing yet)"
+        schema_lines = "\\n".join(f'  "{k}": <{v}>' for k, v in schema.items())
+        system = SystemMessage(content=(
+            f"{role}\\n\\n"
+            f"Respond with STRICT JSON, no markdown fencing, exactly this shape:\\n"
+            f"{{\\n{schema_lines}\\n}}"
+        ))
+        human = HumanMessage(content=(
+            f"Task: {state.get('task', '')}\\n\\n"
+            f"What the team found:\\n{context}"
+        ))
+        response = llm.invoke([system, human], response_format={"type": "json_object"})
+        try:
+            verdict = json.loads(response.content)
+            if not isinstance(verdict, dict):
+                raise ValueError("verdict JSON was not an object")
+        except (json.JSONDecodeError, ValueError) as e:
+            verdict = {"error": f"model did not return a usable verdict: {e}", "raw": str(response.content)}
+        new_notes = dict(notes)
+        new_notes[name] = str(verdict)
+        return {"notes": new_notes, "verdict": verdict}
+    return node
+'''
+
 
 def _safe_docstring_text(s: str) -> str:
     """Make arbitrary user text safe to embed inside a plain (non-raw)
@@ -180,27 +217,40 @@ def _safe_docstring_text(s: str) -> str:
     return s.replace("\\", "/").replace('"""', "'''")
 
 
-def _render_header(topology: str, specs: list[AgentSpec], model: str) -> str:
+def _render_header(
+    topology: str,
+    specs: list[AgentSpec],
+    model: str,
+    verdict_schema: dict[str, str] | None = None,
+) -> str:
     agent_list = "\n".join(
         f"  - {s.slug}: {_safe_docstring_text(s.role)}" for s in specs
     )
-    return (
-        f'"""Generated multi-agent system — {topology} topology.\n'
-        f"\n"
-        f"Built via drift's Build tab. This is a STARTING POINT, not a\n"
-        f"finished system — edit the role descriptions below, or the graph\n"
-        f"wiring further down, to shape real behavior. Routing between\n"
-        f"agents is FIXED (sequential/parallel by position), not\n"
-        f"LLM-conditional, except for the loop topology's generator/critic\n"
-        f"check — add langgraph conditional edges yourself if you want an\n"
-        f"agent to decide where to go next.\n"
-        f"\n"
-        f"Every agent calls a real LLM ({model} by default); running this\n"
-        f"through drift costs real tokens and needs OPENAI_API_KEY set.\n"
-        f"\n"
-        f"Topology: {topology} — {TOPOLOGY_DESCRIPTIONS[topology]}\n"
-        f"Agents:\n{agent_list}\n"
-        f'"""\n'
+    verdict_note = (
+        "\n\nThe final node produces a STRUCTURED verdict (see VERDICT_SCHEMA\n"
+        "below) instead of free text, written to state[\"verdict\"] — built\n"
+        "for calibration against real historical outcomes\n"
+        "(see drift.calibration), not just human reading."
+        if verdict_schema is not None else ""
+    )
+    lines = [
+        f'"""Generated multi-agent system — {topology} topology.\n',
+        "\n",
+        "Built via drift's Build tab. This is a STARTING POINT, not a\n",
+        "finished system — edit the role descriptions below, or the graph\n",
+        "wiring further down, to shape real behavior. Routing between\n",
+        "agents is FIXED (sequential/parallel by position), not\n",
+        "LLM-conditional, except for the loop topology's generator/critic\n",
+        "check — add langgraph conditional edges yourself if you want an\n",
+        "agent to decide where to go next.\n",
+        "\n",
+        f"Every agent calls a real LLM ({model} by default); running this\n",
+        "through drift costs real tokens and needs OPENAI_API_KEY set.\n",
+        "\n",
+        f"Topology: {topology} — {TOPOLOGY_DESCRIPTIONS[topology]}\n",
+        f"Agents:\n{agent_list}\n",
+        f"{verdict_note}\n" if verdict_note else "",
+        '"""\n',
         # Deliberately NOT "from __future__ import annotations" in the
         # generated file — the State TypedDict's Annotated[...] reducer
         # needs eager evaluation. With deferred (string) annotations,
@@ -210,34 +260,61 @@ def _render_header(topology: str, specs: list[AgentSpec], model: str) -> str:
         # to load a .py file don't); eager evaluation sidesteps that
         # fragility entirely. Python 3.10+ (this project's floor) supports
         # `X | None` natively, so nothing generated here needs it anyway.
-        f"import operator\n"
-        f"from typing import Annotated, TypedDict\n"
-        f"\n"
-        f"from langchain_core.messages import HumanMessage, SystemMessage\n"
-        f"from langchain_openai import ChatOpenAI\n"
-        f"from langgraph.graph import END, START, StateGraph\n"
-        f"\n"
-        f"DEFAULT_MODEL = {model!r}\n"
-        f"DEFAULT_QUERY = \"describe your task here\"\n"
-        f"\n"
-        f"\n"
-        f"class State(TypedDict):\n"
-        f'    """notes uses a merge reducer (not plain replace) because the\n'
-        f"    fanout topology has multiple agents writing to it in the SAME\n"
-        f"    super-step — without a reducer, LangGraph can't tell which\n"
-        f'    concurrent write should win and raises InvalidUpdateError."""\n'
-        f"    task: str\n"
-        f"    notes: Annotated[dict, operator.or_]\n"
-        f"    _iterations: int\n"
+        "import json\n" if verdict_schema is not None else "",
+        "import operator\n",
+        "from typing import Annotated, TypedDict\n",
+        "\n",
+        "from langchain_core.messages import HumanMessage, SystemMessage\n",
+        "from langchain_openai import ChatOpenAI\n",
+        "from langgraph.graph import END, START, StateGraph\n",
+        "\n",
+        f"DEFAULT_MODEL = {model!r}\n",
+        'DEFAULT_QUERY = "describe your task here"\n',
+    ]
+    if verdict_schema is not None:
+        schema_body = "".join(f"    {k!r}: {v!r},\n" for k, v in verdict_schema.items())
+        lines.append(f"VERDICT_SCHEMA = {{\n{schema_body}}}\n")
+    lines += [
+        "\n",
+        "\n",
+        "class State(TypedDict):\n",
+        '    """notes uses a merge reducer (not plain replace) because the\n',
+        "    fanout topology has multiple agents writing to it in the SAME\n",
+        "    super-step — without a reducer, LangGraph can't tell which\n",
+        '    concurrent write should win and raises InvalidUpdateError."""\n',
+        "    task: str\n",
+        "    notes: Annotated[dict, operator.or_]\n",
+        "    _iterations: int\n",
+    ]
+    if verdict_schema is not None:
+        lines.append("    verdict: dict\n")
+    return "".join(lines)
+
+
+def _node_lines(
+    specs: list[AgentSpec], topology: str, verdict_schema: dict[str, str] | None = None,
+) -> list[str]:
+    # "supervisor" puts its verdict on the separately-added "synthesis"
+    # node (see _wire_supervisor), not on any of `specs`. "loop" never
+    # gets a verdict node at all — its critic's free-text output already
+    # drives _route_after_critic's APPROVED/REVISE check; swapping it for
+    # structured JSON would break that routing (see generate_target_source's
+    # validation, which rejects loop + verdict_schema before getting here).
+    verdict_index = (
+        len(specs) - 1 if (verdict_schema is not None and topology not in ("supervisor", "loop"))
+        else None
     )
-
-
-def _node_lines(specs: list[AgentSpec], topology: str) -> list[str]:
     lines = []
     for i, s in enumerate(specs):
-        use_factory = "_loop_generator_node" if (topology == "loop" and i == 0) else "_agent_node"
+        if topology == "loop" and i == 0:
+            use_factory = "_loop_generator_node"
+        elif i == verdict_index:
+            use_factory = "_verdict_node"
+        else:
+            use_factory = "_agent_node"
+        extra_arg = ", VERDICT_SCHEMA" if use_factory == "_verdict_node" else ""
         lines.append(
-            f'    g.add_node({s.slug!r}, {use_factory}({s.slug!r}, {s.role!r}, model))'
+            f'    g.add_node({s.slug!r}, {use_factory}({s.slug!r}, {s.role!r}, model{extra_arg}))'
         )
     return lines
 
@@ -250,14 +327,24 @@ def _wire_chain(slugs: list[str]) -> list[str]:
     return lines
 
 
-def _wire_supervisor(specs: list[AgentSpec]) -> tuple[list[str], list[str]]:
+def _wire_supervisor(
+    specs: list[AgentSpec], verdict_schema: dict[str, str] | None = None,
+) -> tuple[list[str], list[str]]:
     """Coordinator -> specialists in sequence -> a synthesis pass (reusing
-    the coordinator's own role) -> END. Returns (extra_node_lines, edge_lines)."""
+    the coordinator's own role) -> END. Returns (extra_node_lines, edge_lines).
+    When verdict_schema is given, the synthesis node is the verdict node —
+    it's already the graph's final, synthesizing step."""
     supervisor, specialists = specs[0], specs[1:]
     chain = [supervisor.slug] + [s.slug for s in specialists] + ["synthesis"]
-    extra_node = [
-        f'    g.add_node("synthesis", _agent_node("synthesis", {supervisor.role!r}, model))'
-    ]
+    if verdict_schema is not None:
+        extra_node = [
+            '    g.add_node("synthesis", _verdict_node('
+            f'"synthesis", {supervisor.role!r}, model, VERDICT_SCHEMA))'
+        ]
+    else:
+        extra_node = [
+            f'    g.add_node("synthesis", _agent_node("synthesis", {supervisor.role!r}, model))'
+        ]
     return extra_node, _wire_chain(chain)
 
 
@@ -287,15 +374,42 @@ def _wire_fanout(specs: list[AgentSpec]) -> list[str]:
 
 
 def generate_target_source(
-    topology: str, agents: list[dict], model: str = DEFAULT_MODEL,
+    topology: str,
+    agents: list[dict],
+    model: str = DEFAULT_MODEL,
+    verdict_schema: dict[str, str] | None = None,
 ) -> str:
     """Render a complete, syntactically valid target module as a string.
     Raises TargetBuilderError on invalid topology/agent input — never
-    partially generates."""
+    partially generates.
+
+    verdict_schema (optional): when given, the graph's final node
+    produces STRUCTURED JSON matching this {field: description} shape
+    instead of free text, written to state["verdict"] — this is what
+    makes a generated system usable for calibration against real
+    historical outcomes (see drift.calibration and
+    drift.historical_grounding.STOCK_VERDICT_SCHEMA for the stock-
+    reaction-prediction shape those use).
+
+    Not supported for topology="loop": the critic's free-text output
+    already drives the generator/critic routing decision
+    (APPROVED/REVISE) — swapping it for structured JSON would break
+    that, not just add a feature on top of it.
+    """
+    if verdict_schema is not None and topology == "loop":
+        raise TargetBuilderError(
+            "verdict_schema isn't supported for topology='loop' — the "
+            "critic's free-text output already drives the generator/critic "
+            "routing decision; use supervisor or fanout for a structured "
+            "verdict instead"
+        )
+
     specs = _build_agent_specs(topology, agents)
 
-    parts: list[str] = [_render_header(topology, specs, model)]
+    parts: list[str] = [_render_header(topology, specs, model, verdict_schema)]
     parts.append(_NODE_FACTORY_SOURCE)
+    if verdict_schema is not None:
+        parts.append(_VERDICT_NODE_FACTORY_SOURCE)
 
     if topology == "loop":
         critic = specs[1]
@@ -306,10 +420,10 @@ def generate_target_source(
     build_lines = ["", "", "def build(model: str | None = None) -> object:",
                    "    model = model or DEFAULT_MODEL",
                    "    g = StateGraph(State)"]
-    build_lines += _node_lines(specs, topology)
+    build_lines += _node_lines(specs, topology, verdict_schema)
 
     if topology == "supervisor":
-        extra_node, edge_lines = _wire_supervisor(specs)
+        extra_node, edge_lines = _wire_supervisor(specs, verdict_schema)
         build_lines += extra_node
         build_lines += edge_lines
     elif topology in ("swarm", "pipeline"):
@@ -322,10 +436,13 @@ def generate_target_source(
     build_lines.append("    return g.compile()")
     parts.append("\n".join(build_lines) + "\n")
 
+    initial_state_dict = '{"task": query, "notes": {}, "_iterations": 0' + (
+        ', "verdict": {}}' if verdict_schema is not None else '}'
+    )
     parts.append(
         "\n\n"
         "def initial_state(query: str = DEFAULT_QUERY) -> dict:\n"
-        "    return {\"task\": query, \"notes\": {}, \"_iterations\": 0}\n"
+        f"    return {initial_state_dict}\n"
     )
 
     return "".join(parts)

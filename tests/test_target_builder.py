@@ -319,3 +319,67 @@ def test_proposed_agents_feed_directly_into_generate_target_source():
     source = generate_target_source(proposal.topology, proposal.agents)
     assert "def build(" in source
     assert "dispatcher" in source and "merge" in source
+
+
+# ---------------------------------------------------------------------------
+# verdict_schema — structured output for calibration (drift.calibration).
+# Positive end-to-end proof with a real LLM call was done manually during
+# development: a generated fanout graph produced
+# {'direction': 'up', 'magnitude_pct': 15.0, 'confidence': 'high',
+# 'reasoning': '...'} for a real NVDA scenario. These tests cover the
+# structural wiring (no LLM call — build() just wires nodes/edges).
+# ---------------------------------------------------------------------------
+
+SAMPLE_VERDICT_SCHEMA = {
+    "direction": "one of: up, down, flat",
+    "confidence": "one of: low, medium, high",
+}
+
+
+def test_verdict_schema_adds_verdict_node_as_fanout_merge(tmp_path):
+    source = generate_target_source("fanout", FANOUT_AGENTS, verdict_schema=SAMPLE_VERDICT_SCHEMA)
+    assert "_verdict_node" in source
+    assert "VERDICT_SCHEMA" in source
+    graph, state, _ = _exec_build(source, tmp_path)
+    assert state["verdict"] == {}
+    g = graph.get_graph()
+    assert "merge" in g.nodes
+
+
+def test_verdict_schema_adds_verdict_node_as_supervisor_synthesis(tmp_path):
+    source = generate_target_source(
+        "supervisor", SUPERVISOR_AGENTS, verdict_schema=SAMPLE_VERDICT_SCHEMA,
+    )
+    assert '_verdict_node("synthesis"' in source
+    graph, _, _ = _exec_build(source, tmp_path)
+    g = graph.get_graph()
+    assert "synthesis" in g.nodes
+
+
+def test_verdict_schema_swarm_and_pipeline_put_it_on_the_last_agent(tmp_path):
+    source = generate_target_source("pipeline", PIPELINE_AGENTS, verdict_schema=SAMPLE_VERDICT_SCHEMA)
+    # PIPELINE_AGENTS' last agent is "finalize" — it should get _verdict_node.
+    assert f'_verdict_node({PIPELINE_AGENTS[-1]["name"]!r}' in source
+    assert f'_agent_node({PIPELINE_AGENTS[0]["name"]!r}' in source  # first agent unchanged
+    graph, _, _ = _exec_build(source, tmp_path)
+    assert type(graph).__name__ == "CompiledStateGraph"
+
+
+def test_verdict_schema_rejects_loop_topology():
+    """The critic's free-text output already drives _route_after_critic's
+    APPROVED/REVISE routing — structured JSON would break that, not just
+    add a feature on top of it."""
+    with pytest.raises(TargetBuilderError):
+        generate_target_source("loop", LOOP_AGENTS, verdict_schema=SAMPLE_VERDICT_SCHEMA)
+
+
+def test_without_verdict_schema_generated_source_is_unchanged_shape(tmp_path):
+    """Backward compatibility: omitting verdict_schema must produce the
+    exact same kind of module as before this feature existed — no
+    VERDICT_SCHEMA, no verdict field, no _verdict_node."""
+    source = generate_target_source("fanout", FANOUT_AGENTS)
+    assert "_verdict_node" not in source
+    assert "VERDICT_SCHEMA" not in source
+    assert '"verdict"' not in source
+    graph, state, _ = _exec_build(source, tmp_path)
+    assert "verdict" not in state
