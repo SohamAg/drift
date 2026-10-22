@@ -191,7 +191,7 @@ python -m drift serve
 
 Opens at **http://127.0.0.1:8765**.
 
-Eight tabs:
+Nine tabs:
 
 - **Test** — pick a graph (bundled ticket-triage demo or the
   langgraph-supervisor math+research demo), type a query, pick a preset
@@ -231,6 +231,17 @@ Eight tabs:
   in one pass with shared chaos/judge settings. A target missing a
   dependency is skipped, not attempted; one target failing doesn't stop
   the rest.
+- **Simulate** — describe a scenario ("a streaming company loses a major
+  content licensing deal") and get a structured prediction (direction /
+  magnitude / confidence) from a multi-agent debate, grounded in real
+  historical stock-reaction data (7 verified events, fetched live from
+  Yahoo Finance — not fabricated) instead of pure LLM guessing. A
+  **calibration** panel runs the same simulation against all held-out
+  historical events and reports whether its predicted direction actually
+  matched what happened — the only way "grounded in real data" means
+  something checkable instead of just sounding more credible. Research
+  tool, not financial advice: 7 events is a real but small seed, not a
+  statistically powerful one.
 - **Results** — browse every saved experiment JSON from `results/`,
   generate an evidence pack from any of them.
 
