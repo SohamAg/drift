@@ -1,5 +1,7 @@
 # drift
 
+[![tests](https://github.com/SohamAg/drift/actions/workflows/tests.yml/badge.svg)](https://github.com/SohamAg/drift/actions/workflows/tests.yml)
+
 > Pre-deploy chaos testing for LangGraph multi-agent systems. Drift takes a
 > compiled graph, perturbs its initial state, captures the per-super-step
 > trace, and reports the crashes + silent divergences + named coordination
