@@ -89,9 +89,9 @@ Currently shipped:
 | `policy_inconsistency_across_steps`¹ | MAST 1.5 (configuration drift) |
 
 ¹ requires a small config hint (`required_followups=` / `policy_field=`
-on `drift_test`) — silent without it, by design. Python-API-only for
-now; not yet wired into the server/web UI. See each detector's doc
-under `docs/detectors/` for the full config shape.
+on `drift_test`, or the matching fields in the Test/Import tabs) —
+silent without it, by design. See each detector's doc under
+`docs/detectors/` for the full config shape.
 
 Each detector ships a structured `detect()` (over the adapter trace) plus a
 text-only `detect_from_text()` (for MAST-style transcripts) plus a curated
