@@ -21,6 +21,7 @@
   </header>
 
   <nav class="tabs" role="tablist">
+    <button class="tab"        data-tab="overview" role="tab">Overview</button>
     <button class="tab active" data-tab="adapter" role="tab">Test</button>
     <button class="tab"        data-tab="fork"    role="tab">Fork &amp; Replay</button>
     <button class="tab"        data-tab="compare" role="tab">Compare</button>
@@ -33,6 +34,30 @@
   </nav>
 
   <main>
+
+    <!-- ===================== OVERVIEW (portfolio rollup across results/) ===================== -->
+    <section id="tab-overview" class="tab-panel">
+      <div class="card">
+        <h2>Portfolio overview</h2>
+        <p class="help">
+          Rolls up every saved drift_test-shaped run under <code>results/</code> — from the example
+          scripts, Test Suite, and Import/Build tabs — into one dashboard: systems tested, perturbations
+          applied, and every finding surfaced, newest first. Other result shapes (e.g. raw sweep dumps)
+          are browsable in the Results tab but aren't counted here.
+        </p>
+        <div id="overview-totals" class="empty">Loading…</div>
+      </div>
+
+      <div id="overview-systems-card" class="card hidden">
+        <h3>Systems tested</h3>
+        <div id="overview-systems"></div>
+      </div>
+
+      <div id="overview-findings-card" class="card hidden">
+        <h3>Findings, newest first</h3>
+        <div id="overview-findings"></div>
+      </div>
+    </section>
 
     <!-- ===================== TEST (chaos + judge against a bundled graph) ===================== -->
     <section id="tab-adapter" class="tab-panel active">

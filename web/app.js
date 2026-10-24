@@ -113,6 +113,7 @@
   function activateTab(name) {
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
+    if (name === 'overview') initOverview();
     if (name === 'adapter') initAdapter();
     if (name === 'fork') initFork();
     if (name === 'compare') initCompare();
@@ -2077,6 +2078,99 @@
                     text: r.error || `predicted: ${r.predicted_direction || 'unparseable'}` }),
       ]));
     });
+  }
+
+  // ============================================================
+  // OVERVIEW tab
+  // ============================================================
+
+  let _overviewWired = false;
+  function initOverview() {
+    if (_overviewWired) return;
+    _overviewWired = true;
+    refreshOverview();
+  }
+
+  function _openFromOverview(path) {
+    activateTab('results');
+    openResultsFile(path);
+  }
+
+  async function refreshOverview() {
+    const totalsHost = $('#overview-totals');
+    const systemsCard = $('#overview-systems-card');
+    const systemsHost = $('#overview-systems');
+    const findingsCard = $('#overview-findings-card');
+    const findingsHost = $('#overview-findings');
+    totalsHost.classList.remove('empty');
+    totalsHost.innerHTML = 'Loading…';
+    try {
+      const data = await api('/api/overview');
+      const t = data.totals;
+      if (!t.runs) {
+        totalsHost.classList.add('empty');
+        totalsHost.textContent = 'No saved results yet. Run something from the Test tab, or an example script with --save-json.';
+        systemsCard.classList.add('hidden');
+        findingsCard.classList.add('hidden');
+        return;
+      }
+      totalsHost.innerHTML = '';
+      const kv = el('div', { class: 'kv-grid' });
+      [
+        ['systems tested', t.systems],
+        ['agents seen', t.agents],
+        ['total runs', t.runs],
+        ['chaos perturbations', t.perturbations],
+        ['diverged', t.diverged],
+        ['crashed', t.crashed],
+        ['findings', t.findings],
+      ].forEach(([k, v]) => {
+        kv.appendChild(el('span', { class: 'k', text: k }));
+        kv.appendChild(el('span', { class: 'v', text: String(v) }));
+      });
+      totalsHost.appendChild(kv);
+
+      systemsCard.classList.toggle('hidden', data.systems.length === 0);
+      systemsHost.innerHTML = '';
+      const sList = el('div', { class: 'trace-list' });
+      data.systems.forEach(s => {
+        sList.appendChild(el('div', { class: 'trace-step', style: 'grid-template-columns: 1fr auto; cursor: default;' }, [
+          el('div', { class: 'trace-step-body' }, [
+            el('div', { class: 'trace-step-node', text: s.group }),
+            el('div', { class: 'trace-step-summary', text: s.agents.join(', ') || '—' }),
+          ]),
+          el('div', { style: 'display: flex; align-items: center; gap: 10px;' }, [
+            el('span', { class: 'muted', style: 'font-size: 11px;', text:
+              `${s.n_files} file(s) · ${s.n_runs} runs · ${s.n_perturbations} perturbations · ${s.n_findings} findings` }),
+          ]),
+        ]));
+      });
+      systemsHost.appendChild(sList);
+
+      findingsCard.classList.toggle('hidden', data.findings.length === 0);
+      findingsHost.innerHTML = '';
+      const fList = el('div', { class: 'trace-list' });
+      data.findings.slice(0, 50).forEach(f => {
+        fList.appendChild(el('div', {
+          class: 'trace-step', style: 'grid-template-columns: 1fr auto; cursor: pointer;',
+          onclick: () => _openFromOverview(f.source_path),
+        }, [
+          el('div', { class: 'trace-step-body' }, [
+            el('div', { class: 'trace-step-node' }, [
+              el('span', { class: 'pill warning', style: 'margin-right: 6px;', text: f.failure_type }),
+              f.where || '',
+            ]),
+            el('div', { class: 'trace-step-summary', text: f.summary || '(no summary)' }),
+          ]),
+          el('div', { class: 'muted', style: 'font-size: 11px; align-self: center;', text:
+            `${f.source_group} · ${fmt.short(new Date(f.modified_ts * 1000).toISOString())}` }),
+        ]));
+      });
+      findingsHost.appendChild(fList);
+    } catch (e) {
+      totalsHost.classList.add('empty');
+      totalsHost.textContent = 'Failed to load overview: ' + e.message;
+    }
   }
 
   // ============================================================
