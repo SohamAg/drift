@@ -16,8 +16,8 @@ real test.
 
 This makes real LLM calls — one run per event, each run being the full
 multi-agent graph (several LLM calls itself) plus one retrieval call if
-grounding is on. For the 7-event seed dataset that's realistically
-20-35 LLM calls total. Not free, not instant; callers should say so.
+grounding is on. For the 11-event seed dataset that's realistically
+30-50 LLM calls total. Not free, not instant; callers should say so.
 """
 from __future__ import annotations
 

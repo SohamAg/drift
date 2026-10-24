@@ -19,18 +19,22 @@ Two capabilities on top of target_builder.py's scenario generation:
 
 HISTORICAL_EVENTS below is real, verified data, not fabricated: each
 entry's baseline_close/reaction_close/actual_move_pct was fetched live
-from Yahoo Finance (yfinance) on 2026-10-22 for well-documented,
-unambiguous single-trigger market events (an earnings report, an
-incident, an announcement with a clear date) — never a multi-week
-phenomenon like the GameStop squeeze, which doesn't reduce to one
-honest baseline/reaction date pair. Event descriptions are plain
-statements of well-documented public record, not speculation.
+from Yahoo Finance (yfinance) — the first 7 on 2026-10-22, 4 more on
+2026-10-24 — for well-documented, unambiguous single-trigger market
+events (an earnings report, an incident, an announcement with a clear
+date) — never a multi-week phenomenon like the GameStop squeeze, which
+doesn't reduce to one honest baseline/reaction date pair. Event
+descriptions are plain statements of well-documented public record, not
+speculation.
 
-7 events is a small seed, not a statistically powerful calibration set
-— treat calibration scores from this module as a sanity check, not a
-confidence interval. Growing the dataset (more real events, verified
-the same way) is the obvious next step before trusting this beyond a
-demo.
+11 events is a larger seed than the original 7, but still not a
+statistically powerful calibration set — treat calibration scores from
+this module as a sanity check, not a confidence interval. Direction
+split is now 4 up / 7 down (was 2 up / 5 down) — still down-skewed,
+since sharp single-day stock moves are disproportionately bad news
+(crashes are more "clean single-trigger" than rallies, which are often
+gradual). Growing the dataset further, especially with more up-moves,
+is the obvious next step before trusting this beyond a demo.
 """
 from __future__ import annotations
 
@@ -167,6 +171,42 @@ HISTORICAL_EVENTS: tuple[HistoricalEvent, ...] = (
         ),
         baseline_close=22.47, reaction_close=12.79, actual_move_pct=-43.08,
     ),
+    HistoricalEvent(
+        ticker="AMD", baseline_date="2023-01-31", reaction_date="2023-02-01",
+        description=(
+            "AMD Q4 2022 earnings beat estimates on data-center strength "
+            "despite a weak PC market, reported after market close on "
+            "Jan 31, 2023."
+        ),
+        baseline_close=75.15, reaction_close=84.64, actual_move_pct=12.63,
+    ),
+    HistoricalEvent(
+        ticker="COIN", baseline_date="2023-02-14", reaction_date="2023-02-15",
+        description=(
+            "Coinbase Q4 2022 earnings show steep cost cuts narrowing "
+            "losses during the crypto downturn, reported after market "
+            "close on Feb 14, 2023."
+        ),
+        baseline_close=59.03, reaction_close=69.34, actual_move_pct=17.47,
+    ),
+    HistoricalEvent(
+        ticker="SHOP", baseline_date="2022-02-15", reaction_date="2022-02-16",
+        description=(
+            "Shopify Q4 2021 earnings reveal slowing revenue growth and "
+            "plans for heavy fulfillment-network capital investment, "
+            "reported after market close on Feb 15, 2022."
+        ),
+        baseline_close=88.95, reaction_close=74.68, actual_move_pct=-16.04,
+    ),
+    HistoricalEvent(
+        ticker="ROKU", baseline_date="2022-02-17", reaction_date="2022-02-18",
+        description=(
+            "Roku Q4 2021 earnings include weak Q1 2022 guidance citing "
+            "slowing advertiser demand, reported after market close on "
+            "Feb 17, 2022."
+        ),
+        baseline_close=144.71, reaction_close=112.46, actual_move_pct=-22.29,
+    ),
 )
 
 
@@ -243,7 +283,7 @@ async def retrieve_similar_events(
     """Which of `events` (default: the seed dataset) are the most
     relevant real-world analogues for `scenario`.
 
-    With only 7 events, a single LLM call describing all of them and
+    With only 11 events, a single LLM call describing all of them and
     asking for the top K is simpler and cheaper than building an
     embedding/vector-search pipeline for a dataset this size — revisit
     if the dataset grows into the hundreds.

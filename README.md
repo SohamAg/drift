@@ -242,8 +242,8 @@ Nine tabs:
   historical events and reports whether its predicted direction actually
   matched what happened — the only way "grounded in real data" means
   something checkable instead of just sounding more credible. Research
-  tool, not financial advice: 7 events is a real but small seed, not a
-  statistically powerful one.
+  tool, not financial advice: 11 events is a real but still small seed,
+  not a statistically powerful one.
 - **Results** — browse every saved experiment JSON from `results/`,
   generate an evidence pack from any of them.
 

@@ -987,7 +987,7 @@ def create_app() -> FastAPI:
         historical event dataset. Makes real LLM calls — one full
         simulation run per event (several calls each) plus one
         retrieval call per event if grounding is on; realistically
-        20-35 calls for the full 7-event seed dataset. Not fast, not free.
+        30-50 calls for the full 11-event seed dataset. Not fast, not free.
         """
         from drift.calibration import CalibrationError, run_calibration
         from drift.historical_grounding import (
