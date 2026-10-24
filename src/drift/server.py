@@ -159,6 +159,14 @@ class AdapterDemoRequest(BaseModel):
     # matching when empty. Same shape as AdapterForkRequest's field below.
     coordination_roles: dict[str, str] = Field(default_factory=dict)
 
+    # Trigger agent/node name -> required follow-up agent/node name. Powers
+    # premature_termination; provisional single-hint config, not a general
+    # rule DSL (see drift_test's docstring). Empty leaves that detector silent.
+    required_followups: dict[str, str] = Field(default_factory=dict)
+    # State field name holding a policy/config version (e.g. "policy_version").
+    # Powers policy_inconsistency_across_steps. Empty leaves it silent.
+    policy_field: str = ""
+
     # Divergence cascade.
     divergence_mode: str = "exact"
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
@@ -241,6 +249,8 @@ class CustomGraphRequest(BaseModel):
     user_guidelines: list[str] = Field(default_factory=list)
 
     coordination_roles: dict[str, str] = Field(default_factory=dict)
+    required_followups: dict[str, str] = Field(default_factory=dict)
+    policy_field: str = ""
 
     divergence_mode: str = "exact"
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
@@ -1339,6 +1349,8 @@ def create_app() -> FastAPI:
                 max_judge_calls=req.max_judge_calls,
                 similarity_threshold=req.similarity_threshold,
                 coordination_roles=req.coordination_roles or None,
+                required_followups=req.required_followups or None,
+                policy_field=req.policy_field or None,
             )
         except (TypeError, ValueError) as e:
             raise HTTPException(400, str(e))
@@ -1387,6 +1399,8 @@ def create_app() -> FastAPI:
                 max_judge_calls=req.max_judge_calls,
                 similarity_threshold=req.similarity_threshold,
                 coordination_roles=req.coordination_roles or None,
+                required_followups=req.required_followups or None,
+                policy_field=req.policy_field or None,
             )
         except (TypeError, ValueError) as e:
             raise HTTPException(400, str(e))

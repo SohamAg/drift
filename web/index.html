@@ -184,6 +184,17 @@
             </div>
 
             <div class="field">
+              <label for="adapter-required-followups">Required follow-ups <span class="muted">(optional, one "trigger_node: followup_node" per line — powers premature_termination)</span></label>
+              <textarea id="adapter-required-followups" class="mono" rows="2"
+                        placeholder="escalate: human_review"></textarea>
+            </div>
+
+            <div class="field">
+              <label for="adapter-policy-field">Policy field <span class="muted">(optional, state field holding a policy/config version — powers policy_inconsistency_across_steps)</span></label>
+              <input type="text" id="adapter-policy-field" placeholder="policy_version" />
+            </div>
+
+            <div class="field">
               <label class="checkbox-row" for="adapter-track-history">
                 <input type="checkbox" id="adapter-track-history" />
                 Track for regression
@@ -411,6 +422,17 @@
           <label for="import-coordination-roles">Agent roles <span class="muted">(optional, one "node: role" per line — powers role_drift)</span></label>
           <textarea id="import-coordination-roles" class="mono" rows="2"
                     placeholder="reviewer: verifier"></textarea>
+        </div>
+
+        <div class="field">
+          <label for="import-required-followups">Required follow-ups <span class="muted">(optional, one "trigger_node: followup_node" per line — powers premature_termination)</span></label>
+          <textarea id="import-required-followups" class="mono" rows="2"
+                    placeholder="escalate: human_review"></textarea>
+        </div>
+
+        <div class="field">
+          <label for="import-policy-field">Policy field <span class="muted">(optional, state field holding a policy/config version — powers policy_inconsistency_across_steps)</span></label>
+          <input type="text" id="import-policy-field" placeholder="policy_version" />
         </div>
 
         <div class="field">

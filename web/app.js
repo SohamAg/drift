@@ -489,6 +489,8 @@
     const max_judge_calls = parseInt($('#adapter-max-judge-calls').value, 10);
     const similarity_threshold = parseFloat($('#adapter-similarity-threshold').value);
     const coordination_roles = parseRolesTextarea('#adapter-coordination-roles');
+    const required_followups = parseRolesTextarea('#adapter-required-followups');
+    const policy_field = ($('#adapter-policy-field').value || '').trim();
 
     btn.disabled = true;
     const judgeOn = judge !== 'off' || divergence_mode === 'tiered';
@@ -501,7 +503,7 @@
           graph_name, state_overrides,
           intensity, seed, max_perturbations,
           auto_chaos_exclude, judge, judge_model, user_guidelines,
-          coordination_roles,
+          coordination_roles, required_followups, policy_field,
           divergence_mode, baseline_rollouts,
           max_judge_calls: Number.isFinite(max_judge_calls) ? max_judge_calls : 10,
           similarity_threshold: Number.isFinite(similarity_threshold) ? similarity_threshold : 0.85,
@@ -1507,6 +1509,8 @@
     const judge = $('#import-judge').value;
     const max_perturbations = parseInt($('#import-max-perturbations').value, 10) || 0;
     const coordination_roles = parseRolesTextarea('#import-coordination-roles');
+    const required_followups = parseRolesTextarea('#import-required-followups');
+    const policy_field = ($('#import-policy-field').value || '').trim();
     const track_history = $('#import-track-history').checked;
 
     const btn = $('#import-run');
@@ -1518,7 +1522,8 @@
         method: 'POST',
         body: {
           module, build_fn, initial_state_fn, query, model,
-          intensity, judge, max_perturbations, coordination_roles, track_history,
+          intensity, judge, max_perturbations,
+          coordination_roles, required_followups, policy_field, track_history,
         },
       });
       setActiveRun(data, { module, build_fn, initial_state_fn, query, model });
