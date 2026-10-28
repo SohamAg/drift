@@ -91,6 +91,34 @@
     }, 100);
   }
 
+  // RFC 4180: double a field's internal quotes, wrap in quotes whenever it
+  // contains a comma, quote, or newline — the only three characters that
+  // would otherwise break the column boundary.
+  function _csvField(v) {
+    const s = v == null ? '' : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  function downloadCsv(rows, columns, filename) {
+    const lines = [columns.map(c => _csvField(c.label)).join(',')];
+    rows.forEach(row => {
+      lines.push(columns.map(c => _csvField(c.value(row))).join(','));
+    });
+    // Leading BOM so Excel (still the #1 CSV consumer) detects UTF-8
+    // instead of guessing a legacy codepage on accented/non-ASCII text.
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 100);
+  }
+
   // ---------- theme -------------------------------------------------------
 
   const THEME_KEY = 'drift.theme';
@@ -2339,6 +2367,19 @@
         ]));
       });
       findingsHost.appendChild(fList);
+
+      $('#overview-findings-csv').onclick = () => downloadCsv(
+        data.findings,
+        [
+          { label: 'failure_type', value: f => f.failure_type },
+          { label: 'where', value: f => f.where },
+          { label: 'summary', value: f => f.summary },
+          { label: 'source_group', value: f => f.source_group },
+          { label: 'source_path', value: f => f.source_path },
+          { label: 'modified', value: f => new Date(f.modified_ts * 1000).toISOString() },
+        ],
+        'drift_findings.csv',
+      );
     } catch (e) {
       totalsHost.classList.add('empty');
       totalsHost.textContent = 'Failed to load overview: ' + e.message;
