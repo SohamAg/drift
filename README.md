@@ -86,6 +86,7 @@ Currently shipped:
 | `stale_state_reference` | MAST 1.5 parallel-agent state race + Cognition open problem #2 |
 | `role_drift` | MAST 1.2 (Disobey Role Specification) |
 | `context_loss_on_handoff` | MAST 1.4 + 2.5 (lost history / ignored input) |
+| `unacknowledged_error` | Anthropic engineering blog (silently swallowed tool/agent errors) |
 | `premature_termination`¹ | MAST 4.1 (termination errors) |
 | `policy_inconsistency_across_steps`¹ | MAST 1.5 (configuration drift) |
 

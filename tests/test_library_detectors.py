@@ -23,6 +23,7 @@ from drift.failures.library import (
     run_all_on_trace,
     stale_state_reference,
     subagent_fanout_excess,
+    unacknowledged_error,
     verifier_always_approves,
 )
 from drift.failures.library.base import from_adapter_trace
@@ -943,6 +944,21 @@ def test_specificity_handoff_fixture_does_not_trigger_repeated_identical_action(
     assert "repeated_identical_action" not in types
 
 
+def test_specificity_unacknowledged_error_does_not_trigger_handoff_or_verifier():
+    trace = _trace([
+        ("worker", {"error": "connection timeout"}),
+        ("worker", {"next_step": "proceeding anyway"}),
+        ("worker", {"next_step": "still going"}),
+        ("worker", {"next_step": "done"}),
+    ])
+    out = run_all_on_trace(trace)
+    types = [f.failure_type for f in out]
+    assert "unacknowledged_error" in types
+    assert "infinite_handoff" not in types
+    assert "verifier_always_approves" not in types
+    assert "repeated_identical_action" not in types
+
+
 def test_specificity_hallucinated_reference_fixture_fires_only_it():
     """Two-step trace with a single hallucinated TICKET reference — no other
     detector should fire on such a short trace."""
@@ -1300,6 +1316,123 @@ def test_context_loss_from_text_negative_when_referenced():
 
 def test_context_loss_from_text_empty_returns_nothing():
     assert context_loss_on_handoff.detect_from_text("") == []
+
+
+# ---------------------------------------------------------------------------
+# Detector: unacknowledged_error
+# ---------------------------------------------------------------------------
+
+
+def test_unacknowledged_error_positive_structured_field():
+    trace = _trace([
+        ("worker", {"error": "connection timeout"}),
+        ("worker", {"next_step": "proceeding anyway"}),
+        ("worker", {"next_step": "still going"}),
+        ("worker", {"next_step": "done"}),
+    ])
+    out = unacknowledged_error.detect(_ctx(trace))
+    assert len(out) == 1
+    assert out[0].failure_type == "unacknowledged_error"
+    assert out[0].agents_involved == ["worker"]
+    assert out[0].timestep == 1
+
+
+def test_unacknowledged_error_positive_bool_flag():
+    trace = _trace([
+        ("worker", {"success": False, "status": "complete"}),
+        ("worker", {"next": "a"}),
+        ("worker", {"next": "b"}),
+        ("worker", {"next": "c"}),
+    ])
+    out = unacknowledged_error.detect(_ctx(trace))
+    assert len(out) == 1
+
+
+def test_unacknowledged_error_negative_when_retried():
+    trace = _trace([
+        ("worker", {"error": "timeout"}),
+        ("worker", {"retry": True}),
+        ("worker", {"result": "ok"}),
+    ])
+    out = unacknowledged_error.detect(_ctx(trace))
+    assert out == []
+
+
+def test_unacknowledged_error_negative_when_field_cleared():
+    """The same agent later explicitly clears the error field — treated
+    as self-resolved."""
+    trace = _trace([
+        ("worker", {"error": "timeout"}),
+        ("worker", {"other": "thing"}),
+        ("worker", {"error": None, "result": "ok"}),
+    ])
+    out = unacknowledged_error.detect(_ctx(trace))
+    assert out == []
+
+
+def test_unacknowledged_error_negative_when_acknowledged_in_text():
+    trace = _trace([
+        ("worker", {"error": "timeout", "rationale": "hit an error"}),
+        ("worker", {"rationale": "retrying the request now"}),
+    ])
+    out = unacknowledged_error.detect(_ctx(trace))
+    assert out == []
+
+
+def test_unacknowledged_error_negative_no_error_present():
+    trace = _trace([
+        ("worker", {"status": "ok"}),
+        ("worker", {"status": "done"}),
+    ])
+    out = unacknowledged_error.detect(_ctx(trace))
+    assert out == []
+
+
+def test_unacknowledged_error_ignores_falsy_error_values():
+    """error="" or error=None isn't a real signal — the key existing
+    doesn't mean it fired."""
+    trace = _trace([
+        ("worker", {"error": "", "status": "ok"}),
+        ("worker", {"error": None, "status": "ok"}),
+    ])
+    out = unacknowledged_error.detect(_ctx(trace))
+    assert out == []
+
+
+def test_unacknowledged_error_custom_within_steps():
+    trace = _trace([
+        ("worker", {"error": "timeout"}),
+        ("worker", {"next": "a"}),
+        ("worker", {"retry": True}),
+    ])
+    # within_steps=1 only looks at the very next step (no retry yet) -> fires.
+    assert unacknowledged_error.detect(_ctx(trace), within_steps=1) != []
+    # within_steps=2 sees the retry at position 2 -> doesn't fire.
+    assert unacknowledged_error.detect(_ctx(trace), within_steps=2) == []
+
+
+def test_unacknowledged_error_text_variant_positive():
+    transcript = """
+Worker: calling the payment API
+Worker: Error: connection refused
+Worker: proceeding to next step
+Worker: marking order as shipped
+"""
+    out = unacknowledged_error.detect_from_text(transcript)
+    assert len(out) == 1
+    assert out[0].failure_type == "unacknowledged_error"
+
+
+def test_unacknowledged_error_text_variant_negative_when_retried():
+    transcript = """
+Worker: Error: connection refused
+Worker: retrying the request
+"""
+    assert unacknowledged_error.detect_from_text(transcript) == []
+
+
+def test_unacknowledged_error_text_variant_empty_returns_nothing():
+    assert unacknowledged_error.detect_from_text("") == []
 
 
 # ---------------------------------------------------------------------------

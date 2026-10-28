@@ -37,6 +37,7 @@ from drift.failures.library import (
     role_drift,
     stale_state_reference,
     subagent_fanout_excess,
+    unacknowledged_error,
     verifier_always_approves,
 )
 from drift.failures.library.base import (
@@ -58,6 +59,7 @@ ALL_DETECTORS = [
     stale_state_reference,
     role_drift,
     context_loss_on_handoff,
+    unacknowledged_error,
     premature_termination,
     policy_inconsistency_across_steps,
 ]
