@@ -195,8 +195,18 @@ python -m drift serve
 
 Opens at **http://127.0.0.1:8765**.
 
-Nine tabs:
+Eleven tabs:
 
+- **Overview** — rolls up every saved drift_test-shaped run under
+  `results/` into one dashboard: systems tested, perturbations applied, a
+  findings-by-type chart, and every finding newest-first with a one-click
+  CSV export. Click a finding to open its source run; click a chart bar to
+  jump straight to that failure type's explainer on the Detectors tab.
+- **Detectors** — the full detection surface, in one reference view: all
+  12 deterministic library detectors (name, MAST citation, source, which
+  ones need a config hint to fire) plus the LLM judge's 6 failure
+  families. Generated live from the same metadata the detectors and judge
+  actually ship with, so it can't drift out of sync with the code.
 - **Test** — pick a graph (bundled ticket-triage demo or the
   langgraph-supervisor math+research demo), type a query, pick a preset
   (Quick / Balanced / Thorough / Exhaustive), run. Get every super-step of
@@ -204,11 +214,18 @@ Nine tabs:
   a click-to-expand explanation, raw JSON download. Exhaustive is the
   "every applicable pattern in the schema, no sampling" pre-deploy gate.
   Advanced settings expose agent roles (`coordination_roles`, powers
-  `role_drift`) and "Track for regression."
+  `role_drift`), the two provisional detectors' config hints
+  (`required_followups=` / `policy_field=`), and "Track for regression."
 - **Fork & Replay** — load a run (fresh or from Results), click a trace
-  step, edit the state, re-run forward from there — with an optional
-  top-vs-bottom comparison against applying the same edit at the initial
-  state instead. See "Fork-edit-replay" above.
+  step, edit the state, re-run forward from there. Three augmentations on
+  top of the basic replay: an optional top-vs-bottom comparison against
+  applying the same edit at the initial state instead; bounded
+  counterfactual replay (stop each branch after N more steps instead of
+  running to completion, for cost control and focus); and an automatic
+  path-dependence verdict when top-vs-bottom is used — does the same edit
+  at two different points converge to the same outcome, or does the
+  system carry real path-dependent state the initial design can't
+  express? See "Fork-edit-replay" above.
 - **Compare** — two saved runs side by side: headline stat diff, findings,
   trace.
 - **Ask** — free-text Q&A over a loaded run's trace (or summary-only data
@@ -232,13 +249,14 @@ Nine tabs:
   first draft.
 - **Test Suite** — run drift against several `examples/targets/` registry
   entries (real third-party multi-agent systems, not synthetic fixtures)
-  in one pass with shared chaos/judge settings. A target missing a
-  dependency is skipped, not attempted; one target failing doesn't stop
-  the rest.
+  in one pass with shared chaos/judge settings, plus an aggregate summary
+  (crashed/diverged/findings totals across every target) above the
+  per-target breakdown. A target missing a dependency is skipped, not
+  attempted; one target failing doesn't stop the rest.
 - **Simulate** — describe a scenario ("a streaming company loses a major
   content licensing deal") and get a structured prediction (direction /
   magnitude / confidence) from a multi-agent debate, grounded in real
-  historical stock-reaction data (7 verified events, fetched live from
+  historical stock-reaction data (11 verified events, fetched live from
   Yahoo Finance — not fabricated) instead of pure LLM guessing. A
   **calibration** panel runs the same simulation against all held-out
   historical events and reports whether its predicted direction actually
@@ -247,7 +265,8 @@ Nine tabs:
   tool, not financial advice: 11 events is a real but still small seed,
   not a statistically powerful one.
 - **Results** — browse every saved experiment JSON from `results/`,
-  generate an evidence pack from any of them.
+  filter by file name or group, generate an evidence pack from any of
+  them, delete ones you no longer need.
 
 ---
 
