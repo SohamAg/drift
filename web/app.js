@@ -114,6 +114,7 @@
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
     if (name === 'overview') initOverview();
+    if (name === 'detectors') initDetectors();
     if (name === 'adapter') initAdapter();
     if (name === 'fork') initFork();
     if (name === 'compare') initCompare();
@@ -2151,6 +2152,56 @@
                     text: r.error || `predicted: ${r.predicted_direction || 'unparseable'}` }),
       ]));
     });
+  }
+
+  // ============================================================
+  // DETECTORS tab
+  // ============================================================
+
+  let _detectorsWired = false;
+  function initDetectors() {
+    if (_detectorsWired) return;
+    _detectorsWired = true;
+    refreshDetectors();
+  }
+
+  async function refreshDetectors() {
+    const host = $('#detectors-list');
+    host.classList.remove('empty');
+    host.innerHTML = 'Loading…';
+    try {
+      const data = await api('/api/detectors');
+      const detectors = data.detectors || [];
+      if (!detectors.length) {
+        host.classList.add('empty');
+        host.textContent = 'No detectors registered.';
+        return;
+      }
+      host.innerHTML = '';
+      const list = el('div', { class: 'trace-list' });
+      detectors.forEach(d => {
+        const header = el('div', { style: 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap;' }, [
+          el('span', { class: 'mono', style: 'font-weight: 600; font-size: 13px;', text: d.name }),
+          ...d.mast_modes.map(m => el('span', { class: 'pill same', style: 'font-size: 10px;', text: 'MAST ' + m })),
+        ]);
+        if (d.needs_config) {
+          header.appendChild(el('span', { class: 'pill warning', style: 'font-size: 10px;', text: 'needs config' }));
+        }
+        list.appendChild(el('div', { class: 'card tight', style: 'margin-bottom: 8px;' }, [
+          header,
+          el('div', { style: 'margin-top: 6px; font-size: 13px;', text: d.summary }),
+          el('div', { class: 'help', style: 'margin-top: 4px;', text: d.source }),
+          d.needs_config
+            ? el('div', { class: 'help', style: 'margin-top: 4px; color: var(--warning);',
+                text: 'Silent until configured — see docs/detectors/' + d.name + '.md for the required_followups= / policy_field= shape.' })
+            : null,
+        ]));
+      });
+      host.appendChild(list);
+    } catch (e) {
+      host.classList.add('empty');
+      host.textContent = 'Failed to load detectors: ' + e.message;
+    }
   }
 
   // ============================================================

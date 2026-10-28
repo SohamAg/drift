@@ -22,6 +22,7 @@
 
   <nav class="tabs" role="tablist">
     <button class="tab"        data-tab="overview" role="tab">Overview</button>
+    <button class="tab"        data-tab="detectors" role="tab">Detectors</button>
     <button class="tab active" data-tab="adapter" role="tab">Test</button>
     <button class="tab"        data-tab="fork"    role="tab">Fork &amp; Replay</button>
     <button class="tab"        data-tab="compare" role="tab">Compare</button>
@@ -61,6 +62,21 @@
       <div id="overview-findings-card" class="card hidden">
         <h3>Findings, newest first</h3>
         <div id="overview-findings"></div>
+      </div>
+    </section>
+
+    <!-- ===================== DETECTORS (coordination-failure detector library reference) ===================== -->
+    <section id="tab-detectors" class="tab-panel">
+      <div class="card">
+        <h2>Coordination-failure detector library</h2>
+        <p class="help">
+          Every deterministic, source-cited detector that runs on every <code>drift_test</code> call —
+          free, no LLM calls, &lt;1ms per trace. Two need a small config hint to fire at all (see each
+          card below); the rest need no configuration and run automatically. Read each detector's full
+          explainer (fire conditions, worked example, architecture-level fix guidance, known limitations)
+          under <code>docs/detectors/</code> in the repo.
+        </p>
+        <div id="detectors-list" class="empty">Loading…</div>
       </div>
     </section>
 

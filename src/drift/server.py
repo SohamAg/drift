@@ -904,6 +904,36 @@ def create_app() -> FastAPI:
 
         return {"targets": target_registry()}
 
+    @app.get("/api/detectors")
+    def list_detectors() -> dict[str, Any]:
+        """List the coordination-failure detector library — every
+        deterministic, source-cited detector that runs on every
+        drift_test call (free, no LLM). Pulls module-level metadata
+        (NAME/SUMMARY/SOURCE/MAST_MODES) directly from
+        drift.failures.library.ALL_DETECTORS, so this can never drift
+        out of sync with what actually ships. Backs an in-product
+        reference view — the library previously only had its own
+        explainer docs under docs/detectors/, not visible in the app."""
+        from drift.failures.library import ALL_DETECTORS
+
+        # The only two detectors that need a user-declared config hint
+        # to fire at all (required_followups= / policy_field=) — see
+        # each module's own docstring and CoordinationDetectorContext's.
+        NEEDS_CONFIG = {"premature_termination", "policy_inconsistency_across_steps"}
+
+        return {
+            "detectors": [
+                {
+                    "name": mod.NAME,
+                    "summary": mod.SUMMARY,
+                    "source": mod.SOURCE,
+                    "mast_modes": mod.MAST_MODES,
+                    "needs_config": mod.NAME in NEEDS_CONFIG,
+                }
+                for mod in ALL_DETECTORS
+            ],
+        }
+
     @app.post("/api/propose-target")
     async def propose_target_endpoint(req: ProposeTargetRequest) -> dict[str, Any]:
         """Ask an LLM to draft a topology + agent roster for a free-text
