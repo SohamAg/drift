@@ -1316,6 +1316,33 @@ def create_app() -> FastAPI:
         except (OSError, json.JSONDecodeError) as e:
             raise HTTPException(500, f"could not read: {e}")
 
+    @app.delete("/api/results/{relpath:path}")
+    def delete_results_file(relpath: str) -> dict[str, Any]:
+        """Delete a single saved result JSON by relative path.
+
+        Same path-traversal + extension restrictions as the GET sibling
+        above — deliberately boring and narrow (results/ *.json only),
+        since this is the one mutating endpoint in an otherwise read-only
+        browsing surface. Backs the Results tab's delete button; there's
+        no undo, so the UI confirms before calling this.
+        """
+        results_root = RESULTS_DIR.resolve()
+        try:
+            full = (results_root / relpath).resolve()
+        except (ValueError, OSError) as e:
+            raise HTTPException(400, f"bad path: {e}")
+        if not str(full).startswith(str(results_root)):
+            raise HTTPException(403, "path escapes results/")
+        if not full.exists() or not full.is_file():
+            raise HTTPException(404, "not found")
+        if full.suffix != ".json":
+            raise HTTPException(400, "only .json supported")
+        try:
+            full.unlink()
+        except OSError as e:
+            raise HTTPException(500, f"could not delete: {e}")
+        return {"deleted": True, "path": relpath}
+
     @app.post("/api/adapter-demo")
     async def adapter_demo(req: AdapterDemoRequest) -> dict[str, Any]:
         """Run drift's auto-chaos against a bundled langgraph-shaped graph."""

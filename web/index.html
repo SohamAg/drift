@@ -636,7 +636,7 @@
           Describe a scenario — an announcement, an event, a piece of news — and get a
           structured prediction from a multi-agent debate, grounded in real historical
           stock-reaction data instead of pure LLM guessing. This is a research tool, not
-          financial advice: the dataset is 7 real, verified events, not a statistically
+          financial advice: the dataset is 11 real, verified events, not a statistically
           powerful one — see the calibration panel below for what that actually buys you.
         </p>
         <div class="field">
@@ -676,10 +676,10 @@
       <div class="card">
         <h3>Calibration — does grounding actually help?</h3>
         <p class="help">
-          Runs a fixed stock-reaction simulation against all <span id="calibrate-event-count">7</span>
+          Runs a fixed stock-reaction simulation against all <span id="calibrate-event-count">11</span>
           real held-out historical events (outcomes already known) and checks whether each
           predicted direction matches what actually happened. Makes real LLM calls for every
-          event — realistically 20-35 calls total, can take a few minutes, is not free.
+          event — realistically 30-50 calls total, can take a few minutes, is not free.
         </p>
         <div class="field">
           <label class="checkbox-row" for="calibrate-ground">

@@ -490,6 +490,13 @@ button { font: inherit; cursor: pointer; }
   background: var(--bg-elev-2);
   color: var(--fg-strong);
 }
+.ghost-btn.danger {
+  color: var(--critical);
+  border-color: var(--critical);
+}
+.ghost-btn.danger:hover {
+  background: var(--critical-soft);
+}
 
 .actions { display: flex; gap: 10px; margin-top: 14px; }
 

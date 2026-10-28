@@ -2045,7 +2045,7 @@
     const btn = $('#calibrate-run');
     const status = $('#calibrate-status');
     btn.disabled = true;
-    status.textContent = 'running against every historical event — this makes ~20-35 real LLM calls and can take a few minutes…';
+    status.textContent = 'running against every historical event — this makes ~30-50 real LLM calls and can take a few minutes…';
     try {
       const data = await api('/api/calibrate', {
         method: 'POST',
@@ -2192,6 +2192,46 @@
     await refreshResultsIndex();
   }
 
+  // Two-click delete, no native confirm() dialog: first click arms the
+  // button (relabels it, turns it danger-colored); a second click within
+  // ARM_TIMEOUT_MS actually deletes. Clicking elsewhere / letting it time
+  // out disarms back to the normal label — cheap, dependency-free undo
+  // window for a destructive action with no server-side undo.
+  const ARM_TIMEOUT_MS = 4000;
+  function _makeDeleteButton(path, onDeleted) {
+    let armed = false;
+    let timer = null;
+    const btn = el('button', { class: 'ghost-btn sm', text: 'Delete' });
+    btn.addEventListener('click', async () => {
+      if (!armed) {
+        armed = true;
+        btn.textContent = 'Confirm delete?';
+        btn.classList.add('danger');
+        timer = setTimeout(() => {
+          armed = false;
+          btn.textContent = 'Delete';
+          btn.classList.remove('danger');
+        }, ARM_TIMEOUT_MS);
+        return;
+      }
+      clearTimeout(timer);
+      btn.disabled = true;
+      btn.textContent = 'Deleting…';
+      try {
+        await api('/api/results/' + path, { method: 'DELETE' });
+        toast('Deleted ' + path);
+        onDeleted();
+      } catch (e) {
+        toast('Delete failed: ' + e.message, 'error');
+        btn.disabled = false;
+        armed = false;
+        btn.textContent = 'Delete';
+        btn.classList.remove('danger');
+      }
+    });
+    return btn;
+  }
+
   async function refreshResultsIndex() {
     const host = $('#results-index');
     host.classList.remove('empty');
@@ -2227,6 +2267,7 @@
               el('span', { class: 'muted', style: 'font-size: 11px;', text:
                 `${(entry.size_bytes / 1024).toFixed(1)} KB · ${fmt.short(new Date(entry.modified_ts * 1000).toISOString())}` }),
               el('button', { class: 'ghost-btn sm', text: 'Evidence pack', onclick: () => openReportModal(entry.path) }),
+              _makeDeleteButton(entry.path, () => refreshResultsIndex()),
             ]),
           ]);
           list.appendChild(row);
