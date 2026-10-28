@@ -136,14 +136,14 @@ def _evaluate(records: list[dict]) -> dict:
 
 def _print_report(summary: dict) -> None:
     print()
-    print("=== drift coordination-detector library × MAST empirical results ===")
+    print("=== drift coordination-detector library x MAST empirical results ===")
     print(f"  traces            : {summary['n_traces']}")
     print(f"  detectors         : {summary['n_detectors']} ({', '.join(d for d in summary['per_detector'])})")
     print(f"  mode              : detect_from_text (raw-text variant; structured")
     print(f"                      detect() needs adapter trace shape MAST doesn't ship)")
     print()
     agg = summary["aggregate"]
-    print(f"  Aggregate confusion (across all detector × trace pairs):")
+    print(f"  Aggregate confusion (across all detector x trace pairs):")
     print(f"    TP = {agg['tp']}    FP = {agg['fp']}")
     print(f"    FN = {agg['fn']}    TN = {agg['tn']}")
     print()
@@ -165,7 +165,7 @@ def _print_report(summary: dict) -> None:
         if d["fired_on_traces"]:
             print(f"      fired on:")
             for f in d["fired_on_traces"][:4]:
-                ok = "✓" if f["actual"] else "✗"
+                ok = "Y" if f["actual"] else "N"
                 print(f"        {ok} trace_{f['trace_id']} ({f['mas_name']}): {f['evidence']}")
             if len(d["fired_on_traces"]) > 4:
                 print(f"        ... and {len(d['fired_on_traces']) - 4} more")
@@ -175,13 +175,13 @@ def _print_report(summary: dict) -> None:
     print()
     print("  Honest read of these numbers:")
     print("    The text-variant detectors score near-zero recall on MAST. This is NOT")
-    print("    a bug — it's the expected ceiling of text-pattern heuristics on this")
+    print("    a bug - it's the expected ceiling of text-pattern heuristics on this")
     print("    dataset, and surfaces a real diagnosis:")
     print("      - MAST traces are framework-diverse (ChatDev/MetaGPT/AppWorld/...)")
     print("        and predominantly code-execution + system messages, not the")
     print("        chat-style 'Reviewer: approved' dialogue our text patterns assume.")
     print("      - MAST mode 3.3 ('Incorrect Verification') in an AppWorld trace")
-    print("        means an agent didn't sanity-check its own code output — there")
+    print("        means an agent didn't sanity-check its own code output - there")
     print("        is no verifier-role agent at all.")
     print("      - MAST mode 1.3 ('Step Repetition') is broader than two-agent")
     print("        bouncing; often it's one agent repeating itself.")

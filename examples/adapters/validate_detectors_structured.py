@@ -313,12 +313,12 @@ def _fmt(x: float | None) -> str:
 
 def _print_report(summary: dict) -> None:
     print()
-    print("=== drift coordination-detector library × structured-trace fixtures ===")
+    print("=== drift coordination-detector library x structured-trace fixtures ===")
     print(f"  fixtures   : {summary['n_fixtures']}")
     print(f"  detectors  : {summary['n_detectors']}")
     print()
     agg = summary["aggregate"]
-    print(f"  Aggregate confusion (detector × fixture pairs):")
+    print(f"  Aggregate confusion (detector x fixture pairs):")
     print(f"    TP={agg['tp']}  FP={agg['fp']}  FN={agg['fn']}  TN={agg['tn']}")
     print(f"    precision = {_fmt(agg['precision'])}")
     print(f"    recall    = {_fmt(agg['recall'])}")
