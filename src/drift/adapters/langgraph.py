@@ -382,12 +382,18 @@ def _normalize_chunk(chunk: Any) -> dict[str, dict]:
     return {"_chunk": {"_value": chunk}}
 
 
-async def _stream_or_invoke(graph: Any, state: dict) -> tuple[dict | None, list[dict]]:
+async def _stream_or_invoke(
+    graph: Any, state: dict, *, max_steps: int | None = None,
+) -> tuple[dict | None, list[dict], bool]:
     """Run the graph once. Capture a per-super-step trace if possible.
 
-    Returns (final_state, trace). The trace is a list of records
-    `{step, node, update, state_after}` — empty if the graph supports
-    invoke only (plain function / `.invoke()`-only stubs).
+    Returns (final_state, trace, truncated). The trace is a list of
+    records `{step, node, update, state_after}` — empty if the graph
+    supports invoke only (plain function / `.invoke()`-only stubs).
+    `truncated` is True only when `max_steps` cut the run short (so
+    `final_state` is the accumulated state AT that step, not the graph's
+    true completion state — callers that surface `final_state` to a user
+    must make that distinction visible, not call it "final" unqualified).
 
     Prefer `.astream()` -> `.stream()` -> `.ainvoke()` -> `.invoke()` ->
     `__call__`. Streaming uses default mode (`"updates"`) and accumulates
@@ -396,6 +402,13 @@ async def _stream_or_invoke(graph: Any, state: dict) -> tuple[dict | None, list[
     reducer channels (e.g. messages with `add_messages`) may see slight
     drift in the merged final_state vs what `.invoke()` would return. The
     trace is unaffected — it just records each node's emitted update.
+
+    `max_steps` only applies to the streaming paths — it stops consuming
+    the generator once that many super-steps have been captured, which
+    LangGraph supports (an abandoned async/sync generator is not an
+    error). It has no effect on the plain invoke/call fallback paths:
+    those run the graph in one opaque call with no step boundary to cut
+    at, so a non-streaming graph always runs to completion regardless.
     """
     running: dict = dict(state)
     trace: list[dict] = []
@@ -414,7 +427,9 @@ async def _stream_or_invoke(graph: Any, state: dict) -> tuple[dict | None, list[
                     "update": deepcopy(update),
                     "state_after": deepcopy(running),
                 })
-        return (running, trace)
+                if max_steps is not None and step >= max_steps:
+                    return (running, trace, True)
+        return (running, trace, False)
 
     stream = getattr(graph, "stream", None)
     if callable(stream):
@@ -429,28 +444,30 @@ async def _stream_or_invoke(graph: Any, state: dict) -> tuple[dict | None, list[
                     "update": deepcopy(update),
                     "state_after": deepcopy(running),
                 })
-        return (running, trace)
+                if max_steps is not None and step >= max_steps:
+                    return (running, trace, True)
+        return (running, trace, False)
 
-    # Plain invoke fallback: no per-step trace possible.
+    # Plain invoke fallback: no per-step trace possible, no truncation possible.
     ainvoke = getattr(graph, "ainvoke", None)
     if callable(ainvoke):
         result = ainvoke(state)
         if inspect.isawaitable(result):
             result = await result
-        return (result if isinstance(result, dict) else dict(result), [])
+        return (result if isinstance(result, dict) else dict(result), [], False)
 
     invoke = getattr(graph, "invoke", None)
     if callable(invoke):
         result = invoke(state)
         if inspect.isawaitable(result):
             result = await result
-        return (result if isinstance(result, dict) else dict(result), [])
+        return (result if isinstance(result, dict) else dict(result), [], False)
 
     # _validate_graph guaranteed the graph is at minimum callable.
     result = graph(state)
     if inspect.isawaitable(result):
         result = await result
-    return (result if isinstance(result, dict) else dict(result), [])
+    return (result if isinstance(result, dict) else dict(result), [], False)
 
 
 def _canonical(value: Any) -> str:
@@ -856,7 +873,7 @@ async def _run_one(
     """
     t0 = time.perf_counter()
     try:
-        final, trace = await _stream_or_invoke(graph, initial_state)
+        final, trace, _truncated = await _stream_or_invoke(graph, initial_state)
         return (final, trace, "", "", time.perf_counter() - t0)
     except Exception as exc:  # noqa: BLE001 — user code, anything possible
         return (None, [], type(exc).__name__, str(exc), time.perf_counter() - t0)
@@ -1331,6 +1348,10 @@ class ForkBranch:
     error_type: str = ""
     duration_s: float = 0.0
     coordination_findings: list[dict] = field(default_factory=list)
+    # True when `max_steps` cut this branch short — final_state is the
+    # accumulated state AT that step, not the graph's true completion
+    # state. See drift_test_fork's `max_steps` docstring.
+    truncated: bool = False
 
 
 @dataclass
@@ -1401,11 +1422,14 @@ async def _run_one_fork_branch(
     *,
     run_coordination_detectors: bool,
     coordination_roles: dict[str, str] | None,
+    max_steps: int | None = None,
 ) -> ForkBranch:
     """Run the graph once from `initial_state`, capture trace + coord findings."""
     t0 = time.perf_counter()
     try:
-        final_state, trace = await _stream_or_invoke(graph, initial_state)
+        final_state, trace, truncated = await _stream_or_invoke(
+            graph, initial_state, max_steps=max_steps,
+        )
         duration = time.perf_counter() - t0
         coord: list[dict] = []
         if run_coordination_detectors and trace:
@@ -1422,6 +1446,7 @@ async def _run_one_fork_branch(
             final_state=final_state,
             duration_s=duration,
             coordination_findings=coord,
+            truncated=truncated,
         )
     except Exception as exc:  # noqa: BLE001
         return ForkBranch(
@@ -1445,6 +1470,7 @@ async def drift_test_fork_async(
     run_coordination_detectors: bool = True,
     coordination_roles: dict[str, str] | None = None,
     parent_run_id: str | None = None,
+    max_steps: int | None = None,
 ) -> ForkResult:
     """Fork a completed adapter run at `fork_step`, apply `edits`, re-run forward.
 
@@ -1460,6 +1486,16 @@ async def drift_test_fork_async(
     are returned together so callers can render the design-diagnostic compare:
     does editing at initial design converge to the same outcome as editing at
     fork_step, or does the state carry path-dependence?
+
+    `max_steps`: bounded counterfactual replay — stop each branch after this
+    many super-steps instead of running to completion. Cost control (a full
+    replay can be an expensive LLM-driven run; "what happens 2 steps after
+    my edit" is a much cheaper question) and focus (you often only care
+    about the immediate aftermath of an edit, not the whole rest of the
+    run). Only takes effect on graphs that support streaming — see
+    `_stream_or_invoke`'s docstring. Each returned branch's `truncated`
+    flag is True when this actually cut it short; `final_state` in that
+    case is the state AT that step, not the graph's true completion state.
 
     Raises ValueError on out-of-range fork_step or crashed parent baseline.
     """
@@ -1488,6 +1524,7 @@ async def drift_test_fork_async(
         edited_state_at_fork,
         run_coordination_detectors=run_coordination_detectors,
         coordination_roles=coordination_roles,
+        max_steps=max_steps,
     )
 
     top_branch: ForkBranch | None = None
@@ -1501,6 +1538,7 @@ async def drift_test_fork_async(
             edited_initial,
             run_coordination_detectors=run_coordination_detectors,
             coordination_roles=coordination_roles,
+            max_steps=max_steps,
         )
 
     return ForkResult(
@@ -1525,6 +1563,7 @@ def drift_test_fork(
     run_coordination_detectors: bool = True,
     coordination_roles: dict[str, str] | None = None,
     parent_run_id: str | None = None,
+    max_steps: int | None = None,
 ) -> ForkResult:
     """Synchronous wrapper around `drift_test_fork_async`.
 
@@ -1540,6 +1579,7 @@ def drift_test_fork(
             run_coordination_detectors=run_coordination_detectors,
             coordination_roles=coordination_roles,
             parent_run_id=parent_run_id,
+            max_steps=max_steps,
         )
     )
 

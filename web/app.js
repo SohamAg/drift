@@ -615,6 +615,10 @@
     editTA.value = JSON.stringify(stateAfter, null, 2);
 
     const alsoInitial = el('input', { type: 'checkbox', id: 'fork-also-initial' });
+    const maxStepsInput = el('input', {
+      type: 'number', id: 'fork-max-steps', min: '1', max: '500',
+      placeholder: 'run to completion', style: 'width: 90px;',
+    });
     const submitBtn = el('button', { class: 'btn primary', text: 'Fork + replay' });
     const cancelBtn = el('button', { class: 'btn ghost', text: 'Cancel', onclick: close });
     const statusLine = el('div', { class: 'muted', style: 'margin-top: 6px;' });
@@ -632,6 +636,12 @@
         statusLine.textContent = 'No edits detected — modify the JSON above first.';
         return;
       }
+      const maxStepsRaw = maxStepsInput.value.trim();
+      const maxSteps = maxStepsRaw ? parseInt(maxStepsRaw, 10) : null;
+      if (maxStepsRaw && (!Number.isFinite(maxSteps) || maxSteps < 1)) {
+        statusLine.textContent = '"Run N more steps" must be a positive integer, or left blank.';
+        return;
+      }
       submitBtn.disabled = true;
       statusLine.textContent = 'Running forked replay…';
       try {
@@ -644,6 +654,7 @@
             fork_step: step.step,
             edits,
             also_apply_at_initial: alsoInitial.checked,
+            max_steps: maxSteps,
           },
         });
         close();
@@ -667,6 +678,11 @@
           alsoInitial,
           el('label', { for: 'fork-also-initial', class: 'help',
             text: 'also apply these edits at initial state (top-vs-bottom compare)' }),
+        ]),
+        el('div', { style: 'margin-top: 8px; display: flex; align-items: center; gap: 6px;' }, [
+          el('label', { for: 'fork-max-steps', class: 'help', text: 'run N more steps (optional):' }),
+          maxStepsInput,
+          el('span', { class: 'help', text: 'leave blank to run to completion — cheaper when you only care about the immediate aftermath of this edit' }),
         ]),
         statusLine,
       ]),
@@ -707,13 +723,13 @@
       ['Fork branch',
         fork.fork_branch.crashed
           ? `CRASHED — ${fork.fork_branch.error_type}`
-          : `${(fork.fork_branch.trace || []).length} step(s)`],
+          : `${(fork.fork_branch.trace || []).length} step(s)` + (fork.fork_branch.truncated ? ' (stopped early — did not run to completion)' : '')],
     ];
     if (fork.top_edited_branch) {
       kvs.push(['Top-edit branch',
         fork.top_edited_branch.crashed
           ? `CRASHED — ${fork.top_edited_branch.error_type}`
-          : `${(fork.top_edited_branch.trace || []).length} step(s)`]);
+          : `${(fork.top_edited_branch.trace || []).length} step(s)` + (fork.top_edited_branch.truncated ? ' (stopped early — did not run to completion)' : '')]);
     }
     if (fork.n_coordination_findings != null) {
       kvs.push(['Coord findings (total)', String(fork.n_coordination_findings)]);
@@ -739,6 +755,10 @@
   function renderForkBranch(title, branch) {
     const box = el('div', { class: 'fork-branch' });
     box.appendChild(el('div', { class: 'fork-branch-title', text: title }));
+    if (branch.truncated) {
+      box.appendChild(el('span', { class: 'pill warning', style: 'margin-bottom: 6px;',
+        text: 'stopped early — final_state is a snapshot, not completion' }));
+    }
     if (branch.crashed) {
       box.appendChild(el('div', { class: 'pill danger', text: 'CRASHED' }));
       box.appendChild(el('pre', { class: 'mono', text: `${branch.error_type}: ${branch.error}` }));

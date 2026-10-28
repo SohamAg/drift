@@ -212,6 +212,11 @@ class AdapterForkRequest(BaseModel):
     edits: dict[str, Any] = Field(default_factory=dict)
     also_apply_at_initial: bool = False
 
+    # Bounded counterfactual replay: stop each branch after this many
+    # super-steps instead of running to completion. None (default) runs
+    # to completion, same as before this field existed.
+    max_steps: int | None = Field(default=None, ge=1, le=500)
+
     # Optional coordination role overrides for the coord detectors on the
     # forked trace.
     coordination_roles: dict[str, str] = Field(default_factory=dict)
@@ -1624,6 +1629,7 @@ def create_app() -> FastAPI:
                 edits=req.edits,
                 also_apply_at_initial=req.also_apply_at_initial,
                 coordination_roles=req.coordination_roles or None,
+                max_steps=req.max_steps,
             )
         except ValueError as e:
             raise HTTPException(400, str(e))
@@ -1638,6 +1644,7 @@ def create_app() -> FastAPI:
                 "error_type": b.error_type,
                 "duration_s": round(b.duration_s, 4),
                 "coordination_findings": b.coordination_findings,
+                "truncated": b.truncated,
             }
 
         return {

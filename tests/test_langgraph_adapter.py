@@ -1250,6 +1250,72 @@ def test_fork_reports_final_state_and_trace():
     assert fork.fork_branch.final_state["status"] == "closed"
 
 
+def test_fork_max_steps_truncates_the_branch():
+    """Bounded counterfactual replay: max_steps cuts the fork branch short
+    instead of running the full 3-step _ForkableGraph to completion."""
+    graph = _ForkableGraph()
+    parent = drift_test(
+        graph=graph,
+        initial_state={"case_id": "case-1"},
+        intensity="off",
+        seed=1,
+    )
+    fork = drift_test_fork(
+        graph=graph,
+        parent_result=parent,
+        fork_step=1,
+        edits={},
+        max_steps=1,
+    )
+    assert len(fork.fork_branch.trace) == 1
+    assert fork.fork_branch.trace[0]["node"] == "intake"
+    assert fork.fork_branch.truncated is True
+    # final_state at truncation is the state AFTER step 1 only — "verdict"
+    # (written by reviewer, step 2) must not be present yet.
+    assert "verdict" not in fork.fork_branch.final_state
+
+
+def test_fork_without_max_steps_runs_to_completion_and_is_not_truncated():
+    graph = _ForkableGraph()
+    parent = drift_test(
+        graph=graph,
+        initial_state={"case_id": "case-1"},
+        intensity="off",
+        seed=1,
+    )
+    fork = drift_test_fork(
+        graph=graph,
+        parent_result=parent,
+        fork_step=1,
+        edits={},
+    )
+    assert len(fork.fork_branch.trace) == 3
+    assert fork.fork_branch.truncated is False
+    assert fork.fork_branch.final_state["status"] == "closed"
+
+
+def test_fork_max_steps_also_applies_to_the_top_edited_branch():
+    graph = _ForkableGraph()
+    parent = drift_test(
+        graph=graph,
+        initial_state={"case_id": "case-1"},
+        intensity="off",
+        seed=1,
+    )
+    fork = drift_test_fork(
+        graph=graph,
+        parent_result=parent,
+        fork_step=1,
+        edits={},
+        also_apply_at_initial=True,
+        max_steps=2,
+    )
+    assert len(fork.fork_branch.trace) == 2
+    assert fork.fork_branch.truncated is True
+    assert len(fork.top_edited_branch.trace) == 2
+    assert fork.top_edited_branch.truncated is True
+
+
 def test_fork_top_vs_bottom_opt_in_populates_both_branches():
     """also_apply_at_initial=True produces both the fork-edited branch
     and the initial-state-edited branch."""

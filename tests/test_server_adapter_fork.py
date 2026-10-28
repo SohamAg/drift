@@ -75,6 +75,61 @@ def test_fork_also_apply_at_initial_returns_both_branches() -> None:
     assert data["top_edited_branch"]["crashed"] is False
 
 
+def test_fork_max_steps_truncates_the_branch() -> None:
+    """ticket_triage's fresh rerun from a step-1 fork point is 2 steps
+    (classify -> escalate|respond); max_steps=1 should cut it to 1 and
+    flag truncated=True, vs. an unbounded fork completing normally."""
+    client = TestClient(create_app())
+    run = _run_baseline(client)
+    trace = run["baseline"]["trace"]
+
+    unbounded = client.post(
+        "/api/adapter-fork",
+        json={
+            "graph_name": "ticket_triage",
+            "parent_baseline_trace": trace,
+            "parent_initial_state": run["baseline"]["initial_state"],
+            "fork_step": 1,
+            "edits": {},
+        },
+    ).json()
+    assert unbounded["fork_branch"]["truncated"] is False
+
+    bounded = client.post(
+        "/api/adapter-fork",
+        json={
+            "graph_name": "ticket_triage",
+            "parent_baseline_trace": trace,
+            "parent_initial_state": run["baseline"]["initial_state"],
+            "fork_step": 1,
+            "edits": {},
+            "max_steps": 1,
+        },
+    ).json()
+    assert bounded["fork_branch"]["truncated"] is True
+    assert len(bounded["fork_branch"]["trace"]) == 1
+    assert len(bounded["fork_branch"]["trace"]) < len(unbounded["fork_branch"]["trace"])
+
+
+def test_fork_max_steps_out_of_bounds_is_a_422() -> None:
+    client = TestClient(create_app())
+    run = _run_baseline(client)
+    trace = run["baseline"]["trace"]
+
+    resp = client.post(
+        "/api/adapter-fork",
+        json={
+            "graph_name": "ticket_triage",
+            "parent_baseline_trace": trace,
+            "parent_initial_state": run["baseline"]["initial_state"],
+            "fork_step": 1,
+            "edits": {},
+            "max_steps": 0,
+        },
+    )
+    assert resp.status_code == 422
+
+
 def test_fork_step_out_of_range_is_a_400() -> None:
     client = TestClient(create_app())
     run = _run_baseline(client)
