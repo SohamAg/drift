@@ -1921,8 +1921,29 @@
   function renderSuiteResults(results) {
     const card = $('#suite-results');
     const host = $('#suite-results-list');
+    const totalsHost = $('#suite-summary-totals');
     host.innerHTML = '';
+    totalsHost.innerHTML = '';
     card.classList.remove('hidden');
+
+    const ok = results.filter(r => r.status === 'ok');
+    const agg = ok.reduce((acc, r) => {
+      acc.crashed += r.result?.n_crashed || 0;
+      acc.diverged += r.result?.n_diverged || 0;
+      acc.coord += r.result?.n_coordination_findings || 0;
+      acc.judge += r.result?.n_judge_findings || 0;
+      return acc;
+    }, { crashed: 0, diverged: 0, coord: 0, judge: 0 });
+    [
+      ['targets run', `${ok.length} ok · ${results.length - ok.length} skipped/errored`],
+      ['crashed (total)', agg.crashed],
+      ['diverged (total)', agg.diverged],
+      ['coord findings (total)', agg.coord],
+      ['judge findings (total)', agg.judge],
+    ].forEach(([k, v]) => {
+      totalsHost.appendChild(el('span', { class: 'k', text: k }));
+      totalsHost.appendChild(el('span', { class: 'v', text: String(v) }));
+    });
 
     results.forEach(r => {
       const summaryParts = [];
