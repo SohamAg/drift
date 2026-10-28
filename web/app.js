@@ -2167,14 +2167,18 @@
 
   async function refreshDetectors() {
     const host = $('#detectors-list');
+    const familiesCard = $('#judge-families-card');
+    const familiesHost = $('#judge-families-list');
     host.classList.remove('empty');
     host.innerHTML = 'Loading…';
     try {
       const data = await api('/api/detectors');
       const detectors = data.detectors || [];
+      const families = data.judge_families || [];
       if (!detectors.length) {
         host.classList.add('empty');
         host.textContent = 'No detectors registered.';
+        familiesCard.classList.add('hidden');
         return;
       }
       host.innerHTML = '';
@@ -2198,6 +2202,22 @@
         ]));
       });
       host.appendChild(list);
+
+      familiesCard.classList.toggle('hidden', families.length === 0);
+      familiesHost.innerHTML = '';
+      const fList = el('div', { class: 'trace-list' });
+      families.forEach(f => {
+        fList.appendChild(el('div', { class: 'card tight', style: 'margin-bottom: 8px;' }, [
+          el('div', { style: 'display: flex; align-items: center; gap: 8px;' }, [
+            el('span', { class: 'mono', style: 'font-weight: 600; font-size: 13px;', text: 'llm:' + f.name }),
+            f.is_user_guideline
+              ? el('span', { class: 'pill info', style: 'font-size: 10px;', text: 'user-defined' })
+              : null,
+          ]),
+          el('div', { style: 'margin-top: 6px; font-size: 13px;', text: f.description }),
+        ]));
+      });
+      familiesHost.appendChild(fList);
     } catch (e) {
       host.classList.add('empty');
       host.textContent = 'Failed to load detectors: ' + e.message;

@@ -54,6 +54,21 @@ JUDGE_FAMILIES: tuple[str, ...] = (
 
 JUDGE_PREFIX = "llm:"
 
+# Plain-data mirror of the family descriptions embedded in DEFAULT_JUDGE_SYSTEM
+# below — kept as a separate dict (not parsed from the prompt string) so the
+# prompt text can evolve independently of this UI/API-facing metadata, and a
+# wording tweak to one never silently breaks the other. Used by
+# GET /api/detectors to give the judge's families the same in-product
+# visibility the deterministic library's ALL_DETECTORS metadata already has.
+JUDGE_FAMILY_DESCRIPTIONS: dict[str, str] = {
+    "coordination_contradiction": "Two agents reach opposing decisions on the same target.",
+    "grounding_failure": "An action references a target that doesn't exist or no longer exists.",
+    "state_drift": "An agent acted on outdated world state (e.g. wrong policy version).",
+    "emergent_decay": "The system is trending bad over time across snapshots.",
+    "gate_bypass": "A well-formed action that wasn't allowed (skipped approval, blocked op executed).",
+    USER_GUIDELINE_FAMILY: "Matches a user-supplied free-text guideline pattern (via user_guidelines=).",
+}
+
 # Default judge prompt for the standard five-family taxonomy. When the user
 # supplies guidelines via `user_guidelines=`, an extra block is appended at
 # run time describing the additional patterns and the user_guideline family.
@@ -409,6 +424,7 @@ class LLMJudgeDetector:
 __all__ = [
     "DEFAULT_JUDGE_SYSTEM",
     "JUDGE_FAMILIES",
+    "JUDGE_FAMILY_DESCRIPTIONS",
     "JUDGE_PREFIX",
     "USER_GUIDELINE_FAMILY",
     "JudgeLLM",

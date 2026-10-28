@@ -906,14 +906,16 @@ def create_app() -> FastAPI:
 
     @app.get("/api/detectors")
     def list_detectors() -> dict[str, Any]:
-        """List the coordination-failure detector library — every
-        deterministic, source-cited detector that runs on every
-        drift_test call (free, no LLM). Pulls module-level metadata
-        (NAME/SUMMARY/SOURCE/MAST_MODES) directly from
-        drift.failures.library.ALL_DETECTORS, so this can never drift
-        out of sync with what actually ships. Backs an in-product
-        reference view — the library previously only had its own
-        explainer docs under docs/detectors/, not visible in the app."""
+        """List the full detection surface: the deterministic coordination-
+        failure library (free, no LLM, runs on every drift_test call) AND
+        the LLM judge's failure-family taxonomy (opt-in, costs tokens).
+        Pulls module-level metadata directly from
+        drift.failures.library.ALL_DETECTORS and
+        drift.failures.judge.JUDGE_FAMILY_DESCRIPTIONS, so this can never
+        drift out of sync with what actually ships. Backs an in-product
+        reference view — previously the library only had docs/detectors/
+        explainer files, not visible in the app."""
+        from drift.failures.judge import JUDGE_FAMILY_DESCRIPTIONS, USER_GUIDELINE_FAMILY
         from drift.failures.library import ALL_DETECTORS
 
         # The only two detectors that need a user-declared config hint
@@ -931,6 +933,14 @@ def create_app() -> FastAPI:
                     "needs_config": mod.NAME in NEEDS_CONFIG,
                 }
                 for mod in ALL_DETECTORS
+            ],
+            "judge_families": [
+                {
+                    "name": name,
+                    "description": desc,
+                    "is_user_guideline": name == USER_GUIDELINE_FAMILY,
+                }
+                for name, desc in JUDGE_FAMILY_DESCRIPTIONS.items()
             ],
         }
 

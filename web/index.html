@@ -78,6 +78,17 @@
         </p>
         <div id="detectors-list" class="empty">Loading…</div>
       </div>
+
+      <div id="judge-families-card" class="card hidden">
+        <h3>LLM judge failure families</h3>
+        <p class="help">
+          Opt-in, costs tokens (set <code>judge: "openai"</code> on a run) — complements the free
+          library above with semantic patterns too subtle for deterministic token-matching. The judge
+          is deliberately conservative: it's instructed to only report what it can cite specific
+          evidence for.
+        </p>
+        <div id="judge-families-list"></div>
+      </div>
     </section>
 
     <!-- ===================== TEST (chaos + judge against a bundled graph) ===================== -->
