@@ -73,6 +73,28 @@ def test_fork_also_apply_at_initial_returns_both_branches() -> None:
     data = resp.json()
     assert data["top_edited_branch"] is not None
     assert data["top_edited_branch"]["crashed"] is False
+    assert data["path_dependence"] is not None
+    assert isinstance(data["path_dependence"]["is_path_dependent"], bool)
+    assert isinstance(data["path_dependence"]["diverged_fields"], list)
+
+
+def test_fork_path_dependence_is_none_without_also_apply_at_initial() -> None:
+    client = TestClient(create_app())
+    run = _run_baseline(client)
+    trace = run["baseline"]["trace"]
+
+    resp = client.post(
+        "/api/adapter-fork",
+        json={
+            "graph_name": "ticket_triage",
+            "parent_baseline_trace": trace,
+            "parent_initial_state": run["baseline"]["initial_state"],
+            "fork_step": 1,
+            "edits": {},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["path_dependence"] is None
 
 
 def test_fork_max_steps_truncates_the_branch() -> None:

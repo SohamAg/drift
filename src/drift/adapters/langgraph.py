@@ -1389,6 +1389,47 @@ class ForkResult:
             n += len(self.top_edited_branch.coordination_findings)
         return n
 
+    @property
+    def path_dependence(self) -> dict[str, Any] | None:
+        """The design-diagnostic question made concrete: does applying the
+        same edit at initial design converge to the same outcome as
+        applying it at the fork point, or does the system carry real
+        path-dependent state?
+
+        None when `also_apply_at_initial` wasn't requested (no top branch
+        to compare against), or when either branch crashed — a crash
+        isn't a state-field diff, it's a different kind of divergence
+        this comparison isn't trying to characterize.
+
+        `is_path_dependent=True` means the two branches' final states
+        differ after the same edit was applied at two different points —
+        real signal the system isn't initial-state-pure (Camp A design
+        philosophy: if a bug can ONLY be fixed by editing mid-run state,
+        not by editing the initial design, the topology itself has
+        state that accumulates path-dependent facts the initial state
+        can't express). See feature_ideas.md → Fork-edit-replay
+        augmentations → "Initial-state vs fork-state consistency check."
+        """
+        if self.top_edited_branch is None:
+            return None
+        if self.fork_branch.crashed or self.top_edited_branch.crashed:
+            return None
+        _, _, details = _diff_states(
+            self.fork_branch.final_state, self.top_edited_branch.final_state,
+        )
+        return {
+            "is_path_dependent": bool(details),
+            "diverged_fields": [
+                {
+                    "name": d.name,
+                    "fork_branch_value": d.baseline_value,
+                    "top_edited_branch_value": d.perturbed_value,
+                    "summary": d.summary,
+                }
+                for d in details
+            ],
+        }
+
 
 def _deep_merge_edits(base: dict, edits: dict) -> dict:
     """Sparse deep-merge — `edits` overwrites at leaf level; dict values recurse.

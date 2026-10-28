@@ -1340,6 +1340,99 @@ def test_fork_top_vs_bottom_opt_in_populates_both_branches():
     assert len(fork.top_edited_branch.trace) == 3
 
 
+def test_path_dependence_is_none_without_also_apply_at_initial():
+    graph = _ForkableGraph()
+    parent = drift_test(graph=graph, initial_state={"case_id": "case-1"}, intensity="off", seed=1)
+    fork = drift_test_fork(graph=graph, parent_result=parent, fork_step=1, edits={})
+    assert fork.path_dependence is None
+
+
+def test_path_dependence_false_when_branches_converge():
+    """_ForkableGraph is a pure function of case_id — the same edit applied
+    at the fork point or at initial state fully recomputes every field
+    from scratch, so the two branches must converge to identical final
+    states. Not path-dependent."""
+    graph = _ForkableGraph()
+    parent = drift_test(graph=graph, initial_state={"case_id": "case-orig"}, intensity="off", seed=1)
+    fork = drift_test_fork(
+        graph=graph, parent_result=parent, fork_step=1,
+        edits={"case_id": "bad-id"}, also_apply_at_initial=True,
+    )
+    pd = fork.path_dependence
+    assert pd is not None
+    assert pd["is_path_dependent"] is False
+    assert pd["diverged_fields"] == []
+
+
+class _AccumulatingGraph:
+    """2-node graph whose verdict depends on how many flags have
+    accumulated in `prior_flags` — forking after the scanner already ran
+    means the fork branch's fresh rerun scans an ALREADY-flagged list and
+    adds another flag on top, while editing at the original initial state
+    only ever sees the single seed flag. Demonstrates genuine
+    path-dependent state: the same edit at two points does NOT converge,
+    because forking from mid-run state and then re-running the whole
+    graph from scratch double-counts the scanner's work.
+    """
+
+    def stream(self, state):
+        running = dict(state)
+        flags = list(running.get("prior_flags", []))
+        flags.append("flagged_by_scanner")
+        running["prior_flags"] = flags
+        yield {"scanner": {"prior_flags": list(flags)}}
+
+        verdict = "reject" if len(running["prior_flags"]) > 1 else "approve"
+        running["verdict"] = verdict
+        yield {"reviewer": {"verdict": verdict}}
+
+    def invoke(self, state):
+        out = dict(state)
+        for chunk in self.stream(state):
+            for upd in chunk.values():
+                out.update(upd)
+        return out
+
+
+def test_path_dependence_true_when_branches_genuinely_diverge():
+    graph = _AccumulatingGraph()
+    parent = drift_test(
+        graph=graph, initial_state={"prior_flags": ["seed_flag"]}, intensity="off", seed=1,
+    )
+    fork = drift_test_fork(
+        graph=graph, parent_result=parent, fork_step=1, edits={}, also_apply_at_initial=True,
+    )
+    pd = fork.path_dependence
+    assert pd is not None
+    assert pd["is_path_dependent"] is True
+    diverged_names = {d["name"] for d in pd["diverged_fields"]}
+    assert "prior_flags" in diverged_names
+    # fork branch reran the scanner on an already-once-flagged list ->
+    # 3 flags total; top branch only ever saw the single seed flag -> 2.
+    fork_entry = next(d for d in pd["diverged_fields"] if d["name"] == "prior_flags")
+    assert len(fork_entry["fork_branch_value"]) == 3
+    assert len(fork_entry["top_edited_branch_value"]) == 2
+
+
+def test_path_dependence_none_when_fork_branch_crashed():
+    class _CrashesOnRerun:
+        calls = 0
+
+        def stream(self, state):
+            type(self).calls += 1
+            if type(self).calls > 1:
+                raise RuntimeError("boom on rerun")
+            yield {"step1": {"done": True}}
+
+    graph = _CrashesOnRerun()
+    parent = drift_test(graph=graph, initial_state={"x": 1}, intensity="off", seed=1)
+    fork = drift_test_fork(
+        graph=graph, parent_result=parent, fork_step=1, edits={}, also_apply_at_initial=True,
+    )
+    assert fork.fork_branch.crashed or (fork.top_edited_branch and fork.top_edited_branch.crashed)
+    assert fork.path_dependence is None
+
+
 def test_fork_raises_on_out_of_range_fork_step():
     graph = _ForkableGraph()
     parent = drift_test(

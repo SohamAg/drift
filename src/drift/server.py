@@ -1660,6 +1660,7 @@ def create_app() -> FastAPI:
                 if fork.top_edited_branch else None
             ),
             "n_coordination_findings": fork.n_coordination_findings,
+            "path_dependence": fork.path_dependence,
             "duration_s": round(fork.duration_s, 4),
         }
 

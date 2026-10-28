@@ -741,6 +741,33 @@
     });
     panel.appendChild(kvHost);
 
+    if (fork.path_dependence) {
+      const pd = fork.path_dependence;
+      const box = el('div', { class: 'card tight',
+        style: `margin-top: 10px; border-left: 3px solid var(${pd.is_path_dependent ? '--warning' : '--success'});` });
+      box.appendChild(el('div', { style: 'font-weight: 600; margin-bottom: 4px;',
+        text: pd.is_path_dependent
+          ? 'Path-dependent — editing at initial design would NOT reach the same outcome'
+          : 'Not path-dependent — editing at initial design converges to the same outcome' }));
+      box.appendChild(el('div', { class: 'help', text:
+        pd.is_path_dependent
+          ? 'The same edit applied at the fork point vs. at initial state produced different final states. The system is carrying accumulated state the initial design can\'t express — fixing this bug by editing initial design alone would not be equivalent to fixing it here.'
+          : 'The same edit applied at the fork point vs. at initial state produced the SAME final state. This system is initial-state-pure for this edit — fixing it at initial design would achieve the same result as this mid-run fix.' }));
+      if (pd.diverged_fields.length) {
+        const details = el('details', { style: 'margin-top: 6px;' }, [
+          el('summary', { class: 'help', text: `${pd.diverged_fields.length} diverged field(s)` }),
+        ]);
+        const list = el('div', { class: 'kv-grid', style: 'margin-top: 4px;' });
+        pd.diverged_fields.forEach(d => {
+          list.appendChild(el('span', { class: 'k', text: d.name }));
+          list.appendChild(el('span', { class: 'v', style: 'font-size: 11px;', text: d.summary }));
+        });
+        details.appendChild(list);
+        box.appendChild(details);
+      }
+      panel.appendChild(box);
+    }
+
     const branches = el('div', { class: 'fork-branches' });
     branches.appendChild(renderForkBranch('Fork-edited (from step #' + fork.fork_step + ')', fork.fork_branch));
     if (fork.top_edited_branch) {
