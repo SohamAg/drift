@@ -2264,7 +2264,37 @@
     $('#results-close').addEventListener('click', () => {
       $('#results-viewer').classList.add('hidden');
     });
+    $('#results-filter').addEventListener('input', applyResultsFilter);
     await refreshResultsIndex();
+  }
+
+  // Client-side filter over the already-rendered index — cheap (a few
+  // hundred DOM nodes at most) and avoids a round-trip for something this
+  // local. Matches group name or file path, case-insensitive substring.
+  // Hides a whole group section when every row in it is filtered out, and
+  // keeps each visible group's header count honest (visible, not total).
+  function applyResultsFilter() {
+    const q = ($('#results-filter').value || '').trim().toLowerCase();
+    const sections = $$('#results-index > [data-group]');
+    let anyVisible = false;
+    sections.forEach(section => {
+      const group = section.dataset.group;
+      const rows = $$('.trace-step', section);
+      let visibleInGroup = 0;
+      rows.forEach(row => {
+        const match = !q || group.toLowerCase().includes(q) || (row.dataset.path || '').toLowerCase().includes(q);
+        row.classList.toggle('hidden', !match);
+        if (match) visibleInGroup++;
+      });
+      section.classList.toggle('hidden', visibleInGroup === 0);
+      if (visibleInGroup > 0) anyVisible = true;
+      const heading = $('h3', section);
+      if (heading) {
+        heading.textContent = `${group} (${visibleInGroup}${visibleInGroup !== rows.length ? ` of ${rows.length}` : ''})`;
+      }
+    });
+    const noMatches = $('#results-no-matches');
+    if (noMatches) noMatches.classList.toggle('hidden', anyVisible || sections.length === 0);
   }
 
   // Two-click delete, no native confirm() dialog: first click arms the
@@ -2309,6 +2339,7 @@
 
   async function refreshResultsIndex() {
     const host = $('#results-index');
+    const filterField = $('#results-filter-field');
     host.classList.remove('empty');
     host.innerHTML = 'Loading…';
     try {
@@ -2318,11 +2349,13 @@
       if (!groupNames.length) {
         host.classList.add('empty');
         host.textContent = 'No saved results yet. Run something from the Test tab, or an example script with --save-json.';
+        filterField.classList.add('hidden');
         return;
       }
+      filterField.classList.remove('hidden');
       groupNames.forEach(group => {
         const entries = groups[group];
-        const section = el('div', { style: 'margin-bottom: 16px;' }, [
+        const section = el('div', { style: 'margin-bottom: 16px;', 'data-group': group }, [
           el('h3', { style: 'margin-bottom: 6px; font-size: 14px;', text: group + ` (${entries.length})` }),
         ]);
         const list = el('div', { class: 'trace-list' });
@@ -2330,6 +2363,7 @@
           const row = el('div', {
             class: 'trace-step',
             style: 'grid-template-columns: 1fr auto; cursor: default;',
+            'data-path': entry.path,
           }, [
             el('div', {
               class: 'trace-step-body', style: 'cursor: pointer;',
@@ -2350,6 +2384,8 @@
         section.appendChild(list);
         host.appendChild(section);
       });
+      host.appendChild(el('div', { id: 'results-no-matches', class: 'empty hidden', text: 'No saved runs match that filter.' }));
+      applyResultsFilter();
     } catch (e) {
       host.classList.add('empty');
       host.textContent = 'Failed to load results: ' + e.message;
