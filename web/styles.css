@@ -666,6 +666,17 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .bar-chart-row:hover .bar-chart-tooltip { opacity: 1; transform: translateY(0); }
 
+/* Brief highlight when a card is jumped to from elsewhere (e.g. an
+   Overview chart bar -> its Detectors card) — fades back to normal on
+   its own, no manual removal needed. */
+.flash-highlight {
+  animation: flash-highlight-fade 1.6s ease-out;
+}
+@keyframes flash-highlight-fade {
+  0%   { box-shadow: 0 0 0 2px var(--accent); background: var(--accent-soft); }
+  100% { box-shadow: 0 0 0 0 transparent; background: transparent; }
+}
+
 /* ============================================================ LIVE PANEL */
 .live-panel {
   display: flex; flex-direction: column; gap: 14px;

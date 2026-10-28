@@ -2219,7 +2219,7 @@
         if (d.needs_config) {
           header.appendChild(el('span', { class: 'pill warning', style: 'font-size: 10px;', text: 'needs config' }));
         }
-        list.appendChild(el('div', { class: 'card tight', style: 'margin-bottom: 8px;' }, [
+        list.appendChild(el('div', { id: 'detector-card-' + d.name, class: 'card tight', style: 'margin-bottom: 8px;' }, [
           header,
           el('div', { style: 'margin-top: 6px; font-size: 13px;', text: d.summary }),
           el('div', { class: 'help', style: 'margin-top: 4px;', text: d.source }),
@@ -2235,7 +2235,7 @@
       familiesHost.innerHTML = '';
       const fList = el('div', { class: 'trace-list' });
       families.forEach(f => {
-        fList.appendChild(el('div', { class: 'card tight', style: 'margin-bottom: 8px;' }, [
+        fList.appendChild(el('div', { id: 'detector-card-llm-' + f.name, class: 'card tight', style: 'margin-bottom: 8px;' }, [
           el('div', { style: 'display: flex; align-items: center; gap: 8px;' }, [
             el('span', { class: 'mono', style: 'font-weight: 600; font-size: 13px;', text: 'llm:' + f.name }),
             f.is_user_guideline
@@ -2266,6 +2266,23 @@
   function _openFromOverview(path) {
     activateTab('results');
     openResultsFile(path);
+  }
+
+  // Jumps from a finding-type bar on Overview to its card on the Detectors
+  // tab. Always re-fetches/re-renders (not just activateTab, which only
+  // lazy-inits on a tab's FIRST visit) so the target card is guaranteed to
+  // exist in the DOM before we scroll to it, even on the very first visit.
+  async function _jumpToDetectorCard(failureType) {
+    activateTab('detectors');
+    await refreshDetectors();
+    const id = failureType.startsWith('llm:')
+      ? 'detector-card-llm-' + failureType.slice(4).split(':')[0]
+      : 'detector-card-' + failureType;
+    const card = document.getElementById(id);
+    if (!card) return;
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.add('flash-highlight');
+    setTimeout(() => card.classList.remove('flash-highlight'), 1600);
   }
 
   async function refreshOverview() {
@@ -2315,7 +2332,10 @@
         findingTypes.forEach(ft => {
           const pct = totalCount ? Math.round((ft.count / totalCount) * 100) : 0;
           const widthPct = maxCount ? (ft.count / maxCount) * 100 : 0;
-          chart.appendChild(el('div', { class: 'bar-chart-row' }, [
+          chart.appendChild(el('div', {
+            class: 'bar-chart-row', style: 'cursor: pointer;',
+            onclick: () => _jumpToDetectorCard(ft.type),
+          }, [
             el('div', { class: 'bar-chart-label' }, [
               el('span', { class: 'name', text: ft.type }),
               el('span', { class: 'value', text: String(ft.count) }),
@@ -2324,7 +2344,7 @@
               el('div', { class: 'bar-chart-fill', style: `width: ${widthPct}%;` }),
             ]),
             el('div', { class: 'bar-chart-tooltip', text:
-              `${ft.count} of ${totalCount} finding(s) (${pct}%)` }),
+              `${ft.count} of ${totalCount} finding(s) (${pct}%) — click to see this detector` }),
           ]));
         });
         chartHost.appendChild(chart);
