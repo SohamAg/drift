@@ -5,24 +5,28 @@ After the 2026-06-29 cleanup all native-simulator endpoints (/api/runs,
 along with the simulator. The server now exposes only adapter-shaped
 endpoints:
 
-  GET  /api/adapter-graphs           — list bundled graphs the Test tab can run
-  POST /api/adapter-demo             — run drift_test against a chosen bundled graph
-  POST /api/custom-graph-run         — run drift_test against a user-imported module
-  POST /api/adapter-fork             — fork-edit-replay a completed run at one step
-  POST /api/trace-ask                — ask a free-text question about one captured trace
-  POST /api/save-run                 — persist a run's full JSON so it's loadable later
-  GET  /api/results                  — list saved experiment JSON under results/
-  GET  /api/results/{relpath:path}   — fetch one saved result by path
-  GET  /api/mast-demos               — list curated MAST demo traces
-  POST /api/mast-analyze             — judge one MAST trace (cached or live)
-  GET  /api/targets                  — list the examples/targets/ registry
-  POST /api/suite-run                — run drift against several targets in one pass
-  POST /api/propose-target             — ask an LLM to draft a topology + agent roster from a scenario
-  GET  /api/historical-events          — the real seed dataset for grounding/calibration
-  POST /api/simulate-scenario          — propose + ground + generate + run a verdict for a scenario
-  POST /api/calibrate                  — score a verdict-producing target against real held-out history
-  POST /api/build-target              — generate a LangGraph target from topology + agents
-  POST /api/save-target               — write a generated target to examples/targets/user_generated/
+  GET    /api/adapter-graphs           — list bundled graphs the Test tab can run
+  GET    /api/targets                  — list the examples/targets/ registry
+  GET    /api/detectors                — the full detection surface: library detectors + judge families
+  POST   /api/propose-target           — ask an LLM to draft a topology + agent roster from a scenario
+  GET    /api/historical-events        — the real seed dataset for grounding/calibration
+  POST   /api/simulate-scenario        — propose + ground + generate + run a verdict for a scenario
+  POST   /api/calibrate                — score a verdict-producing target against real held-out history
+  POST   /api/build-target             — generate a LangGraph target from topology + agents
+  POST   /api/save-target              — write a generated target to examples/targets/user_generated/
+  GET    /api/results                  — list saved experiment JSON under results/
+  POST   /api/save-run                 — persist a run's full JSON so it's loadable later
+  GET    /api/overview                 — roll up every saved drift_test-shaped run into one dashboard
+  POST   /api/report                   — render a saved run into the self-contained HTML evidence pack
+  GET    /api/results/{relpath:path}   — fetch one saved result by path
+  DELETE /api/results/{relpath:path}   — delete one saved result by path
+  POST   /api/adapter-demo             — run drift_test against a chosen bundled graph
+  POST   /api/custom-graph-run         — run drift_test against a user-imported module
+  POST   /api/suite-run                — run drift against several targets in one pass
+  POST   /api/trace-ask                — ask a free-text question about one captured trace
+  POST   /api/adapter-fork             — fork-edit-replay a completed run at one step
+  GET    /api/mast-demos               — list curated MAST demo traces (orphaned — no current UI caller)
+  POST   /api/mast-analyze             — judge one MAST trace, cached or live (orphaned — no current UI caller)
 
 The HTML/CSS/JS frontend is served from /web/.
 """
