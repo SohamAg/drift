@@ -79,6 +79,7 @@ Currently shipped:
 |---|---|
 | `verifier_always_approves` | MAST 3.x family + Anthropic engineering blog |
 | `infinite_handoff` | MAST 1.3 + Cognition open problem #2 |
+| `repeated_identical_action` | MAST 1.3 (single-agent) + Anthropic stateful tool-call postmortem |
 | `subagent_fanout_excess` | Anthropic 50-subagent incident |
 | `hallucinated_reference` | MAST 2.x grounding failures + Anthropic subagent hallucination |
 | `contradictory_decisions` | MAST 3.2 + Cognition principle 2 (conflicting decisions carry bad results) |

@@ -18,6 +18,7 @@ from drift.failures.library import (
     infinite_handoff,
     policy_inconsistency_across_steps,
     premature_termination,
+    repeated_identical_action,
     role_drift,
     run_all_on_trace,
     stale_state_reference,
@@ -236,6 +237,106 @@ Agent Alpha: Let's hand it back to you.
     out = infinite_handoff.detect_from_text(transcript)
     assert len(out) == 1
     assert out[0].failure_type == "infinite_handoff"
+
+
+# ---------------------------------------------------------------------------
+# Detector: repeated_identical_action
+# ---------------------------------------------------------------------------
+
+
+def test_repeated_identical_action_positive():
+    """Same agent, exact same update, 3 times in a row."""
+    trace = _trace([
+        ("worker", {"tool_call": "search(query='x')", "result": None}),
+        ("worker", {"tool_call": "search(query='x')", "result": None}),
+        ("worker", {"tool_call": "search(query='x')", "result": None}),
+    ])
+    out = repeated_identical_action.detect(_ctx(trace))
+    assert len(out) == 1
+    assert out[0].failure_type == "repeated_identical_action"
+    assert out[0].agents_involved == ["worker"]
+    assert out[0].timestep == 3
+
+
+def test_repeated_identical_action_negative_when_payload_changes():
+    """Same agent, same tool, but the argument changes each time — not stuck."""
+    trace = _trace([
+        ("worker", {"tool_call": "search(query='x')"}),
+        ("worker", {"tool_call": "search(query='y')"}),
+        ("worker", {"tool_call": "search(query='z')"}),
+    ])
+    out = repeated_identical_action.detect(_ctx(trace))
+    assert out == []
+
+
+def test_repeated_identical_action_negative_when_interleaved():
+    """Same identical payload, but another agent interleaves — not consecutive."""
+    trace = _trace([
+        ("worker", {"tool_call": "search(query='x')"}),
+        ("other", {"note": "..."}),
+        ("worker", {"tool_call": "search(query='x')"}),
+        ("other", {"note": "..."}),
+        ("worker", {"tool_call": "search(query='x')"}),
+    ])
+    out = repeated_identical_action.detect(_ctx(trace))
+    assert out == []
+
+
+def test_repeated_identical_action_negative_below_threshold():
+    """Only 2 repeats — below the default min_repeats=3."""
+    trace = _trace([
+        ("worker", {"tool_call": "search(query='x')"}),
+        ("worker", {"tool_call": "search(query='x')"}),
+    ])
+    out = repeated_identical_action.detect(_ctx(trace))
+    assert out == []
+
+
+def test_repeated_identical_action_ignores_empty_updates():
+    """A node that writes nothing isn't 'repeating an action'."""
+    trace = _trace([
+        ("passthrough", {}),
+        ("passthrough", {}),
+        ("passthrough", {}),
+    ])
+    out = repeated_identical_action.detect(_ctx(trace))
+    assert out == []
+
+
+def test_repeated_identical_action_fires_once_per_run_not_per_step():
+    """5 identical repeats is still ONE finding, not three overlapping ones."""
+    trace = _trace([("worker", {"x": 1})] * 5)
+    out = repeated_identical_action.detect(_ctx(trace))
+    assert len(out) == 1
+
+
+def test_repeated_identical_action_custom_min_repeats():
+    trace = _trace([
+        ("worker", {"tool_call": "x"}),
+        ("worker", {"tool_call": "x"}),
+    ])
+    assert repeated_identical_action.detect(_ctx(trace), min_repeats=2) != []
+    assert repeated_identical_action.detect(_ctx(trace), min_repeats=3) == []
+
+
+def test_repeated_identical_action_text_variant_positive():
+    transcript = """
+Worker: calling search(query='x')
+Worker: calling search(query='x')
+Worker: calling search(query='x')
+"""
+    out = repeated_identical_action.detect_from_text(transcript)
+    assert len(out) == 1
+    assert out[0].failure_type == "repeated_identical_action"
+
+
+def test_repeated_identical_action_text_variant_negative_when_wording_changes():
+    transcript = """
+Worker: calling search(query='x')
+Worker: calling search(query='y')
+Worker: calling search(query='z')
+"""
+    assert repeated_identical_action.detect_from_text(transcript) == []
 
 
 # ---------------------------------------------------------------------------
@@ -809,6 +910,37 @@ def test_specificity_fanout_does_not_trigger_verifier_or_handoff():
     assert "subagent_fanout_excess" in types
     assert "verifier_always_approves" not in types
     assert "infinite_handoff" not in types
+
+
+def test_specificity_repeated_identical_action_does_not_trigger_handoff_or_verifier():
+    trace = _trace([
+        ("worker", {"tool_call": "search(query='x')"}),
+        ("worker", {"tool_call": "search(query='x')"}),
+        ("worker", {"tool_call": "search(query='x')"}),
+    ])
+    out = run_all_on_trace(trace)
+    types = [f.failure_type for f in out]
+    assert "repeated_identical_action" in types
+    assert "infinite_handoff" not in types
+    assert "verifier_always_approves" not in types
+    assert "subagent_fanout_excess" not in types
+
+
+def test_specificity_handoff_fixture_does_not_trigger_repeated_identical_action():
+    """infinite_handoff's alternating fixture has no consecutive same-agent
+    steps, so the single-agent detector must stay quiet on it."""
+    base = {"task": "fix bug", "result": ""}
+    trace = _trace([
+        ("a", {"thinking": "passing to b"}),
+        ("b", {"thinking": "passing to a"}),
+        ("a", {"thinking": "passing to b"}),
+        ("b", {"thinking": "passing to a"}),
+        ("a", {"thinking": "passing to b"}),
+    ], start_state=base)
+    out = run_all_on_trace(trace)
+    types = [f.failure_type for f in out]
+    assert "infinite_handoff" in types
+    assert "repeated_identical_action" not in types
 
 
 def test_specificity_hallucinated_reference_fixture_fires_only_it():

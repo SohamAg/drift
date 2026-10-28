@@ -33,6 +33,7 @@ from drift.failures.library import (
     infinite_handoff,
     policy_inconsistency_across_steps,
     premature_termination,
+    repeated_identical_action,
     role_drift,
     stale_state_reference,
     subagent_fanout_excess,
@@ -50,6 +51,7 @@ from drift.failures.library.base import (
 ALL_DETECTORS = [
     verifier_always_approves,
     infinite_handoff,
+    repeated_identical_action,
     subagent_fanout_excess,
     hallucinated_reference,
     contradictory_decisions,
