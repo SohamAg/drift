@@ -2152,6 +2152,8 @@
     const totalsHost = $('#overview-totals');
     const systemsCard = $('#overview-systems-card');
     const systemsHost = $('#overview-systems');
+    const chartCard = $('#overview-chart-card');
+    const chartHost = $('#overview-chart');
     const findingsCard = $('#overview-findings-card');
     const findingsHost = $('#overview-findings');
     totalsHost.classList.remove('empty');
@@ -2163,6 +2165,7 @@
         totalsHost.classList.add('empty');
         totalsHost.textContent = 'No saved results yet. Run something from the Test tab, or an example script with --save-json.';
         systemsCard.classList.add('hidden');
+        chartCard.classList.add('hidden');
         findingsCard.classList.add('hidden');
         return;
       }
@@ -2181,6 +2184,31 @@
         kv.appendChild(el('span', { class: 'v', text: String(v) }));
       });
       totalsHost.appendChild(kv);
+
+      const findingTypes = data.finding_types || [];
+      chartCard.classList.toggle('hidden', findingTypes.length === 0);
+      chartHost.innerHTML = '';
+      if (findingTypes.length) {
+        const chart = el('div', { class: 'bar-chart' });
+        const maxCount = Math.max(...findingTypes.map(ft => ft.count));
+        const totalCount = findingTypes.reduce((sum, ft) => sum + ft.count, 0);
+        findingTypes.forEach(ft => {
+          const pct = totalCount ? Math.round((ft.count / totalCount) * 100) : 0;
+          const widthPct = maxCount ? (ft.count / maxCount) * 100 : 0;
+          chart.appendChild(el('div', { class: 'bar-chart-row' }, [
+            el('div', { class: 'bar-chart-label' }, [
+              el('span', { class: 'name', text: ft.type }),
+              el('span', { class: 'value', text: String(ft.count) }),
+            ]),
+            el('div', { class: 'bar-chart-track' }, [
+              el('div', { class: 'bar-chart-fill', style: `width: ${widthPct}%;` }),
+            ]),
+            el('div', { class: 'bar-chart-tooltip', text:
+              `${ft.count} of ${totalCount} finding(s) (${pct}%)` }),
+          ]));
+        });
+        chartHost.appendChild(chart);
+      }
 
       systemsCard.classList.toggle('hidden', data.systems.length === 0);
       systemsHost.innerHTML = '';

@@ -621,6 +621,51 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .kv-grid .v { color: var(--fg-strong); font-variant-numeric: tabular-nums; }
 
+/* ------------------------------------------------------ horizontal bar chart */
+/* Magnitude-by-category: single hue (sequential), direct-labeled, no axis
+   needed since every bar already carries its value at the tip. */
+.bar-chart { display: flex; flex-direction: column; gap: 10px; }
+.bar-chart-row { position: relative; }
+.bar-chart-label {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 4px; font-size: 12.5px;
+}
+.bar-chart-label .name { color: var(--fg-strong); font-weight: 500; }
+.bar-chart-label .value { color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
+.bar-chart-track {
+  height: 14px;
+  background: var(--bg-elev-2);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.bar-chart-fill {
+  height: 100%;
+  min-width: 4px;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: filter .12s ease;
+}
+.bar-chart-row:hover .bar-chart-fill { filter: brightness(1.12); }
+.bar-chart-row:hover .bar-chart-label .name { color: var(--fg-strong); }
+.bar-chart-tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--fg-strong);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity .1s ease, transform .1s ease;
+  z-index: 5;
+}
+.bar-chart-row:hover .bar-chart-tooltip { opacity: 1; transform: translateY(0); }
+
 /* ============================================================ LIVE PANEL */
 .live-panel {
   display: flex; flex-direction: column; gap: 14px;
