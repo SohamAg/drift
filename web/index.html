@@ -680,13 +680,48 @@
           <textarea id="simulate-scenario" rows="2"
                     placeholder="e.g. a major chip export ban is announced, affecting an AI chipmaker"></textarea>
         </div>
-        <div class="field">
-          <label class="checkbox-row" for="simulate-ground">
-            <input type="checkbox" id="simulate-ground" checked />
-            Ground in real historical precedent
-            <span class="muted">— retrieves similar real past events before predicting</span>
-          </label>
+
+        <details id="simulate-fleet-setup" open>
+          <summary><strong>Fleet setup</strong> <span class="muted">— who's on the team, and what they each look at</span></summary>
+
+          <div class="field" style="margin-top: 10px;">
+            <label for="simulate-topology">Topology</label>
+            <select id="simulate-topology">
+              <option value="supervisor">Supervisor — a coordinator delegates to specialists in sequence, then synthesizes</option>
+              <option value="swarm">Swarm — agents hand off directly to each other, no central router</option>
+              <option value="pipeline">Pipeline — fixed sequential stages, each building on the last</option>
+              <option value="loop">Loop — two agents (generator, critic) cycle until the critic approves</option>
+              <option value="fanout" selected>Fanout — one dispatcher, several workers in parallel, then a merge</option>
+            </select>
+            <p class="help" id="simulate-topology-hint"></p>
+          </div>
+
+          <div class="field">
+            <label>Agents</label>
+            <div id="simulate-agent-rows"></div>
+            <div class="row" style="gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap;">
+              <button type="button" id="simulate-add-agent" class="ghost-btn sm">+ Add agent</button>
+              <button type="button" id="simulate-suggest-fleet" class="ghost-btn sm">Suggest fleet from scenario</button>
+              <button type="button" id="simulate-reset-fleet" class="ghost-btn sm">Reset to default fleet</button>
+              <span id="simulate-suggest-status" class="muted"></span>
+            </div>
+          </div>
+        </details>
+
+        <div class="row two-col" style="margin-top: 12px;">
+          <div class="field">
+            <label class="checkbox-row" for="simulate-ground">
+              <input type="checkbox" id="simulate-ground" checked />
+              Ground in real historical precedent
+              <span class="muted">— retrieves similar real past events before predicting</span>
+            </label>
+          </div>
+          <div class="field">
+            <label for="simulate-k">Analogues to retrieve</label>
+            <input type="number" id="simulate-k" value="3" min="1" max="11" />
+          </div>
         </div>
+
         <div class="actions">
           <button type="button" id="simulate-run" class="primary">Simulate</button>
           <span id="simulate-status" class="muted"></span>

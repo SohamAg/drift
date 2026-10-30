@@ -2021,6 +2021,16 @@
   let _simulateWired = false;
   let _lastSimulateResult = null;
 
+  // Fleet-setup state. Seeded from the server's default stock-reaction
+  // roster on first load (so "Reset to default fleet" has something real
+  // to reset to, not a hardcoded second copy of the same data) and from
+  // there edited freely by the user — add/remove agents, change topology,
+  // or let "Suggest fleet from scenario" (the same /api/propose-target
+  // the Build tab uses) draft a starting point to edit from.
+  let _simulateAgents = [];
+  let _simulateDefaultTopology = 'fanout';
+  let _simulateDefaultAgents = [];
+
   function initSimulate() {
     if (_simulateWired) return;
     _simulateWired = true;
@@ -2029,6 +2039,10 @@
     $('#simulate-download-json').addEventListener('click', () => {
       if (_lastSimulateResult) downloadJson(_lastSimulateResult, `simulate_${Date.now()}.json`);
     });
+    $('#simulate-topology').addEventListener('change', onSimulateTopologyChange);
+    $('#simulate-add-agent').addEventListener('click', addSimulateAgentRow);
+    $('#simulate-suggest-fleet').addEventListener('click', suggestSimulateFleet);
+    $('#simulate-reset-fleet').addEventListener('click', resetSimulateFleet);
     loadHistoricalEvents();
   }
 
@@ -2051,8 +2065,101 @@
         ]));
       });
       host.appendChild(list);
+
+      if (data.default_topology && data.default_agents) {
+        _simulateDefaultTopology = data.default_topology;
+        _simulateDefaultAgents = data.default_agents.map(a => ({ ...a }));
+        resetSimulateFleet();
+      }
     } catch (e) {
       host.textContent = 'Failed to load historical events: ' + e.message;
+    }
+  }
+
+  function resetSimulateFleet() {
+    $('#simulate-topology').value = _simulateDefaultTopology;
+    _simulateAgents = _simulateDefaultAgents.map(a => ({ ...a }));
+    renderSimulateAgentRows();
+  }
+
+  function onSimulateTopologyChange() {
+    const topology = $('#simulate-topology').value;
+    const meta = BUILD_TOPOLOGY_META[topology];
+    $('#simulate-topology-hint').textContent = meta.hint;
+    // No domain-specific default roster for topologies other than the
+    // stock-reaction fanout default — fall back to the same generic
+    // per-topology starting point the Build tab uses.
+    _simulateAgents = BUILD_DEFAULT_AGENTS[topology].map(a => ({ ...a }));
+    renderSimulateAgentRows();
+  }
+
+  function renderSimulateAgentRows() {
+    const topology = $('#simulate-topology').value;
+    const meta = BUILD_TOPOLOGY_META[topology];
+    $('#simulate-topology-hint').textContent = meta.hint;
+    const host = $('#simulate-agent-rows');
+    host.innerHTML = '';
+    _simulateAgents.forEach((agent, i) => {
+      const nameInput = el('input', { type: 'text', value: agent.name, placeholder: 'agent name' });
+      nameInput.addEventListener('input', () => { _simulateAgents[i].name = nameInput.value; });
+      const roleInput = el('textarea', { class: 'mono', rows: '2', text: agent.role,
+        placeholder: 'what this agent should do' });
+      roleInput.addEventListener('input', () => { _simulateAgents[i].role = roleInput.value; });
+      const removeBtn = el('button', {
+        type: 'button', class: 'ghost-btn sm', text: '✕',
+        onclick: () => removeSimulateAgentRow(i),
+      });
+      if (_simulateAgents.length <= meta.min) {
+        removeBtn.disabled = true;
+      }
+      host.appendChild(el('div', {
+        class: 'row', style: 'display: grid; grid-template-columns: 1fr 2fr auto; gap: 8px; align-items: start; margin-bottom: 8px;',
+      }, [nameInput, roleInput, removeBtn]));
+    });
+    const addBtn = $('#simulate-add-agent');
+    addBtn.disabled = meta.max != null && _simulateAgents.length >= meta.max;
+  }
+
+  function addSimulateAgentRow() {
+    const topology = $('#simulate-topology').value;
+    const meta = BUILD_TOPOLOGY_META[topology];
+    if (meta.max != null && _simulateAgents.length >= meta.max) return;
+    _simulateAgents.push({ name: '', role: '' });
+    renderSimulateAgentRows();
+  }
+
+  function removeSimulateAgentRow(index) {
+    const topology = $('#simulate-topology').value;
+    const meta = BUILD_TOPOLOGY_META[topology];
+    if (_simulateAgents.length <= meta.min) return;
+    _simulateAgents.splice(index, 1);
+    renderSimulateAgentRows();
+  }
+
+  async function suggestSimulateFleet() {
+    const scenario = ($('#simulate-scenario').value || '').trim();
+    if (!scenario) return toast('Describe a scenario first', 'error');
+
+    const btn = $('#simulate-suggest-fleet');
+    const status = $('#simulate-suggest-status');
+    btn.disabled = true;
+    status.textContent = 'thinking…';
+    try {
+      const data = await api('/api/propose-target', {
+        method: 'POST',
+        body: { scenario },
+      });
+      $('#simulate-topology').value = data.topology;
+      _simulateAgents = data.agents.map(a => ({ name: a.name, role: a.role }));
+      renderSimulateAgentRows();
+      status.textContent = data.rationale
+        ? `drafted (${data.topology}): ${data.rationale}`
+        : `drafted — review the roster below, then Simulate`;
+    } catch (e) {
+      toast('Suggest failed: ' + e.message, 'error');
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
     }
   }
 
@@ -2060,19 +2167,25 @@
     const scenario = ($('#simulate-scenario').value || '').trim();
     if (!scenario) return toast('Describe a scenario first', 'error');
     const ground = $('#simulate-ground').checked;
+    const k = parseInt($('#simulate-k').value, 10) || 3;
+    const topology = $('#simulate-topology').value;
+    const agents = _simulateAgents.filter(a => a.name.trim() && a.role.trim());
+    if (agents.length !== _simulateAgents.length) {
+      return toast('Every agent needs a name and a role — fill in or remove blank rows', 'error');
+    }
 
     const btn = $('#simulate-run');
     const status = $('#simulate-status');
     btn.disabled = true;
-    status.textContent = 'thinking — proposing a roster, grounding, then running the simulation (can take a minute)…';
+    status.textContent = 'running the fleet — grounding, then debating (can take a minute)…';
     try {
       const data = await api('/api/simulate-scenario', {
         method: 'POST',
-        body: { scenario, ground },
+        body: { scenario, ground, k, topology, agents },
       });
       _lastSimulateResult = data;
       renderSimulateResult(data);
-      status.textContent = `done — ${data.topology} topology`;
+      status.textContent = `done — ${data.topology} topology, ${data.agents.length} agent(s)`;
     } catch (e) {
       toast('Simulate failed: ' + e.message, 'error');
       status.textContent = '';
@@ -2090,10 +2203,11 @@
     const verdict = data.verdict || {};
     const directionPill = verdict.direction === 'up' ? 'success'
       : verdict.direction === 'down' ? 'danger' : 'same';
+    const agents = data.agents || [];
     const kvs = [
-      ['Topology', data.topology],
-      ['Why this topology', data.rationale],
+      ['Fleet', `${data.topology} — ${agents.map(a => a.name).join(', ') || '(none)'}`],
     ];
+    if (data.rationale) kvs.push(['Why this fleet', data.rationale]);
     kvs.forEach(([k, v]) => {
       verdictHost.appendChild(el('span', { class: 'k', text: k }));
       verdictHost.appendChild(el('span', { class: 'v', text: v || '—' }));
