@@ -66,10 +66,23 @@ class _FakeModule:
 def test_list_historical_events_returns_the_real_dataset(client: TestClient) -> None:
     resp = client.get("/api/historical-events")
     assert resp.status_code == 200
-    events = resp.json()["events"]
+    data = resp.json()
+    events = data["events"]
     assert len(events) >= 5
     tickers = {e["ticker"] for e in events}
     assert "META" in tickers
+
+
+def test_list_historical_events_includes_the_default_fleet(client: TestClient) -> None:
+    from drift.historical_grounding import (
+        DEFAULT_STOCK_REACTION_AGENTS,
+        DEFAULT_STOCK_REACTION_TOPOLOGY,
+    )
+
+    data = client.get("/api/historical-events").json()
+    assert data["default_topology"] == DEFAULT_STOCK_REACTION_TOPOLOGY
+    assert data["default_agents"] == list(DEFAULT_STOCK_REACTION_AGENTS)
+    assert all({"name", "role"} <= a.keys() for a in data["default_agents"])
 
 
 def test_simulate_scenario_end_to_end_wiring(
@@ -104,6 +117,67 @@ def test_simulate_scenario_end_to_end_wiring(
     assert data["verdict"] == {"direction": "up", "confidence": "high"}
     assert data["grounded_on"][0]["ticker"] == "NVDA"
     assert "code" in data
+
+
+def test_simulate_scenario_with_user_configured_fleet_skips_proposal(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the caller supplies both topology and agents (the fleet-setup
+    override), propose_target is never called — the configured fleet runs
+    exactly as given, and the response echoes it back with no rationale."""
+    def fail_if_called(*a, **k):
+        raise AssertionError("propose_target should not be called")
+    monkeypatch.setattr(target_builder_module, "propose_target", fail_if_called)
+
+    async def fake_retrieve(scenario, events=None, *, k=3, model="gpt-4o-mini"):
+        return [SAMPLE_EVENT]
+    monkeypatch.setattr(grounding_module, "retrieve_similar_events", fake_retrieve)
+
+    monkeypatch.setattr(
+        server_module, "_load_generated_module",
+        lambda code, label: _FakeModule({"direction": "flat"}),
+    )
+
+    custom_agents = [
+        {"name": "macro_analyst", "role": "assess macro conditions"},
+        {"name": "verdict_synth", "role": "synthesize a verdict"},
+    ]
+    resp = client.post("/api/simulate-scenario", json={
+        "scenario": "something happens",
+        "topology": "pipeline",
+        "agents": custom_agents,
+    })
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["topology"] == "pipeline"
+    assert data["agents"] == custom_agents
+    assert data["rationale"] == ""
+
+
+def test_simulate_scenario_passes_k_to_retrieval(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_propose(scenario, *, model):
+        return ProposedTarget(topology="pipeline", agents=[
+            {"name": "a", "role": "x"}, {"name": "b", "role": "y"},
+        ])
+    monkeypatch.setattr(target_builder_module, "propose_target", fake_propose)
+
+    captured = {}
+
+    async def fake_retrieve(scenario, events=None, *, k=3, model="gpt-4o-mini"):
+        captured["k"] = k
+        return [SAMPLE_EVENT]
+    monkeypatch.setattr(grounding_module, "retrieve_similar_events", fake_retrieve)
+
+    monkeypatch.setattr(
+        server_module, "_load_generated_module",
+        lambda code, label: _FakeModule({"direction": "flat"}),
+    )
+
+    resp = client.post("/api/simulate-scenario", json={"scenario": "x", "k": 7})
+    assert resp.status_code == 200, resp.text
+    assert captured["k"] == 7
 
 
 def test_simulate_scenario_without_grounding_skips_retrieval(

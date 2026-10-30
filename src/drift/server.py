@@ -307,10 +307,28 @@ class SimulateScenarioRequest(BaseModel):
     precedent, generate a verdict-producing target, and actually run it
     — one call, ephemeral (nothing saved to disk; pass the returned
     `code` to /api/save-target if you want to keep it). Backs the
-    Historical Grounding / "Simulate" panel."""
+    Historical Grounding / "Simulate" panel.
+
+    `topology`/`agents` are optional — the "fleet setup" override. When
+    both are supplied, they're used as-is (no AI proposal call at all),
+    so the user's edited fleet is exactly what runs. When either is
+    omitted, falls back to the original behavior: propose_target drafts
+    the fleet from the scenario text. This is the same shape
+    CalibrateRequest already uses for the same reason — the two
+    "run a verdict simulation" surfaces (ad-hoc scenario, repeatable
+    calibration) share one fleet-override convention.
+    """
     scenario: str
     ground: bool = True
     model: str = "gpt-4o-mini"
+    topology: str | None = None
+    agents: list[dict[str, str]] | None = None
+    # How many historical analogues to retrieve when ground=True. Upper
+    # bound is a generous sanity cap, not tied to the current seed
+    # dataset size (drift.historical_grounding.HISTORICAL_EVENTS grows
+    # over time) — asking for more than exist just returns everything
+    # available, handled gracefully by retrieve_similar_events itself.
+    k: int = Field(default=3, ge=1, le=20)
 
 
 class CalibrateRequest(BaseModel):
@@ -965,14 +983,27 @@ def create_app() -> FastAPI:
     def list_historical_events() -> dict[str, Any]:
         """The real, verified seed dataset (drift.historical_grounding) —
         what retrieval-grounding draws analogues from and what
-        /api/calibrate scores against."""
-        from drift.historical_grounding import load_events
+        /api/calibrate scores against. Also returns the default
+        stock-reaction fleet (topology + roster) /api/calibrate falls
+        back to, so the Simulate tab's fleet-setup UI can pre-fill a
+        sensible starting team without hardcoding its own copy that
+        could drift out of sync with the real default."""
+        from drift.historical_grounding import (
+            DEFAULT_STOCK_REACTION_AGENTS,
+            DEFAULT_STOCK_REACTION_TOPOLOGY,
+            load_events,
+        )
 
-        return {"events": [e.to_json() for e in load_events()]}
+        return {
+            "events": [e.to_json() for e in load_events()],
+            "default_topology": DEFAULT_STOCK_REACTION_TOPOLOGY,
+            "default_agents": list(DEFAULT_STOCK_REACTION_AGENTS),
+        }
 
     @app.post("/api/simulate-scenario")
     async def simulate_scenario(req: SimulateScenarioRequest) -> dict[str, Any]:
-        """Propose a roster for a scenario, optionally ground it in real
+        """Optionally propose a roster for a scenario (or use the fleet
+        the caller already configured), optionally ground it in real
         historical precedent, generate a verdict-producing target, and
         run it once. Ephemeral — nothing is saved to disk; the returned
         `code` can be passed to /api/save-target if the user wants to
@@ -991,15 +1022,22 @@ def create_app() -> FastAPI:
             propose_target,
         )
 
-        try:
-            proposal = await propose_target(req.scenario, model=req.model)
-        except ScenarioProposalError as e:
-            raise HTTPException(400, str(e))
+        rationale = ""
+        if req.topology and req.agents:
+            # User-configured fleet — run exactly what they set up, no AI
+            # drafting call at all.
+            topology, agents = req.topology, req.agents
+        else:
+            try:
+                proposal = await propose_target(req.scenario, model=req.model)
+            except ScenarioProposalError as e:
+                raise HTTPException(400, str(e))
+            topology, agents, rationale = proposal.topology, proposal.agents, proposal.rationale
 
         analogues = []
         if req.ground:
             try:
-                analogues = await retrieve_similar_events(req.scenario, model=req.model)
+                analogues = await retrieve_similar_events(req.scenario, model=req.model, k=req.k)
             except GroundingError as e:
                 raise HTTPException(400, f"grounding failed: {e}")
 
@@ -1007,7 +1045,7 @@ def create_app() -> FastAPI:
 
         try:
             code = generate_target_source(
-                proposal.topology, proposal.agents, model=req.model,
+                topology, agents, model=req.model,
                 verdict_schema=STOCK_VERDICT_SCHEMA,
             )
         except TargetBuilderError as e:
@@ -1022,8 +1060,9 @@ def create_app() -> FastAPI:
             raise HTTPException(502, f"simulation run failed: {type(e).__name__}: {e}")
 
         return {
-            "topology": proposal.topology,
-            "rationale": proposal.rationale,
+            "topology": topology,
+            "agents": agents,
+            "rationale": rationale,
             "verdict": final_state.get("verdict", {}),
             "notes": final_state.get("notes", {}),
             "grounded_on": [a.to_json() for a in analogues],
