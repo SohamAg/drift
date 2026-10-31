@@ -816,7 +816,7 @@
         text: 'stopped early — final_state is a snapshot, not completion' }));
     }
     if (branch.crashed) {
-      box.appendChild(el('div', { class: 'pill danger', text: 'CRASHED' }));
+      box.appendChild(el('div', { class: 'pill danger', text: 'Crashed' }));
       box.appendChild(el('pre', { class: 'mono', text: `${branch.error_type}: ${branch.error}` }));
       return box;
     }
@@ -941,7 +941,7 @@
     const b = data.baseline;
     if (b.crashed) {
       base.appendChild(el('div', {}, [
-        el('span', { class: 'pill danger', text: 'BASELINE CRASHED' }),
+        el('span', { class: 'pill danger', text: 'Baseline crashed' }),
         el('div', { class: 'mono', style: 'margin-top: 8px;', text: `${b.error_type}: ${b.error}` }),
       ]));
     } else {
@@ -999,15 +999,15 @@
     let pillClass, pillText, detail;
     if (p.crashed) {
       pillClass = 'pill danger';
-      pillText  = `CRASH · ${p.error_type}`;
+      pillText  = `Crash · ${p.error_type}`;
       detail = p.error;
     } else if (p.diverged) {
       pillClass = 'pill warning';
-      pillText  = 'DIVERGE';
+      pillText  = 'Diverge';
       detail = p.divergence_summary;
     } else {
       pillClass = 'pill success';
-      pillText  = 'UNCHANGED';
+      pillText  = 'Unchanged';
       if (filtered.length) {
         const reasons = [
           filtered.filter(d => d.tier === 2).length && `${filtered.filter(d => d.tier === 2).length} within noise band`,
@@ -1022,19 +1022,18 @@
     const findingBadges = [];
     if ((p.coordination_findings || []).length) {
       findingBadges.push(el('span', {
-        class: 'pill info',
-        style: 'background:#854d0e22;color:#a16207;',
-        text: `COORD×${p.coordination_findings.length}`,
+        class: 'pill coord',
+        text: `Coord × ${p.coordination_findings.length}`,
       }));
     }
     if ((p.judge_findings || []).length) {
-      findingBadges.push(el('span', { class: 'pill info', text: `JUDGE×${p.judge_findings.length}` }));
+      findingBadges.push(el('span', { class: 'pill info', text: `Judge × ${p.judge_findings.length}` }));
     }
     if (filtered.length) {
       findingBadges.push(el('span', {
         class: 'pill info',
         style: 'background:var(--bg-elev-2);color:var(--fg-muted);border:1px dashed var(--fg-muted);',
-        text: `FILTERED×${filtered.length}`,
+        text: `Filtered × ${filtered.length}`,
         title: 'Tier-2/3 candidates the cascade dropped. Expand to see why.',
       }));
     }
@@ -1101,10 +1100,10 @@
 
   function renderCoordFinding(f) {
     return el('div', {
-      style: 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid #a16207; background: #854d0e11; border-radius: 3px;',
+      style: 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 3px;',
     }, [
       el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 2px; flex-wrap: wrap;' }, [
-        el('span', { class: 'pill info', style: 'background:#854d0e22;color:#a16207;', text: 'COORD' }),
+        el('span', { class: 'pill coord', text: 'Coord' }),
         renderFindingTypeBadge(f.failure_type),
         (f.agents_involved && f.agents_involved.length)
           ? el('span', { class: 'muted', style: 'font-size: 11px;',
@@ -1126,7 +1125,7 @@
     if (d.similarity_score != null) meta.push(`sim=${d.similarity_score.toFixed(2)}`);
     if (d.within_noise_band != null) meta.push(`noise=${d.within_noise_band ? 'within' : 'outside'}`);
     if (d.judge_equivalent != null) meta.push(`judge=${d.judge_equivalent ? 'equivalent' : 'different'}`);
-    return el('div', { style: 'margin-top: 4px; padding: 4px 8px; border-left: 2px solid var(--fg-muted); background: var(--bg-elev-1); border-radius: 3px;' }, [
+    return el('div', { style: 'margin-top: 4px; padding: 4px 8px; border-left: 2px solid var(--fg-muted); background: var(--bg-elev-2); border-radius: 3px;' }, [
       el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 2px;' }, [
         el('span', { class: tierClass, text: tierLabel }),
         el('code', { text: d.name }),
@@ -1152,7 +1151,7 @@
         el('span', {
           class: 'pill info',
           style: 'background:var(--bg-elev-2);color:var(--fg-muted);border:1px dashed var(--fg-muted);',
-          text: `FILTERED t${d.tier}`,
+          text: `Filtered t${d.tier}`,
         }),
         el('code', { text: d.name }),
         el('span', { class: 'muted', style: 'font-size: 11px;', text: filterReason }),
@@ -1170,7 +1169,7 @@
   function renderJudgeFinding(f) {
     return el('div', { style: 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid var(--info); background: var(--bg-elev-2); border-radius: 3px;' }, [
       el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 2px;' }, [
-        el('span', { class: 'pill info', text: 'JUDGE' }),
+        el('span', { class: 'pill info', text: 'Judge' }),
         renderFindingTypeBadge(f.failure_type),
       ]),
       el('div', { class: 'mono', style: 'white-space: pre-wrap; word-break: break-word; font-size: 12px;', text: f.summary || '' }),
