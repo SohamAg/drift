@@ -56,7 +56,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
         raise SystemExit(
             f"web dependencies not installed ({e}). Install with: pip install drift[web]"
         )
-    print(f"drift web UI on http://{args.host}:{args.port}/")
+    browser_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+    url = f"http://{browser_host}:{args.port}/"
+    print(f"drift web UI on {url}")
+    if not args.no_browser:
+        import threading
+        import webbrowser
+
+        def _open_browser() -> None:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass  # headless/no-display environment — the printed URL still works
+
+        threading.Timer(1.0, _open_browser).start()
     serve(host=args.host, port=args.port, reload=args.reload)
     return 0
 
@@ -135,6 +148,10 @@ def main(argv: list[str] | None = None) -> int:
     srv_p.add_argument("--host", default="127.0.0.1")
     srv_p.add_argument("--port", type=int, default=8765)
     srv_p.add_argument("--reload", action="store_true", help="auto-reload on code changes (dev)")
+    srv_p.add_argument(
+        "--no-browser", action="store_true",
+        help="don't automatically open the dashboard in a browser on startup",
+    )
 
     rep_p = sub.add_parser(
         "report",
