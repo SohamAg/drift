@@ -21,6 +21,7 @@ from drift.historical_grounding import (
     build_grounded_query,
     load_events,
     retrieve_similar_events,
+    weighted_baseline,
 )
 
 
@@ -138,3 +139,56 @@ def test_build_grounded_query_with_no_analogues_still_includes_scenario():
     query = build_grounded_query("Will the stock move?", [])
     assert "Will the stock move?" in query
     assert "Relevant historical precedents" not in query
+
+
+# ---------------------------------------------------------------- weighted_baseline
+
+UP_EVENT = HistoricalEvent("NVDA", "d1", "d2", "up event", 100.0, 124.0, 24.0)
+DOWN_EVENT = HistoricalEvent("META", "d1", "d2", "down event", 100.0, 74.0, -26.0)
+
+
+def test_weighted_baseline_with_no_analogues_is_none():
+    baseline = weighted_baseline([])
+    assert baseline.direction is None
+    assert baseline.magnitude_pct is None
+    assert baseline.contributions == []
+
+
+def test_weighted_baseline_single_analogue_matches_it_exactly():
+    baseline = weighted_baseline([UP_EVENT])
+    assert baseline.direction == "up"
+    assert baseline.magnitude_pct == pytest.approx(24.0)
+    assert len(baseline.contributions) == 1
+    assert baseline.contributions[0]["weight"] == pytest.approx(1.0)
+
+
+def test_weighted_baseline_default_rank_decay_favors_first_analogue():
+    # Default weights are 1/(i+1): the first (most-relevant) analogue
+    # gets more than twice the second's weight, so its direction wins
+    # even though it's a 1-1 tie by raw count.
+    baseline = weighted_baseline([UP_EVENT, DOWN_EVENT])
+    assert baseline.direction == "up"
+    # weighted average: (1*24 + 0.5*-26) / 1.5
+    assert baseline.magnitude_pct == pytest.approx((1.0 * 24.0 + 0.5 * -26.0) / 1.5)
+
+
+def test_weighted_baseline_custom_weights_can_flip_the_vote():
+    baseline = weighted_baseline([UP_EVENT, DOWN_EVENT], weights=[1.0, 5.0])
+    assert baseline.direction == "down"
+
+
+def test_weighted_baseline_rejects_mismatched_weight_length():
+    with pytest.raises(ValueError):
+        weighted_baseline([UP_EVENT, DOWN_EVENT], weights=[1.0])
+
+
+def test_weighted_baseline_rejects_non_positive_weight_sum():
+    with pytest.raises(ValueError):
+        weighted_baseline([UP_EVENT, DOWN_EVENT], weights=[0.0, 0.0])
+
+
+def test_weighted_baseline_to_json_shape():
+    baseline = weighted_baseline([UP_EVENT])
+    d = baseline.to_json()
+    assert d["direction"] == "up"
+    assert d["contributions"][0]["event"]["ticker"] == "NVDA"

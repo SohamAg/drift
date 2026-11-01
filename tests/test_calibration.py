@@ -195,3 +195,60 @@ def test_calibration_report_to_json_shape():
     assert d["n_scored"] == 1
     assert d["accuracy"] == 1.0
     assert d["results"][0]["event"]["ticker"] == "NVDA"
+
+
+def test_calibration_report_baseline_accuracy_shape():
+    report = CalibrationReport(results=[
+        CalibrationResult(event=UP_EVENT, predicted_direction="up", matched=True,
+                           baseline_direction="up", baseline_matched=True),
+        CalibrationResult(event=DOWN_EVENT, predicted_direction="up", matched=False,
+                           baseline_direction="down", baseline_matched=True),
+    ])
+    assert report.n_baseline_scored == 2
+    assert report.n_baseline_matched == 2
+    assert report.baseline_accuracy == 1.0
+    # agent accuracy is a separate number from baseline accuracy — the
+    # whole point is comparing them.
+    assert report.accuracy == 0.5
+
+
+def test_calibration_report_baseline_accuracy_is_none_when_ungrounded():
+    report = CalibrationReport(results=[
+        CalibrationResult(event=UP_EVENT, predicted_direction="up", matched=True),
+    ])
+    assert report.n_baseline_scored == 0
+    assert report.baseline_accuracy is None
+
+
+def test_run_calibration_computes_baseline_from_leave_one_out_analogues(monkeypatch: pytest.MonkeyPatch):
+    # NVDA (up) is scored; its grounding pool (leave-one-out) is just
+    # DOWN_EVENT and FLAT_EVENT, and retrieval is faked to return the
+    # down-moving analogue as the only one retrieved — the baseline
+    # should then predict "down", independent of whatever the agent says.
+    async def fake_retrieve(scenario, events=None, *, k=3, model="gpt-4o-mini"):
+        return [DOWN_EVENT]
+    monkeypatch.setattr(calibration_module, "retrieve_similar_events", fake_retrieve)
+
+    def build_fn(model):
+        return _FakeGraph({"direction": "up"})  # agent disagrees with the baseline
+
+    report = asyncio.run(run_calibration(
+        build_fn, lambda query: {"task": query},
+        events=[UP_EVENT, DOWN_EVENT, FLAT_EVENT], ground=True,
+    ))
+    nvda_result = next(r for r in report.results if r.event is UP_EVENT)
+    assert nvda_result.predicted_direction == "up"
+    assert nvda_result.matched is True
+    assert nvda_result.baseline_direction == "down"
+    assert nvda_result.baseline_matched is False  # NVDA's real outcome was "up"
+
+
+def test_run_calibration_baseline_is_none_when_ungrounded():
+    def build_fn(model):
+        return _FakeGraph({"direction": "up"})
+
+    report = asyncio.run(run_calibration(
+        build_fn, lambda query: {"task": query}, events=[UP_EVENT, DOWN_EVENT], ground=False,
+    ))
+    assert all(r.baseline_direction is None for r in report.results)
+    assert report.baseline_accuracy is None

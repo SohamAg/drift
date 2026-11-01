@@ -1014,6 +1014,7 @@ def create_app() -> FastAPI:
             GroundingError,
             build_grounded_query,
             retrieve_similar_events,
+            weighted_baseline,
         )
         from drift.target_builder import (
             ScenarioProposalError,
@@ -1059,6 +1060,8 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(502, f"simulation run failed: {type(e).__name__}: {e}")
 
+        baseline = weighted_baseline(analogues) if analogues else None
+
         return {
             "topology": topology,
             "agents": agents,
@@ -1066,6 +1069,12 @@ def create_app() -> FastAPI:
             "verdict": final_state.get("verdict", {}),
             "notes": final_state.get("notes", {}),
             "grounded_on": [a.to_json() for a in analogues],
+            # A weighted vote/average over grounded_on's REAL outcomes —
+            # pure arithmetic, no LLM — for comparing against `verdict`
+            # above. Default rank-decay weights; a UI can recompute this
+            # client-side with its own weights using the same
+            # grounded_on data, since the formula is just arithmetic.
+            "baseline": baseline.to_json() if baseline else None,
             "code": code,
         }
 

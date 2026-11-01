@@ -2200,6 +2200,79 @@
     }
   }
 
+  // A weighted vote (direction) + weighted average (magnitude) over
+  // analogues' REAL outcomes — mirrors drift.historical_grounding.
+  // weighted_baseline() exactly, so a weight slider can recompute this
+  // live in the browser without a round trip (it's pure arithmetic over
+  // data the server already sent in `grounded_on`).
+  function computeWeightedBaseline(analogues, weights) {
+    if (!analogues.length) return { direction: null, magnitude_pct: null };
+    const total = weights.reduce((s, w) => s + w, 0) || 1;
+    const norm = weights.map(w => w / total);
+    const scores = { up: 0, down: 0, flat: 0 };
+    let magnitude = 0;
+    analogues.forEach((e, i) => {
+      scores[e.actual_direction] += norm[i];
+      magnitude += norm[i] * e.actual_move_pct;
+    });
+    const direction = Object.keys(scores).reduce((a, b) => (scores[b] > scores[a] ? b : a));
+    return { direction, magnitude_pct: magnitude };
+  }
+
+  function renderSimulateBaseline(analogues) {
+    const host = $('#simulate-baseline');
+    const body = $('#simulate-baseline-body');
+    body.innerHTML = '';
+    if (!analogues.length) {
+      host.classList.add('hidden');
+      return;
+    }
+    host.classList.remove('hidden');
+
+    const defaultWeights = analogues.map((_, i) => 1 / (i + 1));
+    const weights = defaultWeights.slice();
+
+    const resultLine = el('div', { class: 'kv-grid', style: 'margin-bottom: 10px;' });
+    const rows = el('div', { class: 'trace-list' });
+
+    function repaint() {
+      const r = computeWeightedBaseline(analogues, weights);
+      const directionPill = r.direction === 'up' ? 'success' : r.direction === 'down' ? 'danger' : 'same';
+      resultLine.innerHTML = '';
+      resultLine.appendChild(el('span', { class: 'k', text: 'Baseline direction' }));
+      resultLine.appendChild(el('span', { class: 'v' }, [
+        el('span', { class: `pill ${directionPill}`, text: r.direction || 'unknown' }),
+      ]));
+      resultLine.appendChild(el('span', { class: 'k', text: 'Baseline magnitude' }));
+      resultLine.appendChild(el('span', { class: 'v', text: `${r.magnitude_pct.toFixed(1)}%` }));
+    }
+
+    analogues.forEach((e, i) => {
+      const weightInput = el('input', {
+        type: 'number', min: '0', step: '0.1', value: String(weights[i]),
+        style: 'width: 70px;',
+        oninput: (ev) => { weights[i] = Math.max(0, parseFloat(ev.target.value) || 0); repaint(); },
+      });
+      rows.appendChild(el('div', { class: 'trace-step', style: 'grid-template-columns: 1fr auto; cursor: default;' }, [
+        el('div', { class: 'trace-step-body' }, [
+          el('div', { class: 'trace-step-node', text: `${e.ticker} — ${e.reaction_date}` }),
+          el('div', { class: 'trace-step-summary', text:
+            `${e.actual_move_pct > 0 ? '+' : ''}${e.actual_move_pct.toFixed(1)}% (${e.actual_direction})` }),
+        ]),
+        el('div', { style: 'display: flex; align-items: center; gap: 6px;' }, [
+          el('span', { class: 'muted', style: 'font-size: 11px;', text: 'weight' }),
+          weightInput,
+        ]),
+      ]));
+    });
+
+    repaint();
+    body.appendChild(resultLine);
+    body.appendChild(el('p', { class: 'help', text:
+      'Default weight is rank-decay (1/rank) — the most relevant analogue counts most. Edit any weight to see the baseline move; this recomputes instantly, no server call.' }));
+    body.appendChild(rows);
+  }
+
   function renderSimulateResult(data) {
     const card = $('#simulate-result');
     card.classList.remove('hidden');
@@ -2253,6 +2326,8 @@
       groundingHost.classList.add('hidden');
     }
 
+    renderSimulateBaseline(analogues);
+
     $('#simulate-notes').textContent = JSON.stringify(data.notes || {}, null, 2);
     card.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
@@ -2270,7 +2345,8 @@
       });
       renderCalibrationResult(data);
       const pct = data.accuracy != null ? `${(data.accuracy * 100).toFixed(0)}%` : 'n/a';
-      status.textContent = `done — accuracy ${pct} (${data.n_matched}/${data.n_scored} scored, ${data.n_total} total)`;
+      const basePct = data.baseline_accuracy != null ? `${(data.baseline_accuracy * 100).toFixed(0)}%` : 'n/a';
+      status.textContent = `done — agents ${pct} vs. statistical baseline ${basePct} (${data.n_matched}/${data.n_scored} scored, ${data.n_total} total)`;
     } catch (e) {
       toast('Calibration failed: ' + e.message, 'error');
       status.textContent = '';
@@ -2285,19 +2361,41 @@
     host.classList.remove('hidden');
 
     const pct = data.accuracy != null ? `${(data.accuracy * 100).toFixed(0)}%` : 'n/a';
-    host.appendChild(el('div', { style: 'font-weight: 600; margin-bottom: 8px;',
-      text: `Accuracy: ${pct} (${data.n_matched}/${data.n_scored} scored correctly, ${data.n_total} events total)` }));
+    const basePct = data.baseline_accuracy != null ? `${(data.baseline_accuracy * 100).toFixed(0)}%` : 'n/a';
+
+    const stats = el('div', { class: 'stat-row', style: 'margin-bottom: 12px;' }, [
+      el('div', { class: 'stat-tile' }, [
+        el('span', { class: 'stat-value', text: pct }),
+        el('span', { class: 'stat-label', text: `agent debate (${data.n_matched}/${data.n_scored})` }),
+      ]),
+      el('div', { class: 'stat-tile' }, [
+        el('span', { class: 'stat-value', text: basePct }),
+        el('span', { class: 'stat-label', text: `statistical baseline (${data.n_baseline_matched}/${data.n_baseline_scored})` }),
+      ]),
+    ]);
+    host.appendChild(stats);
+    if (data.baseline_accuracy != null) {
+      host.appendChild(el('p', { class: 'help', style: 'margin-bottom: 10px;', text:
+        data.accuracy != null && data.accuracy > data.baseline_accuracy
+          ? 'The agent debate beat the no-LLM statistical baseline on this run.'
+          : data.accuracy != null && data.accuracy < data.baseline_accuracy
+          ? 'The statistical baseline matched reality more often than the agent debate on this run — the LLM calls may not be earning their cost here.'
+          : 'The agent debate and the statistical baseline tied on this run.' }));
+    }
 
     (data.results || []).forEach(r => {
       const statusPill = r.error ? 'warning' : (r.matched ? 'success' : (r.predicted_direction ? 'danger' : 'same'));
       const statusText = r.error ? 'error' : (r.predicted_direction ? (r.matched ? 'matched' : 'missed') : 'unscored');
+      const baseText = r.baseline_direction
+        ? `baseline: ${r.baseline_direction}${r.baseline_matched ? ' (matched)' : ''}`
+        : null;
       host.appendChild(el('div', { class: 'card tight', style: 'margin-bottom: 6px;' }, [
         el('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 10px;' }, [
           el('div', { style: 'font-weight: 600;', text: `${r.event.ticker} — actual: ${r.event.actual_direction}` }),
           el('span', { class: `pill ${statusPill}`, text: statusText }),
         ]),
         el('div', { class: 'muted', style: 'font-size: 12.5px; margin-top: 4px;',
-                    text: r.error || `predicted: ${r.predicted_direction || 'unparseable'}` }),
+                    text: r.error || `predicted: ${r.predicted_direction || 'unparseable'}` + (baseText ? ` · ${baseText}` : '') }),
       ]));
     });
   }

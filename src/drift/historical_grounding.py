@@ -316,6 +316,68 @@ async def retrieve_similar_events(
     return out
 
 
+@dataclass(frozen=True)
+class WeightedBaseline:
+    """A prediction computed from analogues' REAL outcomes — a weighted
+    vote/average, no LLM involved. This is the honest baseline a
+    multi-agent debate verdict should be compared against: if the agents
+    can't beat "a weighted average of what actually happened to similar
+    past events," the extra LLM calls aren't earning their cost.
+
+    `contributions` lists each analogue with the normalized weight it was
+    actually given, in the same order as the `analogues` passed in —
+    enough for a UI to show exactly how the number was built and let
+    someone re-weight an analogue to see the prediction move."""
+    direction: str | None       # up/down/flat — weighted majority vote; None if no analogues
+    magnitude_pct: float | None  # weighted average of actual_move_pct; None if no analogues
+    contributions: list[dict]
+
+    def to_json(self) -> dict:
+        return {
+            "direction": self.direction,
+            "magnitude_pct": self.magnitude_pct,
+            "contributions": self.contributions,
+        }
+
+
+def weighted_baseline(
+    analogues: list[HistoricalEvent],
+    weights: list[float] | None = None,
+) -> WeightedBaseline:
+    """Weighted vote (direction) + weighted average (magnitude) over
+    analogues' real historical outcomes — pure arithmetic, auditable,
+    free. Default weights are rank-decay (1/(i+1)): retrieve_similar_events
+    already returns analogues most-relevant-first, so the top hit counts
+    more without needing a numeric similarity score the retrieval LLM
+    never produced. Pass explicit `weights` (same length as `analogues`)
+    to let a caller override per-analogue weight, e.g. from a UI slider.
+    """
+    if not analogues:
+        return WeightedBaseline(direction=None, magnitude_pct=None, contributions=[])
+
+    if weights is None:
+        weights = [1.0 / (i + 1) for i in range(len(analogues))]
+    if len(weights) != len(analogues):
+        raise ValueError(
+            f"weights length ({len(weights)}) must match analogues length ({len(analogues)})"
+        )
+    total = sum(weights)
+    if total <= 0:
+        raise ValueError("weights must sum to a positive number")
+    norm_weights = [w / total for w in weights]
+
+    direction_scores: dict[str, float] = {"up": 0.0, "down": 0.0, "flat": 0.0}
+    magnitude = 0.0
+    contributions: list[dict] = []
+    for event, w in zip(analogues, norm_weights):
+        direction_scores[event.actual_direction] += w
+        magnitude += w * event.actual_move_pct
+        contributions.append({"event": event.to_json(), "weight": w})
+
+    direction = max(direction_scores, key=lambda d: direction_scores[d])
+    return WeightedBaseline(direction=direction, magnitude_pct=magnitude, contributions=contributions)
+
+
 def build_grounded_query(scenario: str, analogues: list[HistoricalEvent]) -> str:
     """Fold real historical analogues into a scenario's query text. This
     is the entire integration surface with target_builder's generated

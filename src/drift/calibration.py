@@ -30,6 +30,7 @@ from drift.historical_grounding import (
     build_grounded_query,
     load_events,
     retrieve_similar_events,
+    weighted_baseline,
 )
 
 _VALID_DIRECTIONS = ("up", "down", "flat")
@@ -49,6 +50,13 @@ class CalibrationResult:
     predicted_confidence: str | None = None
     matched: bool = False
     error: str | None = None  # set only if the run itself failed
+    # The honest baseline this event's agent verdict should beat: a
+    # weighted vote/average over the (leave-one-out) analogues' REAL
+    # outcomes, no LLM involved. None when ground=False (no analogues to
+    # compute it from) or the run errored before retrieval happened.
+    baseline_direction: str | None = None
+    baseline_magnitude_pct: float | None = None
+    baseline_matched: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -58,6 +66,9 @@ class CalibrationResult:
             "predicted_confidence": self.predicted_confidence,
             "matched": self.matched,
             "error": self.error,
+            "baseline_direction": self.baseline_direction,
+            "baseline_magnitude_pct": self.baseline_magnitude_pct,
+            "baseline_matched": self.baseline_matched,
         }
 
 
@@ -91,12 +102,34 @@ class CalibrationReport:
             return None
         return self.n_matched / self.n_scored
 
+    @property
+    def n_baseline_scored(self) -> int:
+        return sum(1 for r in self.results if r.baseline_direction is not None)
+
+    @property
+    def n_baseline_matched(self) -> int:
+        return sum(1 for r in self.results if r.baseline_matched)
+
+    @property
+    def baseline_accuracy(self) -> float | None:
+        """Same accuracy definition as `accuracy`, but for the weighted
+        statistical baseline instead of the agent verdict — the number
+        that answers "is the multi-agent debate actually worth it, or
+        does a dumb weighted average of real precedent do just as well?"
+        """
+        if self.n_baseline_scored == 0:
+            return None
+        return self.n_baseline_matched / self.n_baseline_scored
+
     def to_json(self) -> dict[str, Any]:
         return {
             "n_total": self.n_total,
             "n_scored": self.n_scored,
             "n_matched": self.n_matched,
             "accuracy": self.accuracy,
+            "n_baseline_scored": self.n_baseline_scored,
+            "n_baseline_matched": self.n_baseline_matched,
+            "baseline_accuracy": self.baseline_accuracy,
             "results": [r.to_json() for r in self.results],
         }
 
@@ -130,6 +163,8 @@ async def run_calibration(
 
     results: list[CalibrationResult] = []
     for event in pool:
+        baseline_direction: str | None = None
+        baseline_magnitude: float | None = None
         try:
             if ground:
                 others = [e for e in pool if e is not event]
@@ -137,6 +172,9 @@ async def run_calibration(
                     event.description, events=others, k=retrieval_k, model=retrieval_model,
                 )
                 query = build_grounded_query(event.description, analogues)
+                baseline = weighted_baseline(analogues)
+                baseline_direction = baseline.direction
+                baseline_magnitude = baseline.magnitude_pct
             else:
                 query = event.description
 
@@ -147,6 +185,9 @@ async def run_calibration(
             results.append(CalibrationResult(
                 event=event, predicted_direction=None,
                 error=f"{type(e).__name__}: {e}",
+                baseline_direction=baseline_direction,
+                baseline_magnitude_pct=baseline_magnitude,
+                baseline_matched=bool(baseline_direction and baseline_direction == event.actual_direction),
             ))
             continue
 
@@ -160,6 +201,9 @@ async def run_calibration(
             predicted_magnitude_pct=verdict.get("magnitude_pct"),
             predicted_confidence=verdict.get("confidence"),
             matched=bool(direction and direction == event.actual_direction),
+            baseline_direction=baseline_direction,
+            baseline_magnitude_pct=baseline_magnitude,
+            baseline_matched=bool(baseline_direction and baseline_direction == event.actual_direction),
         ))
 
     return CalibrationReport(results=results)

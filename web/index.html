@@ -758,6 +758,16 @@
         </div>
       </div>
 
+      <div id="simulate-baseline" class="card hidden">
+        <h3>Statistical baseline <span class="muted">— what the real analogues alone predict, no LLM</span></h3>
+        <p class="help">
+          A weighted vote/average over the analogues above's actual historical outcomes — pure
+          arithmetic, computed the same way every time. Compare it against the agent debate's
+          verdict above: if the agents can't beat this, the extra LLM calls aren't earning their cost.
+        </p>
+        <div id="simulate-baseline-body"></div>
+      </div>
+
       <div class="card">
         <h3>Calibration — does grounding actually help?</h3>
         <p class="help">

@@ -117,6 +117,11 @@ def test_simulate_scenario_end_to_end_wiring(
     assert data["verdict"] == {"direction": "up", "confidence": "high"}
     assert data["grounded_on"][0]["ticker"] == "NVDA"
     assert "code" in data
+    # baseline is the weighted-vote/average over grounded_on's real
+    # outcomes (pure arithmetic, independent of `verdict` above) —
+    # with one analogue retrieved, it should just echo that analogue.
+    assert data["baseline"]["direction"] == SAMPLE_EVENT.actual_direction
+    assert data["baseline"]["magnitude_pct"] == pytest.approx(SAMPLE_EVENT.actual_move_pct)
 
 
 def test_simulate_scenario_with_user_configured_fleet_skips_proposal(
@@ -200,7 +205,9 @@ def test_simulate_scenario_without_grounding_skips_retrieval(
 
     resp = client.post("/api/simulate-scenario", json={"scenario": "x", "ground": False})
     assert resp.status_code == 200
-    assert resp.json()["grounded_on"] == []
+    data = resp.json()
+    assert data["grounded_on"] == []
+    assert data["baseline"] is None  # nothing to compute a baseline from
 
 
 def test_simulate_scenario_propagates_proposal_errors_as_400(
