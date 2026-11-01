@@ -11,36 +11,47 @@
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2317110a'/><text x='16' y='22' text-anchor='middle' font-family='ui-sans-serif' font-size='17' fill='%23e0b84d' font-weight='600'>d</text></svg>" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-name">drift</span>
-    </div>
-    <div class="topbar-actions">
-      <button id="theme-toggle" class="ghost-btn" aria-label="Toggle theme" title="Toggle light/dark">
-        <span class="theme-icon-light">☀</span>
-        <span class="theme-icon-dark">☾</span>
-      </button>
-    </div>
-  </header>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-name">drift</span>
+      </div>
+      <nav class="side-nav" role="tablist">
+        <button class="tab active" data-tab="overview" role="tab">Overview</button>
 
-  <nav class="tabs" role="tablist">
-    <button class="tab"        data-tab="overview" role="tab">Overview</button>
-    <button class="tab"        data-tab="detectors" role="tab">Detectors</button>
-    <button class="tab active" data-tab="adapter" role="tab">Test</button>
-    <button class="tab"        data-tab="fork"    role="tab">Fork &amp; Replay</button>
-    <button class="tab"        data-tab="compare" role="tab">Compare</button>
-    <button class="tab"        data-tab="ask"     role="tab">Ask</button>
-    <button class="tab"        data-tab="import"  role="tab">Import graph</button>
-    <button class="tab"        data-tab="build"   role="tab">Build</button>
-    <button class="tab"        data-tab="suite"   role="tab">Test Suite</button>
-    <button class="tab"        data-tab="simulate" role="tab">Simulate</button>
-    <button class="tab"        data-tab="results" role="tab">Results</button>
-  </nav>
+        <div class="side-nav-section">Test</div>
+        <button class="tab" data-tab="adapter"  role="tab">Test</button>
+        <button class="tab" data-tab="import"   role="tab">Import graph</button>
+        <button class="tab" data-tab="build"    role="tab">Build</button>
+        <button class="tab" data-tab="suite"    role="tab">Test Suite</button>
 
-  <main>
+        <div class="side-nav-section">Analyze</div>
+        <button class="tab" data-tab="fork"     role="tab">Fork &amp; Replay</button>
+        <button class="tab" data-tab="compare"  role="tab">Compare</button>
+        <button class="tab" data-tab="ask"      role="tab">Ask</button>
+        <button class="tab" data-tab="simulate" role="tab">Simulate</button>
+
+        <div class="side-nav-section">Reference</div>
+        <button class="tab" data-tab="detectors" role="tab">Detectors</button>
+        <button class="tab" data-tab="results"   role="tab">Results</button>
+      </nav>
+    </aside>
+
+    <div class="app-main">
+      <header class="topbar">
+        <span class="page-title" id="page-title">Overview</span>
+        <div class="topbar-actions">
+          <button id="theme-toggle" class="ghost-btn" aria-label="Toggle theme" title="Toggle light/dark">
+            <span class="theme-icon-light">☀</span>
+            <span class="theme-icon-dark">☾</span>
+          </button>
+        </div>
+      </header>
+
+      <main>
 
     <!-- ===================== OVERVIEW (portfolio rollup across results/) ===================== -->
-    <section id="tab-overview" class="tab-panel">
+    <section id="tab-overview" class="tab-panel active">
       <div class="card">
         <h2>Portfolio overview</h2>
         <p class="help">
@@ -98,7 +109,7 @@
     </section>
 
     <!-- ===================== TEST (chaos + judge against a bundled graph) ===================== -->
-    <section id="tab-adapter" class="tab-panel active">
+    <section id="tab-adapter" class="tab-panel">
       <div class="card">
         <h2>Test a multi-agent graph under chaos</h2>
 
@@ -803,7 +814,9 @@
       </div>
     </section>
 
-  </main>
+      </main>
+    </div>
+  </div>
 
   <div id="toast-host"></div>
 

@@ -138,9 +138,16 @@
 
   // ---------- tabs --------------------------------------------------------
 
+  const TAB_TITLES = {
+    overview: 'Overview', detectors: 'Detectors', adapter: 'Test', fork: 'Fork & Replay',
+    compare: 'Compare', ask: 'Ask', import: 'Import graph', build: 'Build', suite: 'Test Suite',
+    simulate: 'Simulate', results: 'Results',
+  };
   function activateTab(name) {
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
+    const titleEl = $('#page-title');
+    if (titleEl) titleEl.textContent = TAB_TITLES[name] || name;
     if (name === 'overview') initOverview();
     if (name === 'detectors') initDetectors();
     if (name === 'adapter') initAdapter();
@@ -2420,20 +2427,22 @@
         return;
       }
       totalsHost.innerHTML = '';
-      const kv = el('div', { class: 'kv-grid' });
+      const stats = el('div', { class: 'stat-row' });
       [
-        ['systems tested', t.systems],
-        ['agents seen', t.agents],
-        ['total runs', t.runs],
-        ['chaos perturbations', t.perturbations],
-        ['diverged', t.diverged],
-        ['crashed', t.crashed],
-        ['findings', t.findings],
-      ].forEach(([k, v]) => {
-        kv.appendChild(el('span', { class: 'k', text: k }));
-        kv.appendChild(el('span', { class: 'v', text: String(v) }));
+        ['systems tested', t.systems, ''],
+        ['agents seen', t.agents, ''],
+        ['total runs', t.runs, ''],
+        ['chaos perturbations', t.perturbations, ''],
+        ['diverged', t.diverged, 'warn'],
+        ['crashed', t.crashed, 'critical'],
+        ['findings', t.findings, ''],
+      ].forEach(([k, v, severity]) => {
+        stats.appendChild(el('div', { class: `stat-tile${severity ? ' ' + severity : ''}` }, [
+          el('span', { class: 'stat-value', text: String(v) }),
+          el('span', { class: 'stat-label', text: k }),
+        ]));
       });
-      totalsHost.appendChild(kv);
+      totalsHost.appendChild(stats);
 
       const findingTypes = data.finding_types || [];
       chartCard.classList.toggle('hidden', findingTypes.length === 0);
@@ -2750,5 +2759,5 @@
 
   // ---------- start -------------------------------------------------------
 
-  initAdapter();
+  activateTab('overview');
 })();

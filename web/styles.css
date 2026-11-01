@@ -172,13 +172,28 @@ h1, h2, h3, h4 {
   }
 }
 
-/* ----------------------------------------------------------------- topbar */
-.topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 20px;
-  background: var(--bg);
+/* ------------------------------------------------------------- app shell */
+/* A persistent sidebar (brand + grouped nav) beside the content column —
+   real dashboard chrome instead of a top tab strip, so the current section
+   always has a fixed anchor and sibling sections read as a hierarchy, not
+   a flat list of equal-weight tabs. */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  align-items: stretch;
+}
+
+.sidebar {
+  width: 216px; flex: 0 0 216px;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  position: sticky; top: 0; height: 100vh;
+  overflow-y: auto;
+}
+.sidebar .brand {
+  padding: 16px 18px 14px;
   border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; z-index: 20;
 }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-name {
@@ -188,38 +203,94 @@ h1, h2, h3, h4 {
   color: var(--fg-strong);
 }
 
+.app-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+
+/* ----------------------------------------------------------------- topbar */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 20;
+}
+.page-title {
+  font-family: var(--font-display);
+  font-weight: 500; font-size: 14px;
+  color: var(--fg-strong);
+}
 .topbar-actions { display: flex; gap: 8px; align-items: center; }
 
-/* -------------------------------------------------------------- nav tabs */
-nav.tabs {
-  display: flex; gap: 2px;
-  padding: 0 20px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
-  overflow-x: auto;
+/* ------------------------------------------------------------ sidebar nav */
+.side-nav { padding: 8px 10px 20px; display: flex; flex-direction: column; gap: 1px; flex: 1; }
+.side-nav-section {
+  margin: 16px 10px 4px;
+  font-size: 11px; font-weight: 500;
+  color: var(--fg-subtle);
 }
+.side-nav-section:first-child { margin-top: 4px; }
+
+.side-nav .tab {
+  width: 100%;
+  justify-content: flex-start;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  padding: 7px 10px;
+  margin-bottom: 0;
+}
+.side-nav .tab:hover { background: var(--row-hover); color: var(--fg); }
+.side-nav .tab.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+}
+
 .tab {
-  background: transparent; border: 1px solid transparent;
+  background: transparent;
   color: var(--fg-muted);
   font: inherit; font-weight: 500; font-size: 13px;
-  padding: 8px 14px;
   cursor: pointer;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  transition: color .12s ease, border-color .12s ease;
+  transition: color .12s ease, background .12s ease, border-color .12s ease;
   display: inline-flex; align-items: center; gap: 6px;
 }
 .tab:hover { color: var(--fg); }
-.tab.active {
-  color: var(--fg-strong);
-  border-bottom-color: var(--accent);
-  font-weight: 600;
-}
+.tab.active { color: var(--fg-strong); font-weight: 600; }
 
 /* -------------------------------------------------------------------- main */
-main { max-width: 1200px; margin: 0 auto; padding: clamp(16px, 3vw, 40px); }
+main { max-width: 1200px; padding: clamp(16px, 3vw, 40px); flex: 1; }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
+
+/* --------------------------------------------------------------- stat row */
+/* Hero KPI tiles — big tabular-nums value over a muted label. Used for the
+   Overview portfolio totals so the landing tab reads as a dashboard home,
+   not a label/value form grid. */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 10px;
+}
+.stat-tile {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 12px 14px;
+}
+.stat-tile .stat-value {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 26px; font-weight: 500;
+  color: var(--fg-strong);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+.stat-tile .stat-label {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.stat-tile.warn .stat-value { color: var(--warning); }
+.stat-tile.critical .stat-value { color: var(--critical); }
 
 .grid { display: grid; gap: 12px; }
 .grid.two-col { grid-template-columns: 1fr 1fr; }
@@ -227,6 +298,20 @@ main { max-width: 1200px; margin: 0 auto; padding: clamp(16px, 3vw, 40px); }
 .row.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 980px) {
   .grid.two-col, .grid.three-col, .row.two-col { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 760px) {
+  .app-shell { flex-direction: column; }
+  .sidebar {
+    width: auto; flex: none; height: auto;
+    position: sticky; top: 0;
+    flex-direction: row; overflow-x: auto; overflow-y: visible;
+    border-right: none; border-bottom: 1px solid var(--border);
+  }
+  .sidebar .brand { border-bottom: none; border-right: 1px solid var(--border); flex: 0 0 auto; }
+  .side-nav { flex-direction: row; padding: 8px; gap: 4px; overflow-x: auto; }
+  .side-nav-section { display: none; }
+  .side-nav .tab { white-space: nowrap; }
 }
 
 /* ------------------------------------------------------------------ card */
