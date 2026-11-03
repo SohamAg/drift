@@ -47,8 +47,30 @@ Three concentric layers, each cheaper than the last:
 Reads the runtime types of your `initial_state`. For each field, picks
 type-appropriate perturbations: `flip_bool`, `corrupt_string`, `clear_list`,
 `duplicate_list_entry`, `remove_dict_key`, `inject_fake_dict_key`,
-`boundary_numeric`, etc. No configuration. Runs each perturbed state through
-your graph and bucket the outcomes into `crashed | diverged | unchanged`.
+`boundary_numeric`, etc. Dict fields are walked two levels down, so
+`config.max_retries` gets its own perturbation. No configuration. Runs each
+perturbed state through your graph and buckets the outcomes into
+`crashed | diverged | unchanged`; a crash that is LangGraph's recursion
+limit firing is labelled `recursion_limit` and keeps its partial trace, so
+the loop is visible.
+
+A `messages` channel (langchain objects, role dicts, tuples — anything
+`add_messages` accepts) gets six message-aware patterns instead of the
+generic list ones, each tagged with its fault class (AgentChaos's
+crash / omission / value split):
+
+| Pattern | Fault class | Models |
+|---|---|---|
+| `drop_last_user_message` | omission | the instruction never arrived |
+| `truncate_last_user_message` | omission | the instruction was cut to 30% |
+| `garble_last_user_message` | value | 20% of characters corrupted in transit |
+| `inject_tool_error_result` | crash | the agent's last tool call failed upstream |
+| `inject_tool_result_instruction` | value | indirect prompt injection via a tool result, canary-verified |
+| `inject_fabricated_prior_turn` | value | history claims the task is already done |
+
+Perturbed conversations are built in the same dialect your state uses, so
+the graph still accepts them — a drift-induced API 400 would be a fake
+crash, not a finding.
 
 Intensity ladder: `off` / `light` (~8%) / `moderate` (~18%) / `aggressive`
 (~35%) / `exhaustive`. Exhaustive ignores sampling and walks every
@@ -139,6 +161,15 @@ it, there's path-dependence — the fix works locally but wouldn't survive a
 redesign upstream. See [`docs/design/fork_edit_replay_v1.md`](docs/design/fork_edit_replay_v1.md)
 for the design spec and [`examples/adapters/fork_edit_demo.py`](examples/adapters/fork_edit_demo.py)
 for a runnable end-to-end demo.
+
+If the graph was compiled with a checkpointer, the fork is real LangGraph
+time travel: drift runs every baseline / perturbation on its own thread,
+finds the checkpoint after the fork step, applies the edit with
+`update_state` (through the channel reducers — a `messages` edit appends)
+and resumes with input `None`, so only the continuation executes.
+`ForkResult.execution_note` says which path ran and why; without a
+checkpointer, or when the fork step is inside a subgraph, it falls back to
+rerunning from the edited state.
 
 ### Plus — optional LLM judge over the full trace
 Six-category taxonomy (`coordination_contradiction`, `grounding_failure`,
@@ -400,28 +431,33 @@ top-vs-bottom compare).
   The noise floor measurement helps, but the threshold itself is one
   number applied across all fields — a per-field comparator override
   would be more correct.
-- **6 coordination detectors is a starting kit, not a complete library.**
-  The detectors target universal patterns (auto-approving verifier, infinite
-  handoff, excess fanout, hallucinated / stale entity references, contradictory
-  decisions). Domain-specific failures need the user-guideline mechanism —
-  which is currently a free-text textarea, not a structured DSL.
-- **Coord detectors observe LangGraph super-steps, not tool-call internals.**
-  Some frameworks (e.g. [deepagents](https://github.com/langchain-ai/deepagents))
-  express sub-agent delegation as **tool calls the main `model` node makes**,
-  not as separate graph nodes. From `.stream()`'s perspective the sub-agent
-  activity is opaque — you see `model` → `tools` → `model` → `tools`, and the
-  multi-agent behavior happens inside the `tools` node. Drift's detectors
-  can't see coordination they can't observe. This is architectural, not a
-  detector-quality issue. **Drift's coord library is sized for LangGraph MAS
-  where multi-agent behavior is expressed as graph nodes** (supervisor
-  patterns, explicit routing, `Send()` fan-outs). Empirically confirmed on
-  deepagents across 3 runs — silent detectors on a real 3rd-party MAS.
-- **Empirical evidence is on two libraries** — [langgraph-supervisor-py](https://github.com/langchain-ai/langgraph-supervisor-py)
-  (5-specialist extended run surfaced 2 real `coordination_contradiction`
-  findings from the LLM judge, zero false positives from structured detectors)
-  and deepagents (silent — see architectural caveat above). Drift hasn't been
-  shown to catch things engineers couldn't find by reading their own code;
-  only that it surfaces them more systematically + with lower friction.
+- **15 coordination detectors is a starting kit, not a complete library.**
+  Twelve read node-level state writes; three read the chat messages (tool
+  calls, tool results, final answers). Domain-specific failures need the
+  user-guideline mechanism — which is currently a free-text textarea, not a
+  structured DSL.
+- **Drift now streams real LangGraph graphs with `subgraphs=True`**, so
+  sub-agents that run as subgraphs (every `create_react_agent` under a
+  supervisor) show up as `math_expert/agent`, `math_expert/tools`, … steps,
+  and a sub-agent started from inside a tool call — the
+  [deepagents](https://github.com/langchain-ai/deepagents) pattern that was a
+  documented blind spot — appears as `tools/model`, `tools/…` steps (9 of 19
+  on a live run). What is still true: those tool-dispatched steps carry the
+  parent node's label, not the sub-agent's name, and a sub-agent implemented
+  as a plain function call inside a tool (no LangGraph graph) stays invisible.
+  Hand-rolled stubs without `stream_mode` keep the old flat view.
+- **Empirical evidence is still thin and intermittent.** On LangChain's own
+  2-agent supervisor example with gpt-4o-mini
+  (`examples/adapters/run_drift_on_supervisor_message_chaos.py`), the
+  planted indirect prompt injection was followed in 1 of 4 runs — the model
+  answered with only the canary — and the planted failed tool call was
+  silently papered over in 2 of 3. On the 5-specialist variant, a real
+  `tool_call_loop` fired (`_web_search` ×4, identical args and results). One
+  run is not a verdict either way; repeating each perturbation N times is
+  the obvious next step and isn't built. The earlier 5-specialist judge
+  findings (2 real `coordination_contradiction`s) still stand. Drift hasn't
+  been shown to catch things engineers couldn't find by reading their own
+  code; only that it surfaces them more systematically + with lower friction.
 
 See `FUTURE_DIRECTIONS.md` and the post-compaction kickoff memory file for
 the next builds.
