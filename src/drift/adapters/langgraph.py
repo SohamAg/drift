@@ -57,6 +57,7 @@ import asyncio
 import inspect
 import json
 import time
+import uuid
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Protocol, runtime_checkable
@@ -217,6 +218,9 @@ class PerturbationResult:
     # Populated whenever the perturbation produced a trace; empty otherwise.
     # Each entry is a FailureRecord.model_dump(mode="json") dict.
     coordination_findings: list[dict] = field(default_factory=list)
+    # LangGraph thread the run executed on when the graph has a checkpointer
+    # (each run gets its own, so runs never share state). "" otherwise.
+    thread_id: str = ""
 
 
 @dataclass
@@ -234,6 +238,9 @@ class BaselineResult:
     trace: list[dict] = field(default_factory=list)
     judge_findings: list[dict] = field(default_factory=list)
     coordination_findings: list[dict] = field(default_factory=list)
+    # LangGraph thread the baseline ran on when the graph has a checkpointer;
+    # drift_test_fork uses it to fork from a real checkpoint. "" otherwise.
+    thread_id: str = ""
 
 
 @dataclass
@@ -630,9 +637,33 @@ _NATIVE_STREAM_KWARGS: dict[str, Any] = {
 }
 
 
+def _checkpointer_of(graph: Any) -> Any:
+    """The graph's checkpointer, if compiled with one. Looks through a
+    `.with_config(...)` RunnableBinding (`.bound`). None otherwise."""
+    cp = getattr(graph, "checkpointer", None)
+    if cp is None:
+        cp = getattr(getattr(graph, "bound", None), "checkpointer", None)
+    return cp or None
+
+
+def _thread_config(thread_id: str) -> dict:
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def _accepts_config(fn: Any) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    return "config" in sig.parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    )
+
+
 async def _stream_or_invoke(
-    graph: Any, state: dict, *, max_steps: int | None = None,
-    trace_sink: list[dict] | None = None,
+    graph: Any, state: dict | None, *, max_steps: int | None = None,
+    trace_sink: list[dict] | None = None, config: dict | None = None,
+    resume_state: dict | None = None,
 ) -> tuple[dict | None, list[dict], bool]:
     """Run the graph once. Capture a per-super-step trace if possible.
 
@@ -669,8 +700,15 @@ async def _stream_or_invoke(
     consuming the generator once that many super-steps have been captured,
     which LangGraph supports (an abandoned async/sync generator is not an
     error). It has no effect on the plain invoke/call fallback paths.
+
+    `config` is a LangGraph RunnableConfig (e.g. `{"configurable":
+    {"thread_id": ...}}`) forwarded on the native path and to invoke-style
+    entry points that accept it; stubs never see it. `state=None` with a
+    checkpoint config RESUMES that checkpoint (LangGraph semantics); pass
+    `resume_state` so the trace builder knows the state it is resuming from.
     """
     trace: list[dict] = trace_sink if trace_sink is not None else []
+    cfg_args = (config,) if config is not None else ()
 
     astream = getattr(graph, "astream", None)
     stream = getattr(graph, "stream", None)
@@ -679,16 +717,18 @@ async def _stream_or_invoke(
     )
 
     if native:
-        builder = _NativeTraceBuilder(state, trace, max_steps)
+        builder = _NativeTraceBuilder(
+            state if state is not None else (resume_state or {}), trace, max_steps,
+        )
         truncated = False
         try:
             if callable(astream):
-                async for item in astream(state, **_NATIVE_STREAM_KWARGS):
+                async for item in astream(state, *cfg_args, **_NATIVE_STREAM_KWARGS):
                     if builder.feed(item):
                         truncated = True
                         break
             else:
-                for item in stream(state, **_NATIVE_STREAM_KWARGS):
+                for item in stream(state, *cfg_args, **_NATIVE_STREAM_KWARGS):
                     if builder.feed(item):
                         truncated = True
                         break
@@ -696,6 +736,8 @@ async def _stream_or_invoke(
             builder.finish()
         return (builder.root_state, trace, truncated)
 
+    if state is None:
+        raise ValueError("resuming from a checkpoint (state=None) requires a native LangGraph graph")
     running: dict = _normalize_messages(state)
     step = 0
 
@@ -734,14 +776,14 @@ async def _stream_or_invoke(
 
     ainvoke = getattr(graph, "ainvoke", None)
     if callable(ainvoke):
-        result = ainvoke(state)
+        result = ainvoke(state, *(cfg_args if _accepts_config(ainvoke) else ()))
         if inspect.isawaitable(result):
             result = await result
         return (_as_dict(result), trace, False)
 
     invoke = getattr(graph, "invoke", None)
     if callable(invoke):
-        result = invoke(state)
+        result = invoke(state, *(cfg_args if _accepts_config(invoke) else ()))
         if inspect.isawaitable(result):
             result = await result
         return (_as_dict(result), trace, False)
@@ -917,6 +959,7 @@ async def _measure_noise_band(
     initial_state: dict,
     state_factory: Callable[[], dict] | None,
     n_rollouts: int,
+    config_factory: Callable[[str], dict | None] | None = None,
 ) -> tuple[dict[str, FieldNoiseBand], list[dict | None]]:
     """Run baseline N times to amortize the noise floor.
 
@@ -933,11 +976,12 @@ async def _measure_noise_band(
     """
     n_rollouts = max(1, int(n_rollouts))
     finals: list[dict | None] = []
-    for _ in range(n_rollouts):
+    for i in range(n_rollouts):
         fresh = (
             deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
         )
-        final, _trace, etype, _err, _dur = await _run_one(graph, fresh)
+        cfg = config_factory(f"rollout-{i}") if config_factory else None
+        final, _trace, etype, _err, _dur = await _run_one(graph, fresh, cfg)
         # If any rollout crashes we skip it for noise analysis but keep its
         # slot so callers can see counts didn't add up.
         finals.append(None if etype else final)
@@ -1165,7 +1209,7 @@ def _classify_crash(error_type: str, error: str = "") -> str:
 
 
 async def _run_one(
-    graph: Any, initial_state: dict
+    graph: Any, initial_state: dict, config: dict | None = None,
 ) -> tuple[dict | None, list[dict], str, str, float]:
     """Invoke the graph once, capturing exceptions, trace, and timing.
 
@@ -1177,7 +1221,9 @@ async def _run_one(
     t0 = time.perf_counter()
     sink: list[dict] = []
     try:
-        final, trace, _truncated = await _stream_or_invoke(graph, initial_state, trace_sink=sink)
+        final, trace, _truncated = await _stream_or_invoke(
+            graph, initial_state, trace_sink=sink, config=config,
+        )
         return (final, trace, "", "", time.perf_counter() - t0)
     except Exception as exc:  # noqa: BLE001 — user code, anything possible
         return (None, sink, type(exc).__name__, str(exc), time.perf_counter() - t0)
@@ -1312,6 +1358,16 @@ async def drift_test_async(
     level = _normalize_intensity(intensity)
     guidelines = [g for g in (user_guidelines or []) if g and str(g).strip()]
 
+    # A graph compiled with a checkpointer refuses to run without a thread_id,
+    # and two runs on the SAME thread would share state (the second run's
+    # messages land on top of the first's). Every run drift makes — baseline,
+    # noise rollouts, each perturbation — gets its own thread.
+    run_tag = uuid.uuid4().hex[:10]
+    has_checkpointer = _checkpointer_of(graph) is not None
+
+    def _cfg(label: str) -> dict | None:
+        return _thread_config(f"drift-{run_tag}-{label}") if has_checkpointer else None
+
     # Enumerate every applicable chaos pattern for telemetry, then schedule.
     # We schedule across _PLANNER_HORIZON synthetic steps; the timesteps are
     # only used to order events, not actually simulated here.
@@ -1353,7 +1409,7 @@ async def drift_test_async(
     noise_band: dict[str, FieldNoiseBand] = {}
     if divergence_mode == "tiered" and baseline_rollouts > 1:
         noise_band, finals = await _measure_noise_band(
-            graph, initial_state, state_factory, baseline_rollouts,
+            graph, initial_state, state_factory, baseline_rollouts, _cfg,
         )
         # Pick the first successful rollout as THE baseline. Time/trace/etc.
         # are re-derived from a one-shot run below so we have consistent
@@ -1362,12 +1418,14 @@ async def drift_test_async(
         baseline_input = (
             deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
         )
-        bfinal, btrace, betype, berr, btime = await _run_one(graph, baseline_input)
+        baseline_cfg = _cfg("baseline")
+        bfinal, btrace, betype, berr, btime = await _run_one(graph, baseline_input, baseline_cfg)
     else:
         baseline_input = (
             deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
         )
-        bfinal, btrace, betype, berr, btime = await _run_one(graph, baseline_input)
+        baseline_cfg = _cfg("baseline")
+        bfinal, btrace, betype, berr, btime = await _run_one(graph, baseline_input, baseline_cfg)
 
     baseline_findings: list[dict] = []
     if judge_llm is not None and btrace:
@@ -1392,11 +1450,12 @@ async def drift_test_async(
         trace=btrace,
         judge_findings=baseline_findings,
         coordination_findings=baseline_coord,
+        thread_id=(baseline_cfg or {}).get("configurable", {}).get("thread_id", ""),
     )
 
     judge_calls_used = 0
     perturbations: list[PerturbationResult] = []
-    for _t, event in scheduled:
+    for pert_index, (_t, event) in enumerate(scheduled):
         # Each perturbation gets its own World built from a fresh copy of
         # the user's state, then has one chaos event applied.
         pert_input = (
@@ -1406,7 +1465,8 @@ async def drift_test_async(
         record = event.apply(world)
         post_state = _state_to_dict(world)
 
-        final, ptrace, etype, err, took = await _run_one(graph, post_state)
+        pert_cfg = _cfg(f"p{pert_index}")
+        final, ptrace, etype, err, took = await _run_one(graph, post_state, pert_cfg)
 
         # Divergence detection: dispatch through the cost cascade.
         # `divfiltered` carries tier-2/3 candidates the cascade dropped —
@@ -1465,6 +1525,7 @@ async def drift_test_async(
                 divergence_details=divdetails,
                 filtered_divergences=divfiltered,
                 coordination_findings=pert_coord,
+                thread_id=(pert_cfg or {}).get("configurable", {}).get("thread_id", ""),
             )
         )
 
@@ -1661,6 +1722,17 @@ class ForkBranch:
     # accumulated state AT that step, not the graph's true completion
     # state. See drift_test_fork's `max_steps` docstring.
     truncated: bool = False
+    # "checkpoint" — resumed a real LangGraph checkpoint on the parent's
+    # thread after update_state (true time-travel; the graph continues from
+    # exactly where it was, pending tasks included).
+    # "rerun_from_state" — invoked the graph fresh with the edited
+    # state_after as a new initial state (the v1 approximation).
+    execution_mode: str = "rerun_from_state"
+    thread_id: str = ""
+
+
+FORK_MODE_CHECKPOINT = "checkpoint"
+FORK_MODE_RERUN = "rerun_from_state"
 
 
 @dataclass
@@ -1690,6 +1762,9 @@ class ForkResult:
     top_edited_branch: ForkBranch | None = None
     # Cost / provenance telemetry for the fork call itself.
     duration_s: float = 0.0
+    # Why the fork ran the way it did — e.g. "checkpoint fork: resumed step 2
+    # on thread drift-…" or "rerun-from-state: graph has no checkpointer".
+    execution_note: str = ""
 
     @property
     def n_coordination_findings(self) -> int:
@@ -1773,13 +1848,23 @@ async def _run_one_fork_branch(
     run_coordination_detectors: bool,
     coordination_roles: dict[str, str] | None,
     max_steps: int | None = None,
+    config: dict | None = None,
+    resume: bool = False,
 ) -> ForkBranch:
-    """Run the graph once from `initial_state`, capture trace + coord findings."""
+    """Run the graph once, capture trace + coord findings.
+
+    `resume=True` means `config` names a checkpoint to continue from:
+    LangGraph is invoked with input None and `initial_state` is only the
+    (already-edited) checkpoint state used to seed the trace builder.
+    Otherwise `initial_state` is fed as a fresh input."""
     t0 = time.perf_counter()
     sink: list[dict] = []
+    mode = FORK_MODE_CHECKPOINT if resume else FORK_MODE_RERUN
+    tid = (config or {}).get("configurable", {}).get("thread_id", "")
     try:
         final_state, trace, truncated = await _stream_or_invoke(
-            graph, initial_state, max_steps=max_steps, trace_sink=sink,
+            graph, None if resume else initial_state, max_steps=max_steps,
+            trace_sink=sink, config=config, resume_state=initial_state if resume else None,
         )
         duration = time.perf_counter() - t0
         coord: list[dict] = []
@@ -1798,6 +1883,8 @@ async def _run_one_fork_branch(
             duration_s=duration,
             coordination_findings=coord,
             truncated=truncated,
+            execution_mode=mode,
+            thread_id=tid,
         )
     except Exception as exc:  # noqa: BLE001
         return ForkBranch(
@@ -1809,7 +1896,32 @@ async def _run_one_fork_branch(
             error_type=type(exc).__name__,
             crash_class=_classify_crash(type(exc).__name__, str(exc)),
             duration_s=time.perf_counter() - t0,
+            execution_mode=mode,
+            thread_id=tid,
         )
+
+
+def _root_rank(trace: list[dict], fork_step: int) -> int | None:
+    """How many ROOT-namespace super-steps the trace has up to and including
+    `fork_step` (1-based). None if the record at `fork_step` is itself a
+    subgraph step — LangGraph can't time-travel to a point inside a
+    subgraph from the parent, so there is no root checkpoint to fork."""
+    if trace[fork_step - 1].get("namespace"):
+        return None
+    return sum(1 for rec in trace[:fork_step] if not rec.get("namespace"))
+
+
+def _find_checkpoint(graph: Any, thread_id: str, root_rank: int) -> Any:
+    """The StateSnapshot on `thread_id` taken after `root_rank` root super-
+    steps (LangGraph numbers them `metadata["step"]`, with -1 = input)."""
+    history = getattr(graph, "get_state_history", None)
+    if not callable(history):
+        return None
+    for snap in history(_thread_config(thread_id)):
+        meta = getattr(snap, "metadata", None) or {}
+        if meta.get("step") == root_rank and not (snap.config.get("configurable") or {}).get("checkpoint_ns"):
+            return snap
+    return None
 
 
 async def drift_test_fork_async(
@@ -1826,12 +1938,22 @@ async def drift_test_fork_async(
 ) -> ForkResult:
     """Fork a completed adapter run at `fork_step`, apply `edits`, re-run forward.
 
-    v1 execution model: rerun-from-state. We take the state_after of the fork
-    step in the parent's baseline trace, deep-merge `edits` into it, and invoke
-    the graph fresh with that as the initial state. This means the fork branch
-    "starts" from the fork-point state — not resuming a paused execution. Good
-    enough for the common developer case; graphs that depend on tool-call
-    resume position will need the v2 checkpointer path.
+    Two execution models, chosen automatically (see `ForkResult.execution_note`
+    and `ForkBranch.execution_mode`):
+
+    * **checkpoint** — when the graph was compiled with a checkpointer and
+      `parent_result` came from `drift_test` on this same graph object (so
+      `baseline.thread_id` is set and the checkpoints are still in the
+      saver). Drift finds the checkpoint after the fork step's root super-
+      step, applies `edits` with `graph.update_state` (edits pass through the
+      channel reducers — editing a `messages` channel APPENDS), and resumes
+      with input None. This is real LangGraph time travel: pending tasks,
+      tool-call resume position and all.
+    * **rerun_from_state** — otherwise. Take the fork step's `state_after`,
+      deep-merge `edits`, invoke the graph fresh with that as initial state.
+      The branch "starts" from the fork-point state rather than resuming a
+      paused execution; fine for most graphs, approximate for ones that
+      depend on tool-call resume position.
 
     If `also_apply_at_initial=True`, we also invoke the graph with the same
     edits applied to the parent's original initial state. The two branches
@@ -1871,13 +1993,62 @@ async def drift_test_fork_async(
     fork_point_state = deepcopy(trace[fork_step - 1].get("state_after") or {})
     edited_state_at_fork = _deep_merge_edits(fork_point_state, edits or {})
 
-    fork_branch = await _run_one_fork_branch(
-        graph,
-        edited_state_at_fork,
-        run_coordination_detectors=run_coordination_detectors,
-        coordination_roles=coordination_roles,
-        max_steps=max_steps,
-    )
+    # Checkpoint path: the graph has a checkpointer AND the parent baseline
+    # ran on a thread we know AND the fork step is a root super-step AND that
+    # checkpoint is still in the saver. Then this is a real time-travel fork:
+    # update_state on the parent's checkpoint (edits go THROUGH the channel
+    # reducers — an edit to a `messages` channel appends), resume with input
+    # None. Anything missing -> the v1 rerun-from-state approximation, and
+    # `execution_note` says which and why.
+    fork_branch: ForkBranch | None = None
+    note = ""
+    thread_id = getattr(parent_result.baseline, "thread_id", "") or ""
+    checkpointer = _checkpointer_of(graph)
+    if checkpointer is None:
+        note = "rerun-from-state: graph has no checkpointer"
+    elif not thread_id:
+        note = "rerun-from-state: parent baseline has no thread_id (run it with this graph object to enable checkpoint forks)"
+    elif not callable(getattr(graph, "update_state", None)):
+        note = "rerun-from-state: graph exposes no update_state"
+    else:
+        rank = _root_rank(trace, fork_step)
+        if rank is None:
+            note = f"rerun-from-state: step {fork_step} is inside a subgraph; LangGraph can't fork there"
+        else:
+            snap = _find_checkpoint(graph, thread_id, rank)
+            if snap is None:
+                note = (
+                    f"rerun-from-state: no checkpoint for root step {rank} on thread {thread_id!r} "
+                    "(different graph object / checkpointer instance, or history evicted)"
+                )
+            else:
+                try:
+                    cfg = graph.update_state(snap.config, edits) if edits else snap.config
+                    resumed_state = _normalize_messages(dict(graph.get_state(cfg).values or {}))
+                except Exception as exc:  # noqa: BLE001
+                    note = f"rerun-from-state: update_state failed ({type(exc).__name__}: {exc})"
+                else:
+                    edited_state_at_fork = resumed_state
+                    note = f"checkpoint fork: resumed root step {rank} on thread {thread_id!r} after update_state"
+                    fork_branch = await _run_one_fork_branch(
+                        graph,
+                        resumed_state,
+                        run_coordination_detectors=run_coordination_detectors,
+                        coordination_roles=coordination_roles,
+                        max_steps=max_steps,
+                        config=cfg,
+                        resume=True,
+                    )
+
+    if fork_branch is None:
+        fork_branch = await _run_one_fork_branch(
+            graph,
+            edited_state_at_fork,
+            run_coordination_detectors=run_coordination_detectors,
+            coordination_roles=coordination_roles,
+            max_steps=max_steps,
+            config=_thread_config(f"drift-fork-{uuid.uuid4().hex[:10]}") if checkpointer else None,
+        )
 
     top_branch: ForkBranch | None = None
     if also_apply_at_initial:
@@ -1891,6 +2062,7 @@ async def drift_test_fork_async(
             run_coordination_detectors=run_coordination_detectors,
             coordination_roles=coordination_roles,
             max_steps=max_steps,
+            config=_thread_config(f"drift-fork-top-{uuid.uuid4().hex[:10]}") if checkpointer else None,
         )
 
     return ForkResult(
@@ -1902,6 +2074,7 @@ async def drift_test_fork_async(
         fork_branch=fork_branch,
         top_edited_branch=top_branch,
         duration_s=time.perf_counter() - t0,
+        execution_note=note,
     )
 
 
@@ -1939,6 +2112,8 @@ def drift_test_fork(
 __all__ = [
     "AdapterResult",
     "BaselineResult",
+    "FORK_MODE_CHECKPOINT",
+    "FORK_MODE_RERUN",
     "ForkBranch",
     "ForkResult",
     "PerturbationResult",

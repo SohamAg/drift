@@ -774,6 +774,7 @@ def _shape_adapter_result(
             "trace": b.trace,
             "judge_findings": b.judge_findings,
             "coordination_findings": b.coordination_findings,
+            "thread_id": getattr(b, "thread_id", ""),
         }
 
     def _pert_dict(p: Any) -> dict[str, Any]:
@@ -1713,6 +1714,7 @@ def create_app() -> FastAPI:
             baseline=BaselineResult(
                 initial_state=dict(req.parent_initial_state),
                 trace=list(req.parent_baseline_trace),
+                thread_id=getattr(req, "parent_thread_id", "") or "",
             ),
         )
 
@@ -1740,6 +1742,8 @@ def create_app() -> FastAPI:
                 "duration_s": round(b.duration_s, 4),
                 "coordination_findings": b.coordination_findings,
                 "truncated": b.truncated,
+                "execution_mode": getattr(b, "execution_mode", "rerun_from_state"),
+                "thread_id": getattr(b, "thread_id", ""),
             }
 
         return {
@@ -1757,6 +1761,7 @@ def create_app() -> FastAPI:
             "n_coordination_findings": fork.n_coordination_findings,
             "path_dependence": fork.path_dependence,
             "duration_s": round(fork.duration_s, 4),
+            "execution_note": fork.execution_note,
         }
 
     # ---- MAST demo --------------------------------------------------------
