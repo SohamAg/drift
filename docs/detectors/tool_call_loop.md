@@ -33,6 +33,12 @@ and a deterministic tool returns the same string exactly.
 - Calls to the same tool with **different arguments** (`Paris`, `Rome`,
   `Oslo`) — a fan-out, not a repeat.
 - Two occurrences. A single retry is normal resilience.
+- **Handoff / routing tools** — `transfer_to_<agent>`,
+  `transfer_back_to_supervisor`, `handoff_*`, `route_to_*`,
+  `delegate_to_*`. They take no arguments and return a canned
+  acknowledgement by design, so "same call, same result" is their normal
+  operation. Agents bouncing between each other is a node-sequence
+  question that `infinite_handoff` owns.
 - Tool calls drift itself injected into the initial state as chaos
   (`inject_tool_error_result`, `inject_tool_result_instruction`) — their
   ids carry the `drift_call_` prefix and are excluded, so only calls the

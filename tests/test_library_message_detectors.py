@@ -46,8 +46,11 @@ def _human(text):
 
 
 def _trace(steps, initial=None):
-    """(node, [messages]) pairs -> adapter-shaped trace with an accumulating messages channel."""
-    running = list((initial or {}).get("messages", []))
+    """(node, [messages]) pairs -> adapter-shaped trace with an accumulating
+    messages channel. `state_after` includes the initial messages, as a real
+    adapter trace does — `conversation()` reads state growth to tell a node's
+    genuinely new messages from a parent node re-emitting its subgraph's."""
+    running = list((INIT if initial is None else initial).get("messages", []))
     out = []
     for i, (node, msgs) in enumerate(steps, start=1):
         running = running + msgs
@@ -390,3 +393,44 @@ def test_e2e_injected_instruction_followed_via_chaos_pattern_on_a_real_graph():
     # by an agent that answers confidently without ever retrying.
     err = [p for p in result2.perturbations if p.pattern_type == "inject_tool_error_result"]
     assert any(f["failure_type"] == "silent_tool_failure" for f in err[0].coordination_findings)
+
+
+def test_context_loss_ignores_tool_call_plumbing_ids():
+    """`call_1` is adapter plumbing, not content the next agent should cite.
+    This exact false positive fired on every real supervisor run."""
+    from drift.failures.library import context_loss_on_handoff
+
+    steps = [
+        ("math/agent", [_ai(calls=[("multiply", {"a": 7, "b": 8}, "call_1")])]),
+        ("math/tools", [_tool("56", "call_1")]),
+        ("math/agent", [_ai(calls=[("multiply", {"a": 1, "b": 2}, "call_2")])]),
+        ("math/tools", [_tool("2", "call_2")]),
+    ]
+    assert context_loss_on_handoff.detect(_ctx(_trace(steps))) == []
+
+
+def test_conversation_dedupes_messages_a_parent_node_reemits_from_its_subgraph():
+    """A supervisor sub-agent runs as a subgraph: `math/agent` emits the tool
+    call, `math/tools` the result, then the parent `math` node emits BOTH again
+    as its own update. Counted twice, one handoff looks like a loop."""
+    call = _ai(calls=[("multiply", {"a": 7, "b": 8}, "call_1")])
+    res = _tool("56", "call_1")
+    trace = _trace([
+        ("math/agent", [call]),
+        ("math/tools", [res]),
+        ("math/agent", [_ai("56")]),
+        ("math", [call, res, _ai("56")]),           # parent re-emit: dropped
+        ("math/agent", [call]),                     # a real second call later: kept
+    ])
+    msgs = conversation(_ctx(trace))
+    assert [(m.agent, m.role) for m in msgs] == [
+        ("", "human"), ("math/agent", "ai"), ("math/tools", "tool"), ("math/agent", "ai"), ("math/agent", "ai"),
+    ]
+
+
+def test_tool_call_loop_ignores_handoff_tools():
+    steps = []
+    for k in range(3):
+        steps.append(("supervisor", [_ai(calls=[("transfer_to_math_expert", {}, f"c{k}")])]))
+        steps.append(("supervisor/tools", [_tool("Successfully transferred to math_expert", f"c{k}")]))
+    assert tool_call_loop.detect(_ctx(_trace(steps))) == []

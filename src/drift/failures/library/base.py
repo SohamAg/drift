@@ -361,17 +361,63 @@ def messages_in_step(step: TraceStep) -> list[Msg]:
     return out
 
 
+def _msg_fingerprint(m: Msg) -> tuple:
+    return (
+        m.role, m.text, m.tool_call_id,
+        tuple((str(c.get("name")), repr(c.get("args"))) for c in m.tool_calls),
+    )
+
+
 def conversation(ctx: CoordinationDetectorContext) -> list[Msg]:
     """The conversation as the nodes wrote it: every step's new messages in
     order, plus — first — the messages already present in `initial_state`
     (step 0, agent "" ) so injected context the graph was handed is visible
-    too. Indices are assigned in this order."""
+    too. Indices are assigned in this order.
+
+    Re-emit de-duplication. When a sub-agent runs as a subgraph (a
+    `create_react_agent` under a supervisor, say) its inner steps
+    (`math_expert/agent`, `math_expert/tools`) emit messages, and then the
+    parent node (`math_expert`) emits its whole output — which can be the
+    ENTIRE conversation so far, old messages included — as its own update;
+    `add_messages` de-duplicates by id on the real state, but a naive read
+    of the updates would count every message two or three times and turn
+    one handoff into a "tool call loop". So, for a root-level step, only
+    the messages the root state actually GREW by (`len(state_after
+    messages) - len(previous)`, taken from the tail of the update) count as
+    new, minus any already attributed to this node's inner steps. Inner
+    (namespaced) steps keep every message in their update: the root state
+    doesn't move until the parent commits, so growth can't be read there,
+    and their updates are genuinely new. A real repeat (a loop) is a new
+    message that grows the state, so it is kept. Traces whose `state_after`
+    doesn't carry a messages channel (stubs, legacy accumulators) fall back
+    to counting every update message.
+    """
     out: list[Msg] = []
+    prev_count: int | None = None
     if ctx.initial_state:
         seed = TraceStep(step=0, agent="", kind="initial", update=dict(ctx.initial_state))
         out.extend(messages_in_step(seed))
+        prev_count = len(_message_dicts_in(ctx.initial_state))
+    emitted_by_agent: dict[str, set[tuple]] = {}
     for s in ctx.steps:
-        out.extend(messages_in_step(s))
+        msgs = messages_in_step(s)
+        is_inner = "/" in s.agent
+        after_count = len(_message_dicts_in(s.state_after)) if s.state_after else None
+        if not is_inner and after_count is not None and prev_count is not None:
+            growth = after_count - prev_count
+            if 0 <= growth < len(msgs):
+                msgs = msgs[len(msgs) - growth:] if growth else []
+            prefix = f"{s.agent}/"
+            inner_fps: set[tuple] = set()
+            for agent, fps in emitted_by_agent.items():
+                if agent.startswith(prefix):
+                    inner_fps |= fps
+            msgs = [m for m in msgs if _msg_fingerprint(m) not in inner_fps]
+        if not is_inner and after_count is not None:
+            prev_count = after_count
+        for m in msgs:
+            out.append(m)
+            emitted_by_agent.setdefault(s.agent, set()).add(_msg_fingerprint(m))
     for i, m in enumerate(out):
         m.index = i
     return out

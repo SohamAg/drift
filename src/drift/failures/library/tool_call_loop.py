@@ -48,6 +48,13 @@ SOURCE = (
 
 DEFAULT_MIN_REPEATS = 3
 
+# Handoff / routing tools (langgraph-supervisor's `transfer_to_<agent>` /
+# `transfer_back_to_supervisor`, langgraph-swarm's handoffs) take no arguments
+# and return a canned acknowledgement by design, so "same call, same result"
+# is their normal operation, not a stuck loop. Bouncing between agents is a
+# node-sequence question — `infinite_handoff` owns it.
+ROUTING_TOOL_PATTERN = re.compile(r"^(?:transfer_(?:to|back)|handoff|hand_off|route_to|delegate_to)", re.I)
+
 
 def _canonical_args(args: Any) -> str:
     try:
@@ -75,7 +82,7 @@ def detect(
         result = by_idx.get(pairs.get(m.index, -1))
         for tc in m.tool_calls:
             name = tc.get("name")
-            if not isinstance(name, str) or not name:
+            if not isinstance(name, str) or not name or ROUTING_TOOL_PATTERN.match(name):
                 continue
             occurrences[(name, _canonical_args(tc.get("args")))].append((m, result))
 
@@ -147,6 +154,7 @@ def detect_from_text(transcript: str, *, min_repeats: int = DEFAULT_MIN_REPEATS)
 __all__ = [
     "DEFAULT_MIN_REPEATS",
     "MAST_MODES",
+    "ROUTING_TOOL_PATTERN",
     "NAME",
     "SOURCE",
     "SUMMARY",

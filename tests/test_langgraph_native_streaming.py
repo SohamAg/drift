@@ -286,3 +286,100 @@ def test_fork_from_real_graph_trace():
     # (dict messages) — add_messages must coerce those back into messages.
     assert fork.fork_branch.final_state["n"] == 42
     assert [m["type"] for m in fork.fork_branch.final_state["messages"]][:2] == ["human", "ai"]
+
+
+# ---- run-wide tool-call id consistency + output view + list noise bands ----
+
+
+def test_tool_call_ids_agree_between_update_and_state_after():
+    """The agent node's update and the tools node's update are normalised
+    separately but must share one id map, or a ToolMessage's tool_call_id
+    keeps the provider id while the AI update says call_1."""
+
+    @tool
+    def ping(q: str) -> str:
+        """Ping."""
+        return "pong"
+
+    def model(state):
+        last = state["messages"][-1]
+        if getattr(last, "type", "") == "tool":
+            return {"messages": [AIMessage(content="done")]}
+        return {"messages": [AIMessage(content="", tool_calls=[
+            {"name": "ping", "args": {"q": "x"}, "id": "call_9f8e7d6c5b4a"},
+        ])]}
+
+    g = StateGraph(_S)
+    g.add_node("model", model)
+    g.add_node("tools", ToolNode([ping]))
+    g.add_edge(START, "model")
+    g.add_conditional_edges("model", lambda s: "tools" if s["messages"][-1].tool_calls else END)
+    g.add_edge("tools", "model")
+    graph = g.compile()
+
+    final, trace, etype, err, _ = asyncio.run(_run_one(graph, _init()))
+    assert etype == "", err
+    ai_update = trace[0]["update"]["messages"][0]
+    tool_update = trace[1]["update"]["messages"][0]
+    assert ai_update["tool_calls"][0]["id"] == "call_1"
+    assert tool_update["tool_call_id"] == "call_1"
+    assert final["messages"][1]["tool_calls"][0]["id"] == "call_1"
+    assert final["messages"][2]["tool_call_id"] == "call_1"
+
+
+def test_output_view_strips_only_the_messages_input_prefix():
+    from drift.adapters.langgraph import _output_view
+
+    initial = {"messages": [{"type": "human", "content": "q"}], "items": ["a", "b"], "n": 0}
+    final = {
+        "messages": [{"type": "human", "content": "q"}, {"type": "ai", "content": "ans"}],
+        "items": ["a", "b"],
+        "n": 3,
+    }
+    view = _output_view(initial, final)
+    assert view["messages"] == [{"type": "ai", "content": "ans"}]
+    assert view["items"] == ["a", "b"]  # plain lists are left alone
+    assert view["n"] == 3
+    # A messages channel the graph REPLACED (no input prefix) is left alone too.
+    replaced = {"messages": [{"type": "ai", "content": "only"}]}
+    assert _output_view(initial, replaced)["messages"] == replaced["messages"]
+
+
+def test_message_perturbation_does_not_diverge_on_the_echoed_input():
+    """Before the output view, every message perturbation was DIVERGED purely
+    because the perturbed input sat at the front of the final conversation."""
+    def respond(state):
+        return {"messages": [AIMessage(content="fixed answer")]}
+
+    g = StateGraph(_S)
+    g.add_node("respond", respond)
+    g.add_edge(START, "respond")
+    g.add_edge("respond", END)
+    graph = g.compile()
+
+    result = drift_test(
+        graph=graph,
+        initial_state={"messages": [{"role": "user", "content": "please do the thing now"}], "n": 0},
+        intensity="exhaustive",
+    )
+    msg_perts = [p for p in result.perturbations if p.perturbed_field == "messages"]
+    assert msg_perts
+    for p in msg_perts:
+        assert not p.crashed, p.error
+        assert not p.diverged, f"{p.pattern_type}: {p.divergence_summary}"
+
+
+def test_list_valued_fields_get_a_similarity_noise_band():
+    from drift.adapters.langgraph import _analyze_field_variance, _is_within_noise
+
+    a = [{"type": "ai", "content": "7 times 8 is 56, and the capital of France is Paris."}]
+    b = [{"type": "ai", "content": "7 times 8 is 56; the capital of France is Paris!"}]
+    band = _analyze_field_variance("messages", [a, b])
+    assert band.text_min_similarity is not None and band.text_min_similarity > 0.8
+    c = [{"type": "ai", "content": "7 times 8 is 56 and the capital of France is Paris."}]
+    within, sim = _is_within_noise(c, band, 0.85)
+    assert within and sim is not None and sim > 0.9
+    far = [{"type": "ai", "content": "DRIFT-CANARY-abcdef"}]
+    assert _is_within_noise(far, band, 0.85)[0] is False
+    # Bools never get text stats.
+    assert _analyze_field_variance("flag", [True, False]).text_min_similarity is None

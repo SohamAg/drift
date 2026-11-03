@@ -42,7 +42,13 @@ DEFAULT_MIN_MISSES = 2
 
 # Same id-shape family as hallucinated_reference, kept intentionally
 # narrow/conservative — see that detector's docstring for the rationale.
-_ID_SHAPE = re.compile(r"\b([A-Za-z]{2,10}-\d+|#\d{2,}|[a-z]+[-_ ]\d+)\b", re.I)
+# `word-12` / `word_12` / `#123` / `ABC-42`. The bare `word 12` form was
+# dropped: once chat messages flow through the trace it matched ordinary
+# prose ("times 8", "is 7") and flagged every handoff.
+_ID_SHAPE = re.compile(r"\b([A-Za-z]{2,10}-\d+|#\d{2,}|[a-z]+[-_]\d+)\b", re.I)
+# Tool-call plumbing ids the adapter assigns (`call_1`, `drift_call_err`) look
+# id-shaped but are not content an agent could be expected to cite.
+_PLUMBING_ID = re.compile(r"^(?:drift_)?call[-_ ]\d+$|^drift_call_\w+$", re.I)
 
 
 def _text_blob(update: dict[str, Any], rationale: str) -> str:
@@ -59,7 +65,10 @@ def _extract_anchors(update: dict[str, Any], rationale: str, prior_keys: set[str
     exist before this step (a decision/classification/verdict-shaped
     write, not prose)."""
     text = _text_blob(update, rationale)
-    anchors = {m.group(1).lower() for m in _ID_SHAPE.finditer(text)}
+    anchors = {
+        m.group(1).lower() for m in _ID_SHAPE.finditer(text)
+        if not _PLUMBING_ID.match(m.group(1))
+    }
     for key, value in update.items():
         if key in prior_keys:
             continue
@@ -135,7 +144,10 @@ def detect_from_text(transcript: str, *, min_misses: int = DEFAULT_MIN_MISSES) -
         receiver, receiver_body = lines[i + 1]
         if receiver == sender:
             continue
-        anchors = {m.group(1).lower() for m in _ID_SHAPE.finditer(sender_body)}
+        anchors = {
+            m.group(1).lower() for m in _ID_SHAPE.finditer(sender_body)
+            if not _PLUMBING_ID.match(m.group(1))
+        }
         if not anchors:
             continue
         if not any(a in receiver_body.lower() for a in anchors):

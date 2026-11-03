@@ -107,6 +107,10 @@ def _canonicalize(id_text: str) -> str:
     return id_text.strip().lower().replace("_", "-").replace(" ", "-")
 
 
+# Tool-call plumbing ids the adapter assigns (`call_1`) are not entity references.
+_PLUMBING_ID = re.compile(r"^(?:drift-)?call-\d+$|^drift-call-\w+$")
+
+
 def _extract_ids_from_text(text: str) -> list[str]:
     """Regex-scan a string for all ID-shaped tokens; return canonical forms.
 
@@ -128,7 +132,7 @@ def _extract_ids_from_text(text: str) -> list[str]:
         if not any(ch.isdigit() for ch in ident):
             continue
         seen.setdefault(_canonicalize(f"{word}-{ident}"), None)
-    return list(seen.keys())
+    return [k for k in seen if not _PLUMBING_ID.match(k)]
 
 
 def _extract_structured_ids(state: dict[str, Any]) -> set[str]:

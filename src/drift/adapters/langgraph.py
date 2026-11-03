@@ -430,11 +430,15 @@ def _normalize_chunk(chunk: Any) -> dict[str, dict]:
 #     {"type": "ai", "content": "...", "name": "...",
 #      "tool_calls": [{"name": ..., "args": ...}], "status": "error"}
 #
-# Per-run message `id`s are dropped. Tool-call ids are KEPT but renumbered
-# positionally within each message list (`call_1`, `call_2`, ...) with the
-# matching ToolMessage.tool_call_id remapped — stable across runs, and the
-# normalised state still round-trips into `add_messages` (which rejects an
-# AI tool_call without an id). Fork-edit-replay depends on that round trip.
+# Per-run message `id`s are dropped. Tool-call ids are KEPT but renumbered in
+# order of first appearance (`call_1`, `call_2`, ...) with the matching
+# ToolMessage.tool_call_id remapped — stable across runs, and the normalised
+# state still round-trips into `add_messages` (which rejects an AI tool_call
+# without an id). Fork-edit-replay depends on that round trip. The provider-id
+# -> call_k map is shared across one whole run (`_ToolCallIds`), so a node's
+# `update` and the later full `state_after` agree on every id — otherwise a
+# tools node's update would still carry the provider id while the agent's
+# update said `call_1`, and a detector pairing the two would miss.
 
 
 def _is_message_object(value: Any) -> bool:
@@ -445,6 +449,28 @@ def _is_message_object(value: Any) -> bool:
         and hasattr(value, "content")
         and callable(getattr(value, "model_dump", None))
     )
+
+
+class _ToolCallIds:
+    """Provider tool-call id -> stable `call_<k>` id, in order of first sight.
+    One instance per graph run."""
+
+    def __init__(self) -> None:
+        self.map: dict[Any, str] = {}
+        self._anon = 0
+
+    def assign(self, provider_id: Any) -> str:
+        if provider_id is None:
+            self._anon += 1
+            provider_id = ("__anon__", self._anon)
+        new = self.map.get(provider_id)
+        if new is None:
+            new = f"call_{len(self.map) + 1}"
+            self.map[provider_id] = new
+        return new
+
+    def lookup(self, provider_id: Any) -> Any:
+        return self.map.get(provider_id, provider_id)
 
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:
@@ -470,12 +496,11 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
     return out
 
 
-def _renumber_tool_call_ids(msgs: list[Any]) -> None:
+def _renumber_tool_call_ids(msgs: list[Any], ids: _ToolCallIds) -> None:
     """In-place: replace provider-issued tool-call ids (random per run) with
-    positional `call_<k>` ids, remapping each ToolMessage.tool_call_id to
-    match. Only touches dicts produced by `_message_to_dict`."""
-    mapping: dict[Any, str] = {}
-    k = 0
+    stable `call_<k>` ids via the run-wide map, remapping each
+    ToolMessage.tool_call_id to match. Only touches dicts produced by
+    `_message_to_dict`."""
     for m in msgs:
         if not isinstance(m, dict):
             continue
@@ -486,30 +511,29 @@ def _renumber_tool_call_ids(msgs: list[Any]) -> None:
                 # graph's — detectors rely on that; leave them alone.
                 if isinstance(tc.get("id"), str) and tc["id"].startswith("drift_call_"):
                     continue
-                k += 1
-                new_id = f"call_{k}"
-                if tc.get("id") is not None:
-                    mapping[tc["id"]] = new_id
-                tc["id"] = new_id
+                tc["id"] = ids.assign(tc.get("id"))
     for m in msgs:
         if isinstance(m, dict) and m.get("type") == "tool" and "tool_call_id" in m:
-            m["tool_call_id"] = mapping.get(m["tool_call_id"], m["tool_call_id"])
+            m["tool_call_id"] = ids.lookup(m["tool_call_id"])
 
 
-def _normalize_messages(value: Any, _depth: int = 0) -> Any:
+def _normalize_messages(value: Any, _depth: int = 0, ids: _ToolCallIds | None = None) -> Any:
     """Return a JSON-friendly deep copy of `value` with BaseMessage objects
-    replaced by trimmed dicts. Non-message leaves are deep-copied."""
+    replaced by trimmed dicts. Non-message leaves are deep-copied. `ids` is
+    the run-wide tool-call id map; a fresh one is used when not given."""
     if _depth > 24:
         return deepcopy(value)
+    if ids is None:
+        ids = _ToolCallIds()
     if _is_message_object(value):
         return _message_to_dict(value)
     if isinstance(value, dict):
-        return {k: _normalize_messages(v, _depth + 1) for k, v in value.items()}
+        return {k: _normalize_messages(v, _depth + 1, ids) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         had_message = any(_is_message_object(v) for v in value)
-        out = [_normalize_messages(v, _depth + 1) for v in value]
+        out = [_normalize_messages(v, _depth + 1, ids) for v in value]
         if had_message:
-            _renumber_tool_call_ids(out)
+            _renumber_tool_call_ids(out, ids)
         return out
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
@@ -574,7 +598,8 @@ class _NativeTraceBuilder:
     """
 
     def __init__(self, initial_state: dict, trace: list[dict], max_steps: int | None):
-        self.root_state: dict = _normalize_messages(initial_state)
+        self.ids = _ToolCallIds()
+        self.root_state: dict = _normalize_messages(initial_state, ids=self.ids)
         self.trace = trace
         self.max_steps = max_steps
         self.step = 0
@@ -595,7 +620,7 @@ class _NativeTraceBuilder:
             return False
         if mode == "values":
             if not ns_key and isinstance(data, dict):
-                self.root_state = _normalize_messages(data)
+                self.root_state = _normalize_messages(data, ids=self.ids)
             return self._flush(ns_key, data)
         return False
 
@@ -605,7 +630,7 @@ class _NativeTraceBuilder:
         rec = {
             "step": self.step,
             "node": "/".join(labels + [str(node)]) if labels else str(node),
-            "update": _normalize_messages(update),
+            "update": _normalize_messages(update, ids=self.ids),
             "state_after": None,  # filled by the matching values chunk
         }
         if labels:
@@ -619,7 +644,7 @@ class _NativeTraceBuilder:
         for rec in self._pending.pop(ns_key, []):
             rec["state_after"] = deepcopy(self.root_state)
             if ns_key and isinstance(data, dict):
-                rec["sub_state_after"] = _normalize_messages(data)
+                rec["sub_state_after"] = _normalize_messages(data, ids=self.ids)
         return self._stop_requested and not self._pending
 
     def finish(self) -> None:
@@ -738,12 +763,13 @@ async def _stream_or_invoke(
 
     if state is None:
         raise ValueError("resuming from a checkpoint (state=None) requires a native LangGraph graph")
-    running: dict = _normalize_messages(state)
+    ids = _ToolCallIds()
+    running: dict = _normalize_messages(state, ids=ids)
     step = 0
 
     def _legacy_record(node: str, update: Any) -> None:
         nonlocal step
-        upd = _normalize_messages(update)
+        upd = _normalize_messages(update, ids=ids)
         if isinstance(upd, dict):
             running.update(upd)
         step += 1
@@ -793,6 +819,44 @@ async def _stream_or_invoke(
     if inspect.isawaitable(result):
         result = await result
     return (_as_dict(result), trace, False)
+
+
+def _output_view(initial: dict | None, final: dict | None) -> dict | None:
+    """What the graph PRODUCED, for divergence purposes.
+
+    A messages channel (`add_messages`) carries the run's input at the front
+    of its final value. Comparing finals directly then reports a perturbed
+    INPUT as a diverged OUTPUT — every message perturbation shows DIVERGE
+    whether or not the graph's behaviour changed. So for each messages-shaped
+    list field whose final value starts with that run's own initial value,
+    keep only the appended tail. Other fields — including plain lists, where
+    "echoed unchanged" and "replaced with an identical list" can't be told
+    apart and the old whole-value compare stays right — pass through as-is.
+    """
+    from drift.chaos import messages as _m
+
+    if final is None:
+        return None
+    if not initial:
+        return final
+    out = dict(final)
+    for k, init_v in initial.items():
+        fin_v = out.get(k)
+        if not isinstance(fin_v, list) or not _m.is_messages_list(init_v):
+            continue
+        n = len(init_v)
+        # Dialect-insensitive prefix check: the user's input is usually role
+        # dicts / tuples while the final value is the normalised type-dict
+        # form, so compare (role, text, tool_calls) rather than raw dicts.
+        def _key(m: Any) -> tuple:
+            return (
+                _m.message_role(m),
+                _m.message_text(m),
+                _canonical([(c.get("name"), c.get("args")) for c in _m.message_tool_calls(m)]),
+            )
+        if len(fin_v) >= n and all(_key(a) == _key(b) for a, b in zip(fin_v[:n], init_v)):
+            out[k] = fin_v[n:]
+    return out
 
 
 def _canonical(value: Any) -> str:
@@ -941,12 +1005,16 @@ def _analyze_field_variance(name: str, values: list[Any]) -> FieldNoiseBand:
         band.numeric_max = float(max(values))
         return band
 
-    # Text stats.
-    if all(isinstance(v, str) for v in values) and len(values) >= 2:
+    # Text stats. Strings compare as themselves; structured values (a list of
+    # message dicts, a nested dict) compare on their canonical JSON, so an
+    # LLM-written conversation gets the same wobble floor a plain text field
+    # does instead of falling straight through to "not in the band".
+    if len(values) >= 2 and all(isinstance(v, (str, list, dict)) for v in values):
+        texts = [v if isinstance(v, str) else _canonical(v) for v in values]
         sims: list[float] = []
-        for i in range(len(values)):
-            for j in range(i + 1, len(values)):
-                sims.append(_text_similarity(values[i], values[j]))
+        for i in range(len(texts)):
+            for j in range(i + 1, len(texts)):
+                sims.append(_text_similarity(texts[i], texts[j]))
         if sims:
             band.text_min_similarity = min(sims)
             band.text_mean_similarity = sum(sims) / len(sims)
@@ -983,8 +1051,9 @@ async def _measure_noise_band(
         cfg = config_factory(f"rollout-{i}") if config_factory else None
         final, _trace, etype, _err, _dur = await _run_one(graph, fresh, cfg)
         # If any rollout crashes we skip it for noise analysis but keep its
-        # slot so callers can see counts didn't add up.
-        finals.append(None if etype else final)
+        # slot so callers can see counts didn't add up. Variance is measured
+        # on what the graph produced, not on the echoed input (see _output_view).
+        finals.append(None if etype else _output_view(_normalize_messages(fresh), final))
 
     successful = [f for f in finals if isinstance(f, dict)]
     if not successful:
@@ -1045,14 +1114,13 @@ def _is_within_noise(
 
     # Text similarity: take the best match against any observed baseline,
     # threshold against max(user_threshold, observed_baseline_floor).
-    if (
-        band.text_min_similarity is not None
-        and isinstance(perturbed_value, str)
-    ):
-        text_baselines = [v for v in band.distinct_values if isinstance(v, str)]
-        if not text_baselines:
+    # Structured values compare on canonical JSON (see _analyze_field_variance).
+    if band.text_min_similarity is not None and isinstance(perturbed_value, (str, list, dict)):
+        p_text = perturbed_value if isinstance(perturbed_value, str) else _canonical(perturbed_value)
+        baselines = [v if isinstance(v, str) else _canonical(v) for v in band.distinct_values]
+        if not baselines:
             return (False, None)
-        best_sim = max(_text_similarity(perturbed_value, b) for b in text_baselines)
+        best_sim = max(_text_similarity(p_text, b) for b in baselines)
         floor = max(similarity_threshold, band.text_min_similarity)
         return (best_sim >= floor, best_sim)
 
@@ -1472,18 +1540,23 @@ async def drift_test_async(
         # `divfiltered` carries tier-2/3 candidates the cascade dropped —
         # preserved so the UI can audit UNCHANGED verdicts.
         divfiltered: list[FieldDivergence] = []
+        # Compare what each run PRODUCED: reducer channels (messages) echo the
+        # run's input at the front of the final value, and the perturbed run's
+        # input differs by construction. See _output_view.
+        baseline_out = _output_view(_normalize_messages(baseline_input), baseline.final_state)
+        perturbed_out = _output_view(_normalize_messages(post_state), final)
         if divergence_mode == "off":
             diverged, divsum, divdetails = (False, "", [])
         elif divergence_mode == "tiered":
             remaining = max(0, max_judge_calls - judge_calls_used)
             diverged, divsum, divdetails, divfiltered, used = await _diff_states_tiered(
-                baseline.final_state, final, noise_band,
+                baseline_out, perturbed_out, noise_band,
                 judge_llm if remaining > 0 else None,
                 similarity_threshold, remaining,
             )
             judge_calls_used += used
         else:  # "exact"
-            diverged, divsum, divdetails = _diff_states(baseline.final_state, final)
+            diverged, divsum, divdetails = _diff_states(baseline_out, perturbed_out)
 
         # Judge runs even on crashes — partial traces (steps before the crash)
         # are often the most diagnostic. Skipped only when there's literally
