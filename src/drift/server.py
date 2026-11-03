@@ -782,6 +782,7 @@ def _shape_adapter_result(
             "event_summary": p.event_summary,
             "perturbed_field": p.perturbed_field,
             "pattern_type": p.pattern_type,
+            "fault_class": getattr(p, "fault_class", ""),
             "perturbed_initial_state": p.perturbed_initial_state,
             "final_state": p.final_state,
             "crashed": p.crashed,

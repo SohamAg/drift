@@ -186,6 +186,10 @@ class PerturbationResult:
     perturbed_field: str
     pattern_type: str
     perturbed_initial_state: dict
+    # "crash" | "omission" | "value" — the pattern's dependability fault class
+    # (see drift.chaos.patterns). Lets results group "the input went missing"
+    # apart from "the input was wrong" apart from "a dependency failed".
+    fault_class: str = ""
     final_state: dict | None = None
     crashed: bool = False
     error: str = ""
@@ -1441,6 +1445,7 @@ async def drift_test_async(
                 event_summary=record.summary,
                 perturbed_field=getattr(event, "field", ""),
                 pattern_type=getattr(event, "pattern", "auto_chaos"),
+                fault_class=getattr(event, "fault_class", ""),
                 perturbed_initial_state=post_state,
                 final_state=final,
                 crashed=bool(etype),
