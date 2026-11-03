@@ -279,14 +279,141 @@ def any_token(blob: str, tokens: Iterable[str]) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Chat-message view — what the message-aware detectors read.
+# ---------------------------------------------------------------------------
+#
+# The adapter normalises langchain messages into dicts (see
+# drift.adapters.langgraph._message_to_dict); user-supplied initial states
+# may carry OpenAI-style role dicts instead. `Msg` is the one shape the
+# message-aware detectors consume, built from either.
+
+
+@dataclass
+class Msg:
+    role: str                      # "human" | "ai" | "tool" | "system" | ""
+    text: str                      # flattened text content
+    step: int                      # trace step whose update introduced it
+    agent: str                     # node that wrote it
+    name: str = ""                 # message .name (agent name on multi-agent graphs)
+    tool_calls: list[dict] = field(default_factory=list)   # [{"name","args","id"}]
+    tool_call_id: str | None = None
+    status: str = ""               # "" | "error" (tool results)
+    index: int = 0                 # position in the overall conversation
+
+    @property
+    def is_error_result(self) -> bool:
+        if self.role != "tool":
+            return False
+        if self.status == "error":
+            return True
+        head = self.text.lstrip()[:40].lower()
+        return head.startswith("error") or "traceback (most recent call last)" in self.text.lower()
+
+    @property
+    def is_drift_injected(self) -> bool:
+        """True for the tool call / result pair a drift chaos pattern seeded
+        into the initial state (ids `drift_call_*`)."""
+        if self.tool_call_id and self.tool_call_id.startswith("drift_call_"):
+            return True
+        return any(
+            isinstance(tc.get("id"), str) and tc["id"].startswith("drift_call_")
+            for tc in self.tool_calls
+        )
+
+
+def _message_dicts_in(value: Any) -> list[Any]:
+    """Every list-of-messages found among a dict's top-level values, concatenated."""
+    from drift.chaos import messages as _m  # local import: keep failures importable alone
+
+    if not isinstance(value, dict):
+        return []
+    out: list[Any] = []
+    for v in value.values():
+        if _m.is_messages_list(v):
+            out.extend(v)
+    return out
+
+
+def messages_in_step(step: TraceStep) -> list[Msg]:
+    """Messages this step's `update` introduced, as `Msg` records."""
+    from drift.chaos import messages as _m
+
+    out: list[Msg] = []
+    for raw in _message_dicts_in(step.update):
+        calls = [
+            {"name": c.get("name"), "args": c.get("args"), "id": c.get("id")}
+            for c in _m.message_tool_calls(raw)
+        ]
+        tcid = raw.get("tool_call_id") if isinstance(raw, dict) else getattr(raw, "tool_call_id", None)
+        status = raw.get("status", "") if isinstance(raw, dict) else getattr(raw, "status", "")
+        name = raw.get("name", "") if isinstance(raw, dict) else getattr(raw, "name", "")
+        out.append(Msg(
+            role=_m.message_role(raw),
+            text=_m.message_text(raw),
+            step=step.step,
+            agent=step.agent,
+            name=str(name or ""),
+            tool_calls=calls,
+            tool_call_id=str(tcid) if tcid is not None else None,
+            status=str(status or "") if status != "success" else "",
+        ))
+    return out
+
+
+def conversation(ctx: CoordinationDetectorContext) -> list[Msg]:
+    """The conversation as the nodes wrote it: every step's new messages in
+    order, plus — first — the messages already present in `initial_state`
+    (step 0, agent "" ) so injected context the graph was handed is visible
+    too. Indices are assigned in this order."""
+    out: list[Msg] = []
+    if ctx.initial_state:
+        seed = TraceStep(step=0, agent="", kind="initial", update=dict(ctx.initial_state))
+        out.extend(messages_in_step(seed))
+    for s in ctx.steps:
+        out.extend(messages_in_step(s))
+    for i, m in enumerate(out):
+        m.index = i
+    return out
+
+
+def pair_tool_results(msgs: list[Msg]) -> dict[int, int]:
+    """Map conversation index of each AI tool call's owning message -> index of
+    its tool result. Pairs by tool_call_id when the result names one that is
+    outstanding, else positionally (oldest outstanding call first)."""
+    outstanding: list[tuple[str | None, int]] = []   # (call id, ai msg index)
+    pairs: dict[int, int] = {}
+    for m in msgs:
+        if m.role == "ai" and m.tool_calls:
+            for tc in m.tool_calls:
+                outstanding.append((tc.get("id"), m.index))
+        elif m.role == "tool":
+            hit = None
+            if m.tool_call_id is not None:
+                for k, (cid, _) in enumerate(outstanding):
+                    if cid == m.tool_call_id:
+                        hit = k
+                        break
+            if hit is None and outstanding:
+                hit = 0
+            if hit is not None:
+                _, ai_idx = outstanding.pop(hit)
+                pairs.setdefault(ai_idx, m.index)
+    return pairs
+
+
 __all__ = [
     "CoordinationDetector",
     "CoordinationDetectorContext",
+    "Msg",
     "TraceStep",
     "any_token",
     "collect_string_values",
+    "conversation",
     "from_adapter_trace",
     "from_native",
     "lowercased_text_blob",
+    "messages_in_step",
+    "pair_tool_results",
     "role_matches",
 ]

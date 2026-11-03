@@ -31,12 +31,15 @@ from drift.failures.library import (
     contradictory_decisions,
     hallucinated_reference,
     infinite_handoff,
+    injected_instruction_followed,
     policy_inconsistency_across_steps,
     premature_termination,
     repeated_identical_action,
     role_drift,
+    silent_tool_failure,
     stale_state_reference,
     subagent_fanout_excess,
+    tool_call_loop,
     unacknowledged_error,
     verifier_always_approves,
 )
@@ -62,6 +65,12 @@ ALL_DETECTORS = [
     unacknowledged_error,
     premature_termination,
     policy_inconsistency_across_steps,
+    # Message-aware detectors — read the chat messages nodes write (tool calls,
+    # tool results, AI turns), so they see the tool layer the graph-node-level
+    # detectors above can't.
+    tool_call_loop,
+    silent_tool_failure,
+    injected_instruction_followed,
 ]
 
 
@@ -141,13 +150,16 @@ __all__ = [
     "from_native",
     "hallucinated_reference",
     "infinite_handoff",
+    "injected_instruction_followed",
     "mast_mode_map",
     "policy_inconsistency_across_steps",
     "premature_termination",
     "role_drift",
     "run_all_on_text",
     "run_all_on_trace",
+    "silent_tool_failure",
     "stale_state_reference",
     "subagent_fanout_excess",
+    "tool_call_loop",
     "verifier_always_approves",
 ]

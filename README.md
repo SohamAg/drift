@@ -89,11 +89,22 @@ Currently shipped:
 | `unacknowledged_error` | Anthropic engineering blog (silently swallowed tool/agent errors) |
 | `premature_termination`¹ | MAST 4.1 (termination errors) |
 | `policy_inconsistency_across_steps`¹ | MAST 1.5 (configuration drift) |
+| `tool_call_loop`² | MAST 1.3 at the tool layer + tool-repetition-rate metric (arXiv:2601.17915) |
+| `silent_tool_failure`² | AgentChaos "Silent" outcome class (arXiv:2608.06790) + Anthropic postmortem |
+| `injected_instruction_followed`² | AgentDojo indirect-injection protocol + OWASP LLM01; canary-verified |
 
 ¹ requires a small config hint (`required_followups=` / `policy_field=`
 on `drift_test`, or the matching fields in the Test/Import tabs) —
 silent without it, by design. See each detector's doc under
 `docs/detectors/` for the full config shape.
+
+² message-aware: reads the chat messages nodes write (AI tool calls, tool
+results, final answers) rather than top-level state fields, so these see
+the tool layer the others can't. `injected_instruction_followed` is the
+second half of the `inject_tool_result_instruction` chaos pattern — the
+pattern plants a tool result demanding a `DRIFT-CANARY-xxxxxx` phrase, the
+detector fires only if a later AI message emits it. Deterministic verdict,
+no LLM.
 
 Each detector ships a structured `detect()` (over the adapter trace) plus a
 text-only `detect_from_text()` (for MAST-style transcripts) plus a curated

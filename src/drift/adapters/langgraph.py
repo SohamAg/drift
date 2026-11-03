@@ -474,6 +474,11 @@ def _renumber_tool_call_ids(msgs: list[Any]) -> None:
             continue
         for tc in m.get("tool_calls") or []:
             if isinstance(tc, dict):
+                # Ids drift itself injected (chaos patterns use `drift_call_*`)
+                # are already stable and mark the call as drift's, not the
+                # graph's — detectors rely on that; leave them alone.
+                if isinstance(tc.get("id"), str) and tc["id"].startswith("drift_call_"):
+                    continue
                 k += 1
                 new_id = f"call_{k}"
                 if tc.get("id") is not None:
