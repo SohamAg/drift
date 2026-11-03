@@ -38,6 +38,14 @@ It does NOT import langgraph. Anything with `.invoke(dict) -> dict` (or
 they just don't produce a trace and so can't be judged. That lets us ship +
 test without pulling langgraph as a hard dep and covers homemade runners.
 
+When the graph IS a real compiled LangGraph (its `.stream` accepts
+`stream_mode`), the adapter streams with `stream_mode=["updates", "values"]`
+and `subgraphs=True`: `state_after` is the graph's true reducer-applied
+state, subgraph super-steps (including sub-agents started inside a tool
+call) appear as `parent/inner` steps, langchain messages are normalised to
+small stable dicts, and a crash's partial trace is kept. See
+`_stream_or_invoke` / `_NativeTraceBuilder`.
+
 For chaos that fires *between* nodes (not just at initial state), the
 user needs to switch their graph to a langgraph checkpointer and use a
 stepwise driver — out of scope for the MVP adapter, where the perturbation
@@ -182,6 +190,8 @@ class PerturbationResult:
     crashed: bool = False
     error: str = ""
     error_type: str = ""
+    # "" when not crashed; else "recursion_limit" | "exception" — see _classify_crash.
+    crash_class: str = ""
     diverged: bool = False
     divergence_summary: str = ""
     duration_s: float = 0.0
@@ -214,6 +224,8 @@ class BaselineResult:
     crashed: bool = False
     error: str = ""
     error_type: str = ""
+    # "" when not crashed; else "recursion_limit" | "exception" — see _classify_crash.
+    crash_class: str = ""
     duration_s: float = 0.0
     trace: list[dict] = field(default_factory=list)
     judge_findings: list[dict] = field(default_factory=list)
@@ -250,6 +262,15 @@ class AdapterResult:
     @property
     def n_diverged(self) -> int:
         return sum(1 for p in self.perturbations if p.diverged and not p.crashed)
+
+    @property
+    def n_recursion_limit(self) -> int:
+        """Crashes that were LangGraph's recursion limit firing — i.e. the graph
+        looped until the framework stopped it. A subset of `n_crashed`."""
+        return sum(
+            1 for p in self.perturbations
+            if p.crashed and p.crash_class == CRASH_CLASS_RECURSION_LIMIT
+        )
 
     @property
     def n_unchanged(self) -> int:
@@ -290,6 +311,10 @@ class AdapterResult:
             f"drift × graph: {len(self.perturbations)} perturbation(s) "
             f"(intensity={self.intensity}, schema yielded {self.patterns_total} pattern(s))",
             f"  crashed         : {self.n_crashed}",
+        ]
+        if self.n_recursion_limit:
+            out.append(f"    of which looped to recursion limit: {self.n_recursion_limit}")
+        out += [
             f"  diverged        : {self.n_diverged}",
             f"  unchanged       : {self.n_unchanged}",
         ]
@@ -382,92 +407,341 @@ def _normalize_chunk(chunk: Any) -> dict[str, dict]:
     return {"_chunk": {"_value": chunk}}
 
 
+# ---- message normalization -------------------------------------------------
+#
+# LangGraph graphs built on `add_messages` carry langchain `BaseMessage`
+# objects in state. Those objects are hostile to everything drift does
+# downstream: they aren't JSON, their `==` includes a per-run random `id`,
+# and `response_metadata` / `usage_metadata` differ on every LLM call. Left
+# raw, the `messages` field diverges on EVERY perturbation, which is pure
+# noise. We normalize each message to a small, stable dict at capture time:
+#
+#     {"type": "ai", "content": "...", "name": "...",
+#      "tool_calls": [{"name": ..., "args": ...}], "status": "error"}
+#
+# Per-run message `id`s are dropped. Tool-call ids are KEPT but renumbered
+# positionally within each message list (`call_1`, `call_2`, ...) with the
+# matching ToolMessage.tool_call_id remapped — stable across runs, and the
+# normalised state still round-trips into `add_messages` (which rejects an
+# AI tool_call without an id). Fork-edit-replay depends on that round trip.
+
+
+def _is_message_object(value: Any) -> bool:
+    if isinstance(value, (dict, list, tuple, set, str, bytes, int, float, bool)) or value is None:
+        return False
+    return (
+        hasattr(value, "type")
+        and hasattr(value, "content")
+        and callable(getattr(value, "model_dump", None))
+    )
+
+
+def _message_to_dict(msg: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "type": str(getattr(msg, "type", "") or ""),
+        "content": _normalize_messages(getattr(msg, "content", "")),
+    }
+    name = getattr(msg, "name", None)
+    if name:
+        out["name"] = name
+    tool_calls = getattr(msg, "tool_calls", None)
+    if tool_calls:
+        out["tool_calls"] = [
+            {"name": tc.get("name"), "args": tc.get("args"), "id": tc.get("id")}
+            for tc in tool_calls
+            if isinstance(tc, dict)
+        ]
+    if out["type"] == "tool":
+        out["tool_call_id"] = getattr(msg, "tool_call_id", None)
+    status = getattr(msg, "status", None)
+    if status and status != "success":
+        out["status"] = status
+    return out
+
+
+def _renumber_tool_call_ids(msgs: list[Any]) -> None:
+    """In-place: replace provider-issued tool-call ids (random per run) with
+    positional `call_<k>` ids, remapping each ToolMessage.tool_call_id to
+    match. Only touches dicts produced by `_message_to_dict`."""
+    mapping: dict[Any, str] = {}
+    k = 0
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        for tc in m.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                k += 1
+                new_id = f"call_{k}"
+                if tc.get("id") is not None:
+                    mapping[tc["id"]] = new_id
+                tc["id"] = new_id
+    for m in msgs:
+        if isinstance(m, dict) and m.get("type") == "tool" and "tool_call_id" in m:
+            m["tool_call_id"] = mapping.get(m["tool_call_id"], m["tool_call_id"])
+
+
+def _normalize_messages(value: Any, _depth: int = 0) -> Any:
+    """Return a JSON-friendly deep copy of `value` with BaseMessage objects
+    replaced by trimmed dicts. Non-message leaves are deep-copied."""
+    if _depth > 24:
+        return deepcopy(value)
+    if _is_message_object(value):
+        return _message_to_dict(value)
+    if isinstance(value, dict):
+        return {k: _normalize_messages(v, _depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        had_message = any(_is_message_object(v) for v in value)
+        out = [_normalize_messages(v, _depth + 1) for v in value]
+        if had_message:
+            _renumber_tool_call_ids(out)
+        return out
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return deepcopy(value)
+
+
+def _accepts_stream_mode(fn: Any) -> bool:
+    """True when `fn` (a graph's .stream/.astream) takes a `stream_mode` kwarg
+    — i.e. it is a real LangGraph `Pregel`, not a hand-rolled stub. We check
+    for the explicit parameter name rather than `**kwargs` so test doubles
+    that merely accept anything don't get sent langgraph-specific kwargs."""
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    if "stream_mode" in sig.parameters:
+        return True
+    # `graph.with_config(...)` wraps the Pregel in a langchain RunnableBinding
+    # whose .stream is `(input, config=None, **kwargs)` — stream_mode is
+    # forwarded through **kwargs. Accept that only when the owner really is a
+    # langchain Runnable (has with_config + get_graph), so a hand-rolled stub
+    # that merely takes **kwargs stays on the legacy path.
+    owner = getattr(fn, "__self__", None)
+    has_var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    return bool(
+        has_var_kw
+        and owner is not None
+        and callable(getattr(owner, "with_config", None))
+        and callable(getattr(owner, "get_graph", None))
+    )
+
+
+def _namespace_labels(ns: Any) -> list[str]:
+    """`("tools:3f2a...", "inner:9b1c...")` -> `["tools", "inner"]`.
+
+    LangGraph namespaces are `node:task_id` strings; the task id is a random
+    uuid per run, so we keep only the node part for stable labels."""
+    out: list[str] = []
+    for part in (ns or ()):
+        s = str(part)
+        out.append(s.split(":", 1)[0] if ":" in s else s)
+    return out
+
+
+class _NativeTraceBuilder:
+    """Turns LangGraph `(namespace, mode, data)` chunks into drift trace records.
+
+    With `stream_mode=["updates", "values"]` LangGraph emits, per super-step,
+    one `updates` chunk (what the node wrote) followed by one `values` chunk
+    (the full reducer-applied state). We pair them so `state_after` is the
+    graph's real state — not drift's own `dict.update` approximation, which
+    silently replaced reducer channels (`messages` with `add_messages`) with
+    just the latest delta.
+
+    Subgraph steps (`subgraphs=True`) arrive under a non-empty namespace,
+    including subgraphs invoked from inside a tool call — the deepagents
+    pattern that used to be invisible. They are recorded as their own steps,
+    labelled `parent/inner`, with `state_after` = the ROOT state at that
+    moment (unchanged until the parent node commits) and the subgraph's own
+    state under `sub_state_after`. Keeping `state_after` root-shaped means
+    every detector that diffs state across steps keeps a single schema.
+    """
+
+    def __init__(self, initial_state: dict, trace: list[dict], max_steps: int | None):
+        self.root_state: dict = _normalize_messages(initial_state)
+        self.trace = trace
+        self.max_steps = max_steps
+        self.step = 0
+        self._pending: dict[tuple, list[dict]] = {}
+        self._stop_requested = False
+
+    def feed(self, item: Any) -> bool:
+        """Ingest one chunk. Returns True when the caller should stop consuming."""
+        if not (isinstance(item, tuple) and len(item) == 3):
+            # Defensive: a shape we don't recognise — record it rather than drop it.
+            self._record((), "_chunk", {"_value": item})
+            return self._flush(())
+        ns, mode, data = item
+        ns_key = tuple(str(p) for p in (ns or ()))
+        if mode == "updates":
+            for node, update in _normalize_chunk(data).items():
+                self._record(ns_key, node, update)
+            return False
+        if mode == "values":
+            if not ns_key and isinstance(data, dict):
+                self.root_state = _normalize_messages(data)
+            return self._flush(ns_key, data)
+        return False
+
+    def _record(self, ns_key: tuple, node: str, update: Any) -> None:
+        self.step += 1
+        labels = _namespace_labels(ns_key)
+        rec = {
+            "step": self.step,
+            "node": "/".join(labels + [str(node)]) if labels else str(node),
+            "update": _normalize_messages(update),
+            "state_after": None,  # filled by the matching values chunk
+        }
+        if labels:
+            rec["namespace"] = labels
+        self.trace.append(rec)
+        self._pending.setdefault(ns_key, []).append(rec)
+        if self.max_steps is not None and self.step >= self.max_steps:
+            self._stop_requested = True
+
+    def _flush(self, ns_key: tuple, data: Any = None) -> bool:
+        for rec in self._pending.pop(ns_key, []):
+            rec["state_after"] = deepcopy(self.root_state)
+            if ns_key and isinstance(data, dict):
+                rec["sub_state_after"] = _normalize_messages(data)
+        return self._stop_requested and not self._pending
+
+    def finish(self) -> None:
+        """Fill any record whose values chunk never arrived (crash mid-step)."""
+        for recs in self._pending.values():
+            for rec in recs:
+                if rec["state_after"] is None:
+                    rec["state_after"] = deepcopy(self.root_state)
+        self._pending.clear()
+
+
+_NATIVE_STREAM_KWARGS: dict[str, Any] = {
+    "stream_mode": ["updates", "values"],
+    "subgraphs": True,
+}
+
+
 async def _stream_or_invoke(
     graph: Any, state: dict, *, max_steps: int | None = None,
+    trace_sink: list[dict] | None = None,
 ) -> tuple[dict | None, list[dict], bool]:
     """Run the graph once. Capture a per-super-step trace if possible.
 
     Returns (final_state, trace, truncated). The trace is a list of
-    records `{step, node, update, state_after}` — empty if the graph
-    supports invoke only (plain function / `.invoke()`-only stubs).
-    `truncated` is True only when `max_steps` cut the run short (so
-    `final_state` is the accumulated state AT that step, not the graph's
-    true completion state — callers that surface `final_state` to a user
-    must make that distinction visible, not call it "final" unqualified).
+    records `{step, node, update, state_after[, namespace, sub_state_after]}`
+    — empty if the graph supports invoke only (plain function /
+    `.invoke()`-only stubs). `truncated` is True only when `max_steps` cut
+    the run short (so `final_state` is the accumulated state AT that step,
+    not the graph's true completion state — callers that surface
+    `final_state` to a user must make that distinction visible, not call
+    it "final" unqualified).
+
+    `trace_sink`, when given, is the list records are appended to as they
+    arrive. If the graph raises mid-run the caller still holds every step
+    captured before the exception — the partial trace of a crash (a
+    recursion-limit loop, say) is usually the most diagnostic artefact of
+    the whole run, and discarding it was a real loss.
+
+    Two streaming paths:
+
+    * **Native LangGraph** (`.stream`/`.astream` accepts `stream_mode`):
+      stream with `stream_mode=["updates", "values"], subgraphs=True`.
+      `state_after` is the graph's real reducer-applied state and subgraph
+      super-steps (including ones started inside a tool call) are visible
+      as `parent/inner` steps. BaseMessage objects are normalised to small
+      dicts — see `_message_to_dict`.
+    * **Legacy / stub** (`.stream`/`.astream` without `stream_mode`): the
+      default-mode chunks are `{node: update}`; we accumulate updates onto
+      a running dict. Correct for plain-replace channels, approximate for
+      reducer channels (there is no way to know a stub's reducer).
 
     Prefer `.astream()` -> `.stream()` -> `.ainvoke()` -> `.invoke()` ->
-    `__call__`. Streaming uses default mode (`"updates"`) and accumulates
-    each super-step's delta onto a running state dict. For most graphs
-    this matches the canonical final state; graphs that rely on langgraph
-    reducer channels (e.g. messages with `add_messages`) may see slight
-    drift in the merged final_state vs what `.invoke()` would return. The
-    trace is unaffected — it just records each node's emitted update.
-
-    `max_steps` only applies to the streaming paths — it stops consuming
-    the generator once that many super-steps have been captured, which
-    LangGraph supports (an abandoned async/sync generator is not an
-    error). It has no effect on the plain invoke/call fallback paths:
-    those run the graph in one opaque call with no step boundary to cut
-    at, so a non-streaming graph always runs to completion regardless.
+    `__call__`. `max_steps` only applies to the streaming paths — it stops
+    consuming the generator once that many super-steps have been captured,
+    which LangGraph supports (an abandoned async/sync generator is not an
+    error). It has no effect on the plain invoke/call fallback paths.
     """
-    running: dict = dict(state)
-    trace: list[dict] = []
-    step = 0
+    trace: list[dict] = trace_sink if trace_sink is not None else []
 
     astream = getattr(graph, "astream", None)
+    stream = getattr(graph, "stream", None)
+    native = (callable(astream) and _accepts_stream_mode(astream)) or (
+        callable(stream) and _accepts_stream_mode(stream)
+    )
+
+    if native:
+        builder = _NativeTraceBuilder(state, trace, max_steps)
+        truncated = False
+        try:
+            if callable(astream):
+                async for item in astream(state, **_NATIVE_STREAM_KWARGS):
+                    if builder.feed(item):
+                        truncated = True
+                        break
+            else:
+                for item in stream(state, **_NATIVE_STREAM_KWARGS):
+                    if builder.feed(item):
+                        truncated = True
+                        break
+        finally:
+            builder.finish()
+        return (builder.root_state, trace, truncated)
+
+    running: dict = _normalize_messages(state)
+    step = 0
+
+    def _legacy_record(node: str, update: Any) -> None:
+        nonlocal step
+        upd = _normalize_messages(update)
+        if isinstance(upd, dict):
+            running.update(upd)
+        step += 1
+        trace.append({
+            "step": step,
+            "node": node,
+            "update": upd,
+            "state_after": deepcopy(running),
+        })
+
     if callable(astream):
         async for chunk in astream(state):
             for node, update in _normalize_chunk(chunk).items():
-                if isinstance(update, dict):
-                    running.update(update)
-                step += 1
-                trace.append({
-                    "step": step,
-                    "node": node,
-                    "update": deepcopy(update),
-                    "state_after": deepcopy(running),
-                })
+                _legacy_record(node, update)
                 if max_steps is not None and step >= max_steps:
                     return (running, trace, True)
         return (running, trace, False)
 
-    stream = getattr(graph, "stream", None)
     if callable(stream):
         for chunk in stream(state):
             for node, update in _normalize_chunk(chunk).items():
-                if isinstance(update, dict):
-                    running.update(update)
-                step += 1
-                trace.append({
-                    "step": step,
-                    "node": node,
-                    "update": deepcopy(update),
-                    "state_after": deepcopy(running),
-                })
+                _legacy_record(node, update)
                 if max_steps is not None and step >= max_steps:
                     return (running, trace, True)
         return (running, trace, False)
 
     # Plain invoke fallback: no per-step trace possible, no truncation possible.
+    def _as_dict(result: Any) -> dict:
+        return _normalize_messages(result if isinstance(result, dict) else dict(result))
+
     ainvoke = getattr(graph, "ainvoke", None)
     if callable(ainvoke):
         result = ainvoke(state)
         if inspect.isawaitable(result):
             result = await result
-        return (result if isinstance(result, dict) else dict(result), [], False)
+        return (_as_dict(result), trace, False)
 
     invoke = getattr(graph, "invoke", None)
     if callable(invoke):
         result = invoke(state)
         if inspect.isawaitable(result):
             result = await result
-        return (result if isinstance(result, dict) else dict(result), [], False)
+        return (_as_dict(result), trace, False)
 
     # _validate_graph guaranteed the graph is at minimum callable.
     result = graph(state)
     if inspect.isawaitable(result):
         result = await result
-    return (result if isinstance(result, dict) else dict(result), [], False)
+    return (_as_dict(result), trace, False)
 
 
 def _canonical(value: Any) -> str:
@@ -862,6 +1136,25 @@ async def _diff_states_tiered(
     )
 
 
+# Crash classes. `error_type` is whatever the exception class was called;
+# `crash_class` is drift's coarse reading of it so callers (and the UI) can
+# tell "the graph looped until LangGraph's recursion limit stopped it" apart
+# from "a node raised". A recursion-limit crash is a coordination failure in
+# its own right — the loop is the finding — and the partial trace we now keep
+# for crashes shows exactly which nodes were cycling.
+CRASH_CLASS_RECURSION_LIMIT = "recursion_limit"
+CRASH_CLASS_EXCEPTION = "exception"
+
+
+def _classify_crash(error_type: str, error: str = "") -> str:
+    if not error_type:
+        return ""
+    blob = f"{error_type} {error}".lower()
+    if "graphrecursionerror" in blob or ("recursion" in blob and "limit" in blob):
+        return CRASH_CLASS_RECURSION_LIMIT
+    return CRASH_CLASS_EXCEPTION
+
+
 async def _run_one(
     graph: Any, initial_state: dict
 ) -> tuple[dict | None, list[dict], str, str, float]:
@@ -869,14 +1162,16 @@ async def _run_one(
 
     Returns (final_state_or_None, trace, error_type, error_msg, duration).
     Trace is [] if the graph doesn't support streaming or if it crashed
-    before any super-step yielded.
+    before any super-step yielded. On a crash AFTER some super-steps
+    yielded, the partial trace is returned — not discarded.
     """
     t0 = time.perf_counter()
+    sink: list[dict] = []
     try:
-        final, trace, _truncated = await _stream_or_invoke(graph, initial_state)
+        final, trace, _truncated = await _stream_or_invoke(graph, initial_state, trace_sink=sink)
         return (final, trace, "", "", time.perf_counter() - t0)
     except Exception as exc:  # noqa: BLE001 — user code, anything possible
-        return (None, [], type(exc).__name__, str(exc), time.perf_counter() - t0)
+        return (None, sink, type(exc).__name__, str(exc), time.perf_counter() - t0)
 
 
 async def _run_judge_on_trace(
@@ -1083,6 +1378,7 @@ async def drift_test_async(
         crashed=bool(betype),
         error=berr,
         error_type=betype,
+        crash_class=_classify_crash(betype, berr),
         duration_s=btime,
         trace=btrace,
         judge_findings=baseline_findings,
@@ -1150,6 +1446,7 @@ async def drift_test_async(
                 crashed=bool(etype),
                 error=err,
                 error_type=etype,
+                crash_class=_classify_crash(etype, err),
                 diverged=diverged,
                 divergence_summary=divsum,
                 duration_s=took,
@@ -1346,6 +1643,8 @@ class ForkBranch:
     crashed: bool = False
     error: str = ""
     error_type: str = ""
+    # "" when not crashed; else "recursion_limit" | "exception" — see _classify_crash.
+    crash_class: str = ""
     duration_s: float = 0.0
     coordination_findings: list[dict] = field(default_factory=list)
     # True when `max_steps` cut this branch short — final_state is the
@@ -1467,9 +1766,10 @@ async def _run_one_fork_branch(
 ) -> ForkBranch:
     """Run the graph once from `initial_state`, capture trace + coord findings."""
     t0 = time.perf_counter()
+    sink: list[dict] = []
     try:
         final_state, trace, truncated = await _stream_or_invoke(
-            graph, initial_state, max_steps=max_steps,
+            graph, initial_state, max_steps=max_steps, trace_sink=sink,
         )
         duration = time.perf_counter() - t0
         coord: list[dict] = []
@@ -1492,11 +1792,12 @@ async def _run_one_fork_branch(
     except Exception as exc:  # noqa: BLE001
         return ForkBranch(
             initial_state=deepcopy(initial_state),
-            trace=[],
+            trace=sink,  # partial trace up to the crash — not discarded
             final_state=None,
             crashed=True,
             error=str(exc)[:400],
             error_type=type(exc).__name__,
+            crash_class=_classify_crash(type(exc).__name__, str(exc)),
             duration_s=time.perf_counter() - t0,
         )
 
