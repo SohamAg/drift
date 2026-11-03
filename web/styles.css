@@ -657,6 +657,15 @@ button { font: inherit; cursor: pointer; }
    the theme's convention) — kept visually distinct from .info, which judge
    findings use (a reading, cool/"instrument"). */
 .pill.coord   { background: var(--accent-soft);   color: var(--accent);   border-color: transparent; }
+/* fault class of a chaos pattern (AgentChaos's crash / omission / value):
+   loud dependency failure / something missing or cut short / something
+   present but wrong. Quiet, informational — the verdict pill carries the
+   weight. */
+.pill.fault-crash    { background: var(--critical-soft); color: var(--critical); border-color: transparent; opacity: .85; }
+.pill.fault-omission { background: var(--warning-soft);  color: var(--warning);  border-color: transparent; opacity: .85; }
+.pill.fault-value    { background: var(--info-soft);     color: var(--info);     border-color: transparent; opacity: .85; }
+/* a super-step that ran inside a subgraph (sub-agent, tool-dispatched agent) */
+.pill.subgraph { background: transparent; color: var(--fg-subtle); border: 1px dashed var(--fg-subtle); font-weight: 500; padding: 1px 7px; }
 
 /* ----------------------------------------------------------------- table */
 .table-wrap {

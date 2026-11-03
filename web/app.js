@@ -575,11 +575,22 @@
         ? `wrote ${keys[0]}`
         : `wrote ${keys.join(', ')}`;
 
+    const isSubgraph = Array.isArray(step.namespace) && step.namespace.length > 0;
     const detail = el('div', { class: 'trace-step-detail' }, [
       el('div', { class: 'muted', text: 'update:' }),
       el('pre', { class: 'mono', text: JSON.stringify(update, null, 2) }),
-      el('div', { class: 'muted', style: 'margin-top: 6px;', text: 'state after this step:' }),
+      isSubgraph
+        ? el('div', { class: 'help', style: 'margin-top: 6px;',
+            text: `Subgraph step inside ${step.namespace.join(' / ')} — the root state below is unchanged until the parent node commits; the subgraph's own state follows.` })
+        : null,
+      el('div', { class: 'muted', style: 'margin-top: 6px;', text: isSubgraph ? 'root state at this step:' : 'state after this step:' }),
       el('pre', { class: 'mono', text: JSON.stringify(step.state_after || {}, null, 2) }),
+      isSubgraph && step.sub_state_after
+        ? el('div', { class: 'muted', style: 'margin-top: 6px;', text: 'subgraph state after this step:' })
+        : null,
+      isSubgraph && step.sub_state_after
+        ? el('pre', { class: 'mono', text: JSON.stringify(step.sub_state_after, null, 2) })
+        : null,
     ]);
 
     if (opts.forkable) {
@@ -597,7 +608,10 @@
     const row = el('div', { class: 'trace-step' + (opts.startExpanded ? ' expanded' : '') }, [
       el('div', { class: 'trace-step-num', text: '#' + step.step }),
       el('div', { class: 'trace-step-body' }, [
-        el('div', { class: 'trace-step-node', text: node }),
+        el('div', { class: 'trace-step-node' }, [
+          node,
+          isSubgraph ? el('span', { class: 'pill subgraph', style: 'margin-left: 6px;', text: 'subgraph' }) : null,
+        ]),
         el('div', { class: 'trace-step-summary', text: summary }),
         detail,
       ]),
@@ -770,6 +784,9 @@
     if (fork.n_coordination_findings != null) {
       kvs.push(['Coord findings (total)', String(fork.n_coordination_findings)]);
     }
+    if (fork.execution_note) {
+      kvs.push(['Execution', fork.execution_note]);
+    }
     kvs.push(['Duration', `${fork.duration_s}s`]);
     kvs.forEach(([k, v]) => {
       kvHost.appendChild(el('span', { class: 'k', text: k }));
@@ -818,6 +835,17 @@
   function renderForkBranch(title, branch) {
     const box = el('div', { class: 'fork-branch' });
     box.appendChild(el('div', { class: 'fork-branch-title', text: title }));
+    if (branch.execution_mode) {
+      const real = branch.execution_mode === 'checkpoint';
+      box.appendChild(el('span', {
+        class: real ? 'pill success' : 'pill',
+        style: 'margin-bottom: 6px;',
+        text: real ? 'resumed a real checkpoint' : 'rerun from edited state',
+        title: real
+          ? 'The graph has a checkpointer and the parent ran on a known thread: drift applied the edit with update_state and resumed. Only the continuation executed.'
+          : 'The graph was invoked fresh with the edited state as a new initial state (no checkpointer, or no checkpoint for this step).',
+      }));
+    }
     if (branch.truncated) {
       box.appendChild(el('span', { class: 'pill warning', style: 'margin-bottom: 6px;',
         text: 'stopped early — final_state is a snapshot, not completion' }));
@@ -1006,7 +1034,9 @@
     let pillClass, pillText, detail;
     if (p.crashed) {
       pillClass = 'pill danger';
-      pillText  = `Crash · ${p.error_type}`;
+      pillText  = p.crash_class === 'recursion_limit'
+        ? 'Crash · looped to recursion limit'
+        : `Crash · ${p.error_type}`;
       detail = p.error;
     } else if (p.diverged) {
       pillClass = 'pill warning';
@@ -1048,6 +1078,10 @@
     const head = el('div', { class: 'perturbation-head' }, [
       el('span', { class: pillClass, text: pillText }),
       el('code', { text: p.event_name }),
+      p.fault_class
+        ? el('span', { class: `pill fault-${p.fault_class}`, text: p.fault_class,
+                       title: 'Fault class: crash = a dependency failed loudly; omission = input missing or cut short; value = input present but wrong.' })
+        : null,
       el('span', { class: 'muted', text: `(${p.duration_s}s)` }),
       ...findingBadges,
       el('span', { class: 'muted', style: 'margin-left: auto; font-size: 11px;', text: 'click to expand' }),
@@ -1106,11 +1140,15 @@
   }
 
   function renderCoordFinding(f) {
+    const security = f.failure_type === 'injected_instruction_followed';
     return el('div', {
-      style: 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 3px;',
+      style: security
+        ? 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid var(--critical); background: var(--critical-soft); border-radius: 3px;'
+        : 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 3px;',
     }, [
       el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 2px; flex-wrap: wrap;' }, [
         el('span', { class: 'pill coord', text: 'Coord' }),
+        security ? el('span', { class: 'pill danger', text: 'Prompt injection' }) : null,
         renderFindingTypeBadge(f.failure_type),
         (f.agents_involved && f.agents_involved.length)
           ? el('span', { class: 'muted', style: 'font-size: 11px;',
@@ -1220,6 +1258,21 @@
       label: 'Infinite handoff',
       what: 'Two agents alternated past threshold (4+) with no state advancement — no new keys written, no new non-empty fields, no container growth. The classic "you handle it / no you handle it" loop.',
       source: 'MAST 1.3 (Step Repetition) + Cognition open problem #2',
+    },
+    'tool_call_loop': {
+      label: 'Tool call loop',
+      what: 'The same tool was called with the same arguments three or more times and every result came back identical — a stuck loop burning tool and LLM budget. Polling whose results change is not flagged; handoff/transfer tools are excluded (routing, not work).',
+      source: 'MAST 1.3 at the tool layer; tool-repetition-rate metric (arXiv:2601.17915)',
+    },
+    'silent_tool_failure': {
+      label: 'Silent tool failure',
+      what: 'A tool result was an error and the final answer never surfaced it: no retry, no later success, no mention of a failure. The planted failed call from the inject_tool_error_result chaos pattern counts, so this answers "does your graph tell anyone when a dependency fails?"',
+      source: 'AgentChaos "Silent" outcome class (arXiv:2608.06790); Anthropic engineering postmortem',
+    },
+    'injected_instruction_followed': {
+      label: 'Injected instruction followed',
+      what: 'A tool result carried an instruction to reply with a DRIFT-CANARY phrase and a later AI message emitted it: the agent followed data as if it were the user. Deterministic string match, no LLM. Planted by the inject_tool_result_instruction chaos pattern.',
+      source: 'AgentDojo indirect-injection protocol (arXiv:2406.13352); OWASP LLM01',
     },
     'subagent_fanout_excess': {
       label: 'Subagent fanout excess',
