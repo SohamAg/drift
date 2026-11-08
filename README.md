@@ -425,7 +425,7 @@ e:\drift\
 │   ├── regression.py      — run-over-run trend tracking
 │   ├── report.py          — self-contained HTML evidence report
 │   ├── server.py          — FastAPI app behind the web UI
-│   └── cli.py             — `drift run | gate | serve | report | history`
+│   └── cli.py             — `drift run | gate | targets | serve | report | history`
 ├── web/                   — vanilla HTML/CSS/JS UI (Test, Import, Build, Fork, Results, …)
 ├── examples/adapters/     — validation harnesses against real third-party graphs
 ├── examples/targets/      — registry of real third-party MAS (see docs/targets_setup.md)

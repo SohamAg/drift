@@ -19,6 +19,11 @@ different builder with `module:fn`, a different state function with
 Exit code `0` = every rule passed, `1` = a rule was violated, `2`/`SystemExit`
 = usage or build error (the message says what).
 
+Running one of the real third-party systems drift is validated against
+instead of your own module: `drift targets` lists the registry
+(`examples/targets/`) with dependency status; `drift run --target
+supervisor_basic --preset quick` runs it.
+
 ## Two steps: run where the key is, gate anywhere
 
 ```bash

@@ -218,3 +218,19 @@ def test_server_gate_endpoint_matches_the_cli_evaluator():
     assert [v["rule"] for v in body["violations"]] == [v.rule for v in expect.violations]
     bad = client.post("/api/gate", json={"result": run, "rules": ["nonsense"]})
     assert bad.status_code == 400 and "unknown gate rule" in bad.json()["detail"]
+
+
+def test_targets_lists_the_registry(capsys) -> None:
+    assert main(["targets"]) == 0
+    out = capsys.readouterr().out
+    assert "supervisor_basic" in out and "deepagents_tooldispatch" in out
+    assert "drift run --target" in out
+
+
+def test_targets_json(capsys) -> None:
+    import json as _json
+
+    assert main(["targets", "--json"]) == 0
+    rows = _json.loads(capsys.readouterr().out)
+    assert {r["name"] for r in rows} >= {"supervisor_basic", "swarm_peer"}
+    assert all("importable" in r and "topology" in r for r in rows)

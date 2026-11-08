@@ -4,6 +4,8 @@
                                      print the verdicts, optionally write the
                                      JSON the web UI reads and fail the build
     drift gate <results.json>        apply pass/fail rules to a saved result
+    drift targets                    list the registry of real third-party MAS
+                                     usable with `drift run --target NAME`
     drift serve                      the local web UI
     drift report <results.json>      self-contained HTML evidence report
     drift history [<graph>]          regression trend from tracked runs
@@ -251,6 +253,34 @@ def _print_run(shaped: dict, took: float) -> None:
     print(f"({took:.1f}s)")
 
 
+def cmd_targets(args: argparse.Namespace) -> int:
+    """List examples/targets — real third-party multi-agent systems drift is
+    validated against — with whether each is runnable here."""
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    try:
+        from examples.targets import registry
+    except ImportError as e:
+        raise SystemExit(f"target registry unavailable ({e}); run from a drift checkout")
+    rows = registry()
+    if args.json:
+        import json
+
+        print(json.dumps(rows, indent=1))
+        return 0
+    width = max(len(r["name"]) for r in rows) if rows else 10
+    for r in rows:
+        status = "ready" if r["importable"] else f"missing {', '.join(r['missing_deps'])}"
+        key = " · needs OPENAI_API_KEY" if r["needs_api_key"] else ""
+        print(f"{r['name']:<{width}}  {r['topology']:<13} {status}{key}")
+        print(f"{'':<{width}}  {r['description']}")
+        print(f"{'':<{width}}  source: {r['source']}")
+    print()
+    print("run one:  drift run --target <name> [--query ...] [--preset quick]")
+    return 0
+
+
 def cmd_gate(args: argparse.Namespace) -> int:
     import json
 
@@ -424,6 +454,9 @@ def main(argv: list[str] | None = None) -> int:
     gate_p.add_argument("--fail-on", action="append", required=True,
                         help="same rules as `drift run --fail-on`")
 
+    tgt_p = sub.add_parser("targets", help="list the registry of real third-party MAS for --target")
+    tgt_p.add_argument("--json", action="store_true", help="machine-readable output")
+
     srv_p = sub.add_parser("serve", help="launch the local web UI")
     srv_p.add_argument("--host", default="127.0.0.1")
     srv_p.add_argument("--port", type=int, default=8765)
@@ -466,6 +499,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(args)
     if args.cmd == "gate":
         return cmd_gate(args)
+    if args.cmd == "targets":
+        return cmd_targets(args)
     if args.cmd == "serve":
         return cmd_serve(args)
     if args.cmd == "report":
