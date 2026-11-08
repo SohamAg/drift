@@ -434,3 +434,70 @@ def test_tool_call_loop_ignores_handoff_tools():
         steps.append(("supervisor", [_ai(calls=[("transfer_to_math_expert", {}, f"c{k}")])]))
         steps.append(("supervisor/tools", [_tool("Successfully transferred to math_expert", f"c{k}")]))
     assert tool_call_loop.detect(_ctx(_trace(steps))) == []
+
+
+# ---- silent_tool_failure: two-tier acknowledgment ---------------------------------------
+
+
+def _supervisor_miss_trace(specialist_text, final_text):
+    """The live false negative: the supervisor's `lookup` call fails (planted
+    in the initial state), a DIFFERENT specialist hedges about its own tools,
+    the supervisor's final answer surfaces nothing."""
+    init = {"messages": [
+        _human("What is 7 times 8, and the capital of France?"),
+        _ai(calls=[("lookup", {"q": "capital of France"}, "drift_call_err")]),
+        _tool("Error: connection reset by peer", "drift_call_err", "error"),
+    ]}
+    steps = [
+        ("supervisor/agent", [_ai(calls=[("transfer_to_math_expert", {}, "c1")])]),
+        ("supervisor", [_tool("Successfully transferred to math_expert", "c1")]),
+        ("math_expert/agent", [_ai(specialist_text)]),
+        ("supervisor/agent", [_ai(final_text)]),
+    ]
+    return _trace(steps, init), init
+
+
+def test_silent_tool_failure_ignores_bystander_capability_hedge():
+    trace, init = _supervisor_miss_trace(
+        "7 times 8 is 56. Unfortunately, I can't search the web, but the capital of France is Paris.",
+        "7 times 8 is 56, and the capital of France is Paris.",
+    )
+    findings = silent_tool_failure.detect(_ctx(trace, initial=init))
+    assert len(findings) == 1, findings
+    assert "'lookup'" in findings[0].summary
+    assert "a different agent (math_expert/agent) hedged" in findings[0].summary
+
+
+def test_silent_tool_failure_weak_hedge_in_final_answer_counts():
+    trace, init = _supervisor_miss_trace(
+        "7 times 8 is 56.",
+        "7 times 8 is 56. I couldn't look up the capital, but it is Paris.",
+    )
+    assert silent_tool_failure.detect(_ctx(trace, initial=init)) == []
+
+
+def test_silent_tool_failure_strong_token_from_any_agent_counts():
+    trace, init = _supervisor_miss_trace(
+        "The lookup service returned an error, so I'll answer from memory: Paris.",
+        "7 times 8 is 56, and the capital of France is Paris.",
+    )
+    assert silent_tool_failure.detect(_ctx(trace, initial=init)) == []
+
+
+def test_silent_tool_failure_weak_hedge_from_the_calling_agent_counts():
+    """Same agent that made the failed call hedging mid-run is an ack, even
+    though the parent commit and the inner step carry different labels."""
+    steps = [
+        ("researcher/agent", [_ai(calls=[("search", {"q": "x"}, "c1")])]),
+        ("researcher/tools", [_tool("Error: 503", "c1", "error")]),
+        ("researcher", [_ai("I can't get search results right now; answering from memory.")]),
+        ("supervisor/agent", [_ai("The answer is 42.")]),
+    ]
+    assert silent_tool_failure.detect(_ctx(_trace(steps))) == []
+
+
+def test_silent_tool_failure_token_tiers_are_disjoint_and_complete():
+    assert not set(silent_tool_failure.STRONG_ACK_TOKENS) & set(silent_tool_failure.WEAK_ACK_TOKENS)
+    assert set(silent_tool_failure.ACK_TOKENS) == (
+        set(silent_tool_failure.STRONG_ACK_TOKENS) | set(silent_tool_failure.WEAK_ACK_TOKENS)
+    )

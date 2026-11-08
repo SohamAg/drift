@@ -23,9 +23,17 @@ fires once per failed tool when **all** hold:
    bucket already reports that.)
 2. No later AI message calls the same tool again (no retry).
 3. No later non-error result from the same tool arrives (no recovery).
-4. No later AI message text contains a failure/retry/fallback token —
-   `error`, `failed`, `unable`, `couldn't`, `timed out`, `retry`,
-   `fallback`, `sorry`, `unavailable`, `went wrong`, and so on.
+4. No later AI message **surfaces** the failure. Two tiers:
+   - **Strong** failure vocabulary — `error`, `failed`, `timed out`,
+     `unavailable`, `retry`, `fallback`, `went wrong`, `rate limit`, … —
+     counts wherever it appears.
+   - **Weak** hedges — `can't`, `cannot`, `unable`, `couldn't`, `sorry`,
+     `problem`, … — are ordinary prose. They count only when spoken by
+     the agent that made the failed call, or in the final answer itself.
+     A *different* specialist saying "I can't search the web" about its
+     own tools is a capability statement, not an acknowledgment of your
+     failed call — that exact sentence hid a real silent failure on a
+     live supervisor run until this rule was split.
 
 The failed call drift's own `inject_tool_error_result` chaos pattern
 plants in the initial state **counts**. That pattern exists so this
@@ -37,6 +45,8 @@ fails, does your graph tell anyone?
 - A later **successful** result from the same tool lands.
 - The final answer **mentions** the failure in any recognisable way —
   even a hedge like "I couldn't verify this" counts as surfacing it.
+- The **calling agent** hedges mid-run ("I can't get search results right
+  now; answering from memory") — the agent that owned the call knew.
 - An error result with **no final answer after it**.
 - A second failure of the same tool in the same run (one finding per
   tool, anchored to the first unacknowledged occurrence).
