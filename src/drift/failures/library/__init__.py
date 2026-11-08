@@ -32,6 +32,7 @@ from drift.failures.library import (
     hallucinated_reference,
     infinite_handoff,
     injected_instruction_followed,
+    injected_tool_call_followed,
     novel_tool_call,
     policy_inconsistency_across_steps,
     premature_termination,
@@ -73,6 +74,7 @@ ALL_DETECTORS = [
     tool_call_loop,
     silent_tool_failure,
     injected_instruction_followed,
+    injected_tool_call_followed,
     retry_amplification,
     novel_tool_call,
 ]

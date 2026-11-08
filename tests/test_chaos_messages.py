@@ -265,3 +265,22 @@ def test_every_message_pattern_produces_a_state_langgraph_accepts():
     by_pattern = {p.pattern_type: p for p in result.perturbations}
     assert by_pattern["inject_tool_error_result"].final_state["messages"][-1]["content"] == "saw 4 messages"
     assert by_pattern["drop_last_user_message"].final_state["messages"][-1]["content"] == "saw 1 messages"
+
+
+def test_inject_tool_result_tool_hijack_names_the_tool_and_canary():
+    from drift.chaos.patterns import CANARY_PATTERN, InjectToolResultToolHijack
+
+    w = _world(messages=[
+        {"type": "human", "content": "Find the Q3 figures."},
+        {"type": "ai", "content": "", "tool_calls": [{"name": "search", "args": {"q": "Q3"}, "id": "c1"}]},
+        {"type": "tool", "content": "figures…", "tool_call_id": "c1"},
+    ])
+    ev = InjectToolResultToolHijack("messages", seed=3)
+    rec = ev.apply(w)
+    msgs = w.state.messages
+    assert msgs[-2]["tool_calls"][0]["id"] == "drift_call_hij"
+    assert msgs[-2]["tool_calls"][0]["name"] == "search"
+    assert "call the `search` tool" in msgs[-1]["content"]
+    assert CANARY_PATTERN.search(msgs[-1]["content"]).group(0) == ev.canary
+    assert ev.canary in rec.summary and "search" in rec.summary
+    assert ev.fault_class == "value"

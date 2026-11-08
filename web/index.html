@@ -475,6 +475,20 @@
             <input type="number" id="import-max-perturbations" value="1" min="0" max="200" />
           </div>
         </div>
+        <div class="row two-col">
+          <div class="field">
+            <label for="import-divergence-mode">Divergence mode</label>
+            <select id="import-divergence-mode">
+              <option value="exact">exact (fast, noisy on LLM graphs)</option>
+              <option value="tiered" selected>tiered (cascade — recommended for LLM graphs)</option>
+              <option value="off">off (crash detection only)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="import-perturbation-rollouts">Rollouts per perturbation <span class="muted">(k/N outcomes)</span></label>
+            <input type="number" id="import-perturbation-rollouts" value="1" min="1" max="10" />
+          </div>
+        </div>
 
         <div class="field">
           <label for="import-coordination-roles">Agent roles <span class="muted">(optional, one "node: role" per line — powers role_drift)</span></label>

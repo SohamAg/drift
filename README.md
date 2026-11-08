@@ -84,6 +84,7 @@ crash / omission / value split):
 | `garble_last_user_message` | value | 20% of characters corrupted in transit |
 | `inject_tool_error_result` | crash | the agent's last tool call failed upstream |
 | `inject_tool_result_instruction` | value | indirect prompt injection via a tool result, canary-verified |
+| `inject_tool_result_tool_hijack` | value | injection that demands a tool call with a canary argument — the AgentDojo success criterion |
 | `inject_fabricated_prior_turn` | value | history claims the task is already done |
 
 Perturbed conversations are built in the same dialect your state uses, so
@@ -142,6 +143,7 @@ Currently shipped:
 | `tool_call_loop`² | MAST 1.3 at the tool layer + tool-repetition-rate metric (arXiv:2601.17915) |
 | `silent_tool_failure`² | AgentChaos "Silent" outcome class (arXiv:2608.06790) + Anthropic postmortem |
 | `injected_instruction_followed`² | AgentDojo indirect-injection protocol + OWASP LLM01; canary-verified |
+| `injected_tool_call_followed`² | AgentDojo success criterion (the attacker's tool call executed); canary in tool-call arguments |
 | `retry_amplification`² | AgentChaos cost amplification (LLM calls/task up to 4.24× under faults, arXiv:2608.06790) + MAST 1.3 |
 | `novel_tool_call`² | AgentDojo (injection success = unauthorised tool call) + ToolEmu + OWASP LLM06; side-effect tools flagged |
 
@@ -156,7 +158,9 @@ the tool layer the others can't. `injected_instruction_followed` is the
 second half of the `inject_tool_result_instruction` chaos pattern — the
 pattern plants a tool result demanding a `DRIFT-CANARY-xxxxxx` phrase, the
 detector fires only if a later AI message emits it. Deterministic verdict,
-no LLM.
+no LLM. `injected_tool_call_followed` is the same contract at the action
+layer: `inject_tool_result_tool_hijack` demands a tool call with the canary
+as its argument, and the detector fires when a later tool call carries it.
 
 Each detector ships a structured `detect()` (over the adapter trace) plus a
 text-only `detect_from_text()` (for MAST-style transcripts) plus a curated
@@ -465,8 +469,8 @@ top-vs-bottom compare).
   The noise floor measurement helps, but the threshold itself is one
   number applied across all fields — a per-field comparator override
   would be more correct.
-- **17 coordination detectors is a starting kit, not a complete library.**
-  Twelve read node-level state writes; five read the chat messages (tool
+- **18 coordination detectors is a starting kit, not a complete library.**
+  Twelve read node-level state writes; six read the chat messages (tool
   calls, tool results, final answers, work and tools used vs the baseline). Domain-specific failures need the
   user-guideline mechanism — which is currently a free-text textarea, not a
   structured DSL.
