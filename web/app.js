@@ -707,6 +707,7 @@
             ..._activeForkCtx,
             parent_baseline_trace: _activeRun.baseline.trace || [],
             parent_initial_state: _activeRun.baseline.initial_state || {},
+            parent_thread_id: _activeRun.baseline.thread_id || '',
             fork_step: step.step,
             edits,
             also_apply_at_initial: alsoInitial.checked,

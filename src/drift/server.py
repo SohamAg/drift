@@ -212,6 +212,11 @@ class AdapterForkRequest(BaseModel):
     # Parent baseline the client received from /api/adapter-demo.
     parent_baseline_trace: list[dict[str, Any]] = Field(default_factory=list)
     parent_initial_state: dict[str, Any] = Field(default_factory=dict)
+    # LangGraph thread the parent baseline ran on (baseline.thread_id in the
+    # /api/adapter-demo response). When the rebuilt graph shares the parent's
+    # checkpointer — bundled demo graphs use one process-wide saver — the
+    # fork resumes the real checkpoint instead of rerunning from state.
+    parent_thread_id: str = ""
 
     # Fork params.
     fork_step: int = Field(..., ge=1, le=500)
@@ -475,12 +480,65 @@ def _list_adapter_graphs() -> list[dict[str, Any]]:
     ]
 
 
+# One in-memory LangGraph checkpointer for the whole server process.
+#
+# The fork endpoint rebuilds the graph on every request (the server is
+# stateless by design), so a checkpointer created inside build() would be a
+# fresh, empty saver each time and drift_test_fork could never find the
+# parent's checkpoints — every UI fork would silently take the
+# rerun-from-state approximation. Attaching ONE process-wide saver to every
+# compiled graph that has none makes the parent run's thread visible to the
+# fork request that follows, so the UI gets real time travel
+# (update_state + resume) exactly like the SDK path. MemorySaver keeps every
+# thread for the life of the process; that's fine for a local dev server and
+# is bounded by how many runs you click through.
+_SERVER_CHECKPOINTER: Any = None
+
+
+def _server_checkpointer() -> Any:
+    global _SERVER_CHECKPOINTER
+    if _SERVER_CHECKPOINTER is None:
+        try:
+            from langgraph.checkpoint.memory import MemorySaver
+        except ImportError:
+            return None
+        _SERVER_CHECKPOINTER = MemorySaver()
+    return _SERVER_CHECKPOINTER
+
+
+def _attach_server_checkpointer(graph: Any) -> Any:
+    """Give a compiled LangGraph graph without a checkpointer the server's
+    shared one. Leaves anything else — a graph compiled with its own saver,
+    a hand-rolled stub, a plain callable — untouched. Returns the graph."""
+    from drift.adapters.langgraph import _checkpointer_of
+
+    if _checkpointer_of(graph) is not None:
+        return graph
+    looks_compiled = (
+        hasattr(graph, "checkpointer")
+        and callable(getattr(graph, "get_state_history", None))
+        and callable(getattr(graph, "update_state", None))
+    )
+    if not looks_compiled:
+        return graph
+    saver = _server_checkpointer()
+    if saver is None:
+        return graph
+    try:
+        graph.checkpointer = saver
+    except Exception:  # noqa: BLE001 — a frozen/odd Pregel subclass; keep the rerun path
+        return graph
+    return graph
+
+
 def _build_demo_graph(name: str, overrides: dict[str, Any]) -> tuple[Any, dict, dict[str, Any]]:
     if name == "ticket_triage":
-        return _build_ticket_triage_demo(overrides)
-    if name == "langgraph_supervisor":
-        return _build_langgraph_supervisor_demo(overrides)
-    raise ValueError(f"unknown graph_name {name!r}; see /api/adapter-graphs")
+        graph, state, meta = _build_ticket_triage_demo(overrides)
+    elif name == "langgraph_supervisor":
+        graph, state, meta = _build_langgraph_supervisor_demo(overrides)
+    else:
+        raise ValueError(f"unknown graph_name {name!r}; see /api/adapter-graphs")
+    return _attach_server_checkpointer(graph), state, meta
 
 
 def _load_generated_module(code: str, label: str) -> Any:
@@ -559,7 +617,7 @@ def _build_custom_graph(
     except Exception as e:
         raise RuntimeError(f"{initial_state_fn_name}() failed: {type(e).__name__}: {e}") from e
 
-    return graph, initial_state
+    return _attach_server_checkpointer(graph), initial_state
 
 
 def _build_ticket_triage_demo(overrides: dict[str, Any]) -> tuple[Any, dict, dict[str, Any]]:
@@ -1739,7 +1797,7 @@ def create_app() -> FastAPI:
             baseline=BaselineResult(
                 initial_state=dict(req.parent_initial_state),
                 trace=list(req.parent_baseline_trace),
-                thread_id=getattr(req, "parent_thread_id", "") or "",
+                thread_id=req.parent_thread_id or "",
             ),
         )
 

@@ -180,7 +180,11 @@ finds the checkpoint after the fork step, applies the edit with
 and resumes with input `None`, so only the continuation executes.
 `ForkResult.execution_note` says which path ran and why; without a
 checkpointer, or when the fork step is inside a subgraph, it falls back to
-rerunning from the edited state.
+rerunning from the edited state. The web server attaches one process-wide
+in-memory saver to every compiled graph that has none and the UI sends the
+parent run's thread id back with the fork, so forks clicked in the Test and
+Import tabs take the checkpoint path too — each branch says
+"resumed a real checkpoint" or "rerun from edited state".
 
 ### Plus — optional LLM judge over the full trace
 Six-category taxonomy (`coordination_contradiction`, `grounding_failure`,
