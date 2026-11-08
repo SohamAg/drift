@@ -613,6 +613,10 @@
         el('div', { class: 'trace-step-node' }, [
           node,
           isSubgraph ? el('span', { class: 'pill subgraph', style: 'margin-left: 6px;', text: 'subgraph' }) : null,
+          step.subagent
+            ? el('span', { class: 'pill subagent', style: 'margin-left: 6px;', text: step.subagent,
+                           title: 'Sub-agent recovered from the tool call that dispatched this subgraph (e.g. task(subagent_type="critic")).' })
+            : null,
         ]),
         el('div', { class: 'trace-step-summary', text: summary }),
         detail,

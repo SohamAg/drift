@@ -666,6 +666,141 @@ def _namespace_labels(ns: Any) -> list[str]:
     return out
 
 
+# Tool-call argument keys that name the sub-agent being dispatched (deepagents
+# `task(subagent_type=...)`, hand-rolled `delegate(agent=...)`, …) and keys
+# that carry the task text the sub-agent is started with.
+_SUBAGENT_NAME_KEYS = (
+    "subagent_type", "subagent", "agent", "agent_name", "agent_type",
+    "worker", "specialist", "assistant", "to", "recipient", "target",
+)
+_SUBAGENT_TASK_KEYS = (
+    "description", "task", "input", "prompt", "query", "instructions",
+    "message", "request", "question", "goal",
+)
+# Tool names that are generic dispatchers — the tool name itself says
+# nothing about WHICH sub-agent ran.
+_GENERIC_DISPATCH_TOOLS = frozenset({
+    "task", "delegate", "delegate_task", "call_agent", "run_agent",
+    "invoke_agent", "subagent", "sub_agent", "spawn", "dispatch", "handoff",
+    "transfer", "ask_agent", "call_subagent", "run_subagent",
+})
+
+
+def _pending_tool_calls(root_state: Any) -> list[dict]:
+    """AI tool calls in the root conversation that have no tool result yet,
+    oldest first. Works on drift's normalised message dicts."""
+    msgs = root_state.get("messages") if isinstance(root_state, dict) else None
+    if not isinstance(msgs, list):
+        return []
+    calls: dict[str, dict] = {}
+    order: list[str] = []
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        if m.get("type") in ("ai", "assistant"):
+            for tc in m.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    cid = str(tc.get("id") or len(order))
+                    calls[cid] = tc
+                    order.append(cid)
+        elif m.get("type") == "tool":
+            calls.pop(str(m.get("tool_call_id") or ""), None)
+    return [calls[c] for c in order if c in calls]
+
+
+def _first_human_text(sub_state: Any) -> str:
+    msgs = sub_state.get("messages") if isinstance(sub_state, dict) else None
+    if not isinstance(msgs, list):
+        return ""
+    for m in msgs:
+        if isinstance(m, dict) and m.get("type") in ("human", "user"):
+            c = m.get("content")
+            if isinstance(c, str):
+                return c.strip()
+            if isinstance(c, list):
+                return " ".join(
+                    str(b.get("text", "")) for b in c if isinstance(b, dict)
+                ).strip()
+    return ""
+
+
+def _name_from_call(tc: dict) -> str:
+    args = tc.get("args")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            args = {}
+    if isinstance(args, dict):
+        for k in _SUBAGENT_NAME_KEYS:
+            v = args.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    name = str(tc.get("name") or "").strip()
+    if name and name.lower() not in _GENERIC_DISPATCH_TOOLS:
+        return name
+    return ""
+
+
+def _task_from_call(tc: dict) -> str:
+    args = tc.get("args")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return ""
+    if not isinstance(args, dict):
+        return ""
+    for k in _SUBAGENT_TASK_KEYS:
+        v = args.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _infer_subagent(root_state: Any, sub_state: Any) -> str:
+    """Name the sub-agent a tool-dispatched subgraph belongs to, or "".
+
+    A subgraph started from inside a tool call (deepagents' `task` tool, a
+    hand-rolled `delegate` tool) streams as `tools/model`, `tools/tools` —
+    the PARENT node's label. The name is recoverable from the root
+    conversation: the tool call that is still unanswered when the subgraph
+    runs names the sub-agent in its arguments (`subagent_type="critic"`) or
+    in the tool's own name (`research_agent(...)`).
+
+    Several sub-agents can be in flight at once (deepagents fans out two
+    `task` calls in one AI message and both run under the same `tools`
+    namespace), so the pending call is matched to THIS subgraph by its task
+    text: the first human message of the subgraph's state is the
+    `description` / `task` / `input` the parent passed. Only when there is
+    exactly one pending call with a name does the match fall back to it.
+    Returns "" rather than guess when neither rule decides.
+    """
+    pending = _pending_tool_calls(root_state)
+    if not pending:
+        return ""
+    want = _first_human_text(sub_state)
+    if want:
+        matches = [tc for tc in pending if _task_from_call(tc) and _task_from_call(tc) == want]
+        if not matches:
+            # Tolerate wrappers: "Task: <text>" or the text embedded in a template.
+            matches = [tc for tc in pending if _task_from_call(tc) and _task_from_call(tc) in want]
+        if len(matches) == 1:
+            return _name_from_call(matches[0])
+        if len(matches) > 1:
+            names = {_name_from_call(tc) for tc in matches}
+            if len(names) == 1:
+                return names.pop()
+            return ""
+    named = [tc for tc in pending if _name_from_call(tc)]
+    if len(named) == 1:
+        return _name_from_call(named[0])
+    names = {_name_from_call(tc) for tc in named}
+    if len(names) == 1 and names:
+        return names.pop()
+    return ""
+
+
 class _NativeTraceBuilder:
     """Turns LangGraph `(namespace, mode, data)` chunks into drift trace records.
 
@@ -683,6 +818,11 @@ class _NativeTraceBuilder:
     moment (unchanged until the parent node commits) and the subgraph's own
     state under `sub_state_after`. Keeping `state_after` root-shaped means
     every detector that diffs state across steps keeps a single schema.
+
+    A subgraph step that belongs to a tool-dispatched sub-agent also carries
+    `subagent` — the name recovered from the pending tool call that started
+    it (see `_infer_subagent`), so `tools/model` reads as the critic's model
+    step rather than an anonymous one.
     """
 
     def __init__(self, initial_state: dict, trace: list[dict], max_steps: int | None):
@@ -692,6 +832,10 @@ class _NativeTraceBuilder:
         self.max_steps = max_steps
         self.step = 0
         self._pending: dict[tuple, list[dict]] = {}
+        # last (sub_state, subagent) seen per namespace — a subgraph's final
+        # step (deepagents' `after_model` middleware) often gets no values
+        # chunk of its own, so it inherits the name from the previous one.
+        self._last_sub: dict[tuple, tuple[dict | None, str]] = {}
         self._stop_requested = False
 
     def feed(self, item: Any) -> bool:
@@ -709,8 +853,19 @@ class _NativeTraceBuilder:
         if mode == "values":
             if not ns_key and isinstance(data, dict):
                 self.root_state = _normalize_messages(data, ids=self.ids)
+                # The parent committed: any subgraph step still waiting for a
+                # values chunk is finished — close it against the state we have.
+                for other in [k for k in self._pending if k]:
+                    self._flush_orphans(other)
             return self._flush(ns_key, data)
         return False
+
+    def _flush_orphans(self, ns_key: tuple) -> None:
+        last_state, last_name = self._last_sub.get(ns_key, (None, ""))
+        for rec in self._pending.pop(ns_key, []):
+            rec["state_after"] = deepcopy(self.root_state)
+            if last_name:
+                rec["subagent"] = last_name
 
     def _record(self, ns_key: tuple, node: str, update: Any) -> None:
         self.step += 1
@@ -729,14 +884,26 @@ class _NativeTraceBuilder:
             self._stop_requested = True
 
     def _flush(self, ns_key: tuple, data: Any = None) -> bool:
-        for rec in self._pending.pop(ns_key, []):
+        recs = self._pending.pop(ns_key, [])
+        sub_state = None
+        subagent = ""
+        if ns_key and isinstance(data, dict) and recs:
+            sub_state = _normalize_messages(data, ids=self.ids)
+            subagent = _infer_subagent(self.root_state, sub_state)
+            self._last_sub[ns_key] = (sub_state, subagent)
+        for rec in recs:
             rec["state_after"] = deepcopy(self.root_state)
-            if ns_key and isinstance(data, dict):
-                rec["sub_state_after"] = _normalize_messages(data, ids=self.ids)
+            if sub_state is not None:
+                rec["sub_state_after"] = sub_state
+                if subagent:
+                    rec["subagent"] = subagent
         return self._stop_requested and not self._pending
 
     def finish(self) -> None:
         """Fill any record whose values chunk never arrived (crash mid-step)."""
+        for ns_key in list(self._pending):
+            if ns_key:
+                self._flush_orphans(ns_key)
         for recs in self._pending.values():
             for rec in recs:
                 if rec["state_after"] is None:
@@ -781,7 +948,7 @@ async def _stream_or_invoke(
     """Run the graph once. Capture a per-super-step trace if possible.
 
     Returns (final_state, trace, truncated). The trace is a list of
-    records `{step, node, update, state_after[, namespace, sub_state_after]}`
+    records `{step, node, update, state_after[, namespace, sub_state_after, subagent]}`
     — empty if the graph supports invoke only (plain function /
     `.invoke()`-only stubs). `truncated` is True only when `max_steps` cut
     the run short (so `final_state` is the accumulated state AT that step,

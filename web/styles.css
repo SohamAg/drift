@@ -676,6 +676,8 @@ button { font: inherit; cursor: pointer; }
 .rollout-head:hover { background: var(--bg-elev-2); }
 .rollout-body { display: none; padding: 4px 10px 10px 10px; border-top: 1px solid var(--border); }
 .rollout-row.expanded .rollout-body { display: block; }
+/* the named sub-agent a tool-dispatched subgraph step belongs to */
+.pill.subagent { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; padding: 1px 7px; }
 /* a super-step that ran inside a subgraph (sub-agent, tool-dispatched agent) */
 .pill.subgraph { background: transparent; color: var(--fg-subtle); border: 1px dashed var(--fg-subtle); font-weight: 500; padding: 1px 7px; }
 

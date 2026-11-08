@@ -47,6 +47,9 @@ class TraceStep:
       - state_after: snapshot of running state after this step (adapter only;
                     empty dict for native because native re-derives from history)
       - rationale:  free-form text explanation if available (action.rationale)
+      - subagent:   for a subgraph step started from inside a tool call, the
+                    sub-agent's name recovered from the dispatching call
+                    ("critic"); "" otherwise. `agent` keeps the node path.
     """
 
     step: int
@@ -55,6 +58,13 @@ class TraceStep:
     update: dict[str, Any] = field(default_factory=dict)
     state_after: dict[str, Any] = field(default_factory=dict)
     rationale: str = ""
+    subagent: str = ""
+
+    @property
+    def actor(self) -> str:
+        """Human-facing label: `tools/model` → `critic (tools/model)` when the
+        sub-agent is known. Detectors that name agents in summaries use this."""
+        return f"{self.subagent} ({self.agent})" if self.subagent else self.agent
 
 
 @dataclass
@@ -149,6 +159,7 @@ def from_adapter_trace(
             update=dict(update),
             state_after=dict(entry.get("state_after") or {}),
             rationale=rationale,
+            subagent=str(entry.get("subagent") or ""),
         ))
     return CoordinationDetectorContext(
         steps=steps,

@@ -9,25 +9,28 @@ Since the adapter streams real graphs with `subgraphs=True`, the sub-agent
 graphs a `task` tool call starts DO show up — as `tools/model`,
 `tools/TodoListMiddleware.after_model`, … steps under the `tools` namespace
 (9 of 19 super-steps on a live gpt-4o-mini run, saved under
-results/deepagents/). What is still true: those steps carry the parent
-node's label, not the sub-agent's name, so three sub-agents are
-indistinguishable in the trace, and the message-aware detectors see their
-tool calls but can't attribute them to "researcher" vs "critic".
+results/deepagents/). Since 2026-11-09 those steps are also NAMED: the
+adapter matches each subgraph to the still-unanswered `task(...)` call in
+the root conversation (by the task text the sub-agent was started with) and
+stamps `subagent="researcher"` / `"critic"` / `"summarizer"` on the step —
+15 of 15 sub-agent steps on a live run
+(results/deepagents/deepagents_named_*.json).
 
-Keep this target in the registry as the boundary probe: a change that makes
-the sub-agents NAMED here is the next genuine capability step.
+Keep this target in the registry as the boundary probe for what is still
+outside drift's view: a sub-agent that is a plain function call inside a
+tool (no LangGraph graph), and dispatchers that never name the agent.
 
 See memory/empirical_validation_2026_07_05.md for the original finding.
 """
 from __future__ import annotations
 
 NAME = "deepagents_tooldispatch"
-DESCRIPTION = "deepagents research agent — sub-agents hidden in tool calls (negative control)"
+DESCRIPTION = "deepagents research agent — sub-agents dispatched via tool calls (named since 2026-11-09)"
 TOPOLOGY = "tool_dispatch"
 SOURCE = "langchain-ai/deepagents (official, 25.7k stars)"
 REQUIRES = ["deepagents", "langchain_openai", "langgraph"]
 NEEDS_API_KEY = True
-VISIBLE_TO_DRIFT = False  # sub-agents are visible but anonymous (see docstring)
+VISIBLE_TO_DRIFT = False  # agents are tool-dispatched, not graph nodes; visible AND named since 2026-11-09 (see docstring)
 DEFAULT_QUERY = (
     "Research the pros and cons of LangGraph vs CrewAI as multi-agent "
     "frameworks. Provide a short 3-paragraph summary."

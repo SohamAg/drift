@@ -452,11 +452,15 @@ top-vs-bottom compare).
   supervisor) show up as `math_expert/agent`, `math_expert/tools`, … steps,
   and a sub-agent started from inside a tool call — the
   [deepagents](https://github.com/langchain-ai/deepagents) pattern that was a
-  documented blind spot — appears as `tools/model`, `tools/…` steps (9 of 19
-  on a live run). What is still true: those tool-dispatched steps carry the
-  parent node's label, not the sub-agent's name, and a sub-agent implemented
-  as a plain function call inside a tool (no LangGraph graph) stays invisible.
-  Hand-rolled stubs without `stream_mode` keep the old flat view.
+  documented blind spot — appears as `tools/model`, `tools/…` steps, each
+  tagged with the sub-agent's name recovered from the dispatching tool call
+  (`task(subagent_type="critic")` → `critic`; parallel dispatches are told
+  apart by task text). On a live deepagents run all 15 of 15 sub-agent steps
+  were named `researcher` / `critic` / `summarizer`. What is still true: a
+  sub-agent implemented as a plain function call inside a tool (no LangGraph
+  graph) stays invisible, and a dispatcher that names the agent nowhere in
+  its arguments or tool name stays anonymous. Hand-rolled stubs without
+  `stream_mode` keep the old flat view.
 - **Empirical evidence is still thin and intermittent.** On LangChain's own
   2-agent supervisor example with gpt-4o-mini
   (`examples/adapters/run_drift_on_supervisor_message_chaos.py`), the
