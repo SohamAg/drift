@@ -3060,7 +3060,61 @@
     });
   }
 
+  // A saved run in the shape the Test / Import tabs (and `drift run --json`)
+  // produce gets the SAME full view they render — summary, Gate panel,
+  // baseline trace, perturbation rows with rollouts and findings — plus
+  // hand-offs to Fork & Replay and Ask. Anything else falls back to the
+  // compact key/value summary + raw JSON.
+  function _isFullRunShape(data) {
+    const perts = data.perturbations || [];
+    return !!(data.baseline && typeof data.baseline === 'object'
+      && (Array.isArray(data.baseline.trace) || perts.some(p => p && p.event_name)));
+  }
+
   function _renderAdapterShaped(data) {
+    if (_isFullRunShape(data)) return _renderFullRun(data);
+    return _renderCompactRun(data);
+  }
+
+  function _renderFullRun(data) {
+    const host = el('div', { class: 'results-full-run' });
+    const forkCtx = forkCtxFromLoadedResult(data);
+    setActiveRun(data, forkCtx);
+    host.appendChild(el('div', { class: 'row', style: 'gap: 8px; margin-bottom: 10px; flex-wrap: wrap;' }, [
+      el('button', { type: 'button', class: 'ghost-btn', text: 'Open in Fork & Replay',
+                     onclick: () => sendActiveRunTo('fork') }),
+      el('button', { type: 'button', class: 'ghost-btn', text: 'Ask about this trace',
+                     onclick: () => sendActiveRunTo('ask') }),
+      el('span', { class: 'muted', style: 'font-size: 11px; align-self: center;',
+                   text: 'Loaded as the active run — same view as the Test tab.' }),
+    ]));
+    host.appendChild(el('div', { id: 'results-summary', class: 'kv-grid' }));
+    host.appendChild(el('div', { id: 'results-regression', class: 'card hidden' }));
+    host.appendChild(el('h4', { style: 'margin: 14px 0 6px 0;', text: 'Baseline' }));
+    host.appendChild(el('div', { id: 'results-baseline-trace' }));
+    host.appendChild(el('h4', { style: 'margin: 14px 0 6px 0;', text: 'Perturbations' }));
+    host.appendChild(el('div', { class: 'help', style: 'margin-bottom: 6px;',
+      text: 'Sorted by severity: crashes first, then divergences, then unchanged. Click any row for the trace and findings.' }));
+    host.appendChild(el('div', { id: 'results-perturbations', class: 'failure-list' }));
+    host.appendChild(el('details', { style: 'margin-top: 12px;' }, [
+      el('summary', { class: 'help', text: 'Full JSON' }),
+      el('pre', { class: 'mono', style: 'max-height: 500px; overflow: auto; font-size: 11px;',
+                 text: JSON.stringify(data, null, 2) }),
+    ]));
+    // The renderer looks the containers up by id, so they must be in the
+    // document first; the caller appends `host` synchronously after return.
+    queueMicrotask(() => {
+      try {
+        renderAdapterResult(data, 'results');
+      } catch (e) {
+        const sum = $('#results-summary');
+        if (sum) sum.textContent = 'Could not render this run: ' + e.message;
+      }
+    });
+    return host;
+  }
+
+  function _renderCompactRun(data) {
     const host = el('div');
     const kvs = [
       ['question / topic', data.question || data.graph_name || '(unknown)'],
