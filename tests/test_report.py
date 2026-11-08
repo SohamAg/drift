@@ -164,3 +164,43 @@ def test_accepts_flat_run_with_only_baseline_marker(tmp_path: Path) -> None:
     run = load_run(p)
     assert run["summary"]["n_runs"] == 1
     assert run["summary"]["n_perturbations"] == 0
+
+
+def test_web_and_cli_shaped_result_renders_event_names_and_rollouts(tmp_path: Path) -> None:
+    """`drift run --json` / the web UI write the shaped AdapterResult dict.
+    The report used to render blank event cells for it."""
+    import json
+
+    from drift.adapters.langgraph import drift_test
+    from drift.adapters.serialize import shape_adapter_result
+    from drift.report import load_run, render_report
+
+    class _G:
+        def invoke(self, state, *a, **k):
+            out = dict(state)
+            if out.get("approved"):
+                raise RuntimeError("boom")
+            out["reply"] = "ok"
+            return out
+
+    res = drift_test(
+        graph=_G(), initial_state={"query": "hello", "approved": False, "reply": ""},
+        intensity="exhaustive", seed=1, perturbation_rollouts=2,
+    )
+    shaped = shape_adapter_result(
+        res, graph_meta={"name": "stub", "description": "", "agents": ["a"]}, seed=1,
+        judge="off", judge_model=None, user_guidelines=[],
+    )
+    path = tmp_path / "cli.json"
+    path.write_text(json.dumps(shaped), encoding="utf-8")
+    run = load_run(path)
+    q = run["questions"][0]
+    assert q["question"] == "hello" and q["category"] == "stub" and q["agents"] == ["a"]
+    assert run["summary"]["n_crashed"] == shaped["n_crashed"]
+    events = [p["event"] for p in q["perturbations"]]
+    assert events and all(events), events
+    assert all(p["n_rollouts"] == 2 for p in q["perturbations"])
+    html = render_report(run)
+    assert "flip_bool[approved]" in html
+    assert "2/2" in html  # outcome label rendered
+    assert run["config"]["perturbation_rollouts"] == 2

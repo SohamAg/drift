@@ -44,7 +44,15 @@ __all__ = ["NotADriftRun", "load_run", "render_report", "write_report"]
 # ---------------------------------------------------------------------------
 
 def _norm_perturbation(p: dict) -> dict:
-    """Normalize the two runner perturbation shapes into one."""
+    """Normalize the perturbation shapes into one.
+
+    Three sources write these files: the example runner scripts (`event`,
+    `field`, `pattern`, `divergence`, `tags`), and the web UI / `drift run
+    --json` (`event_name`, `perturbed_field`, `pattern_type`,
+    `divergence_summary`, `crashed` / `diverged`, plus rollout aggregates
+    when perturbation_rollouts > 1). Both must render — the CLI's own docs
+    point at `drift report`.
+    """
     tags = p.get("tags") or []
     if "CRASH" in tags or p.get("crashed"):
         outcome = "CRASH"
@@ -52,13 +60,18 @@ def _norm_perturbation(p: dict) -> dict:
         outcome = "DIVERGE"
     else:
         outcome = "UNCHANGED"
+    n_rollouts = int(p.get("n_rollouts") or 1)
     return {
-        "event": p.get("event", ""),
-        "field": p.get("field", ""),
-        "pattern": p.get("pattern", ""),
+        "event": p.get("event") or p.get("event_name") or "",
+        "field": p.get("field") or p.get("perturbed_field") or "",
+        "pattern": p.get("pattern") or p.get("pattern_type") or "",
+        "fault_class": p.get("fault_class") or "",
         "outcome": outcome,
         "error": p.get("error", ""),
-        "divergence": p.get("divergence", ""),
+        "divergence": p.get("divergence") or p.get("divergence_summary") or "",
+        "n_rollouts": n_rollouts,
+        "outcome_label": p.get("outcome_label") or "",
+        "intermittent": bool(p.get("is_intermittent")),
         "judge_findings": p.get("judge_findings") or [],
         "coord_findings": (
             p.get("coordination_findings") or p.get("coord_findings") or []
@@ -66,8 +79,37 @@ def _norm_perturbation(p: dict) -> dict:
     }
 
 
+def _agents_from_trace(trace: list) -> list[str]:
+    seen: list[str] = []
+    for step in trace or []:
+        node = str((step or {}).get("node") or "").split("/", 1)[0]
+        if node and node not in seen:
+            seen.append(node)
+    return seen
+
+
 def _norm_question(q: dict) -> dict:
     perturbations = [_norm_perturbation(p) for p in (q.get("perturbations") or [])]
+    baseline = q.get("baseline") if isinstance(q.get("baseline"), dict) else {}
+    if baseline:
+        # Web UI / `drift run --json` shape: one run, full baseline object.
+        init = baseline.get("initial_state") or {}
+        question = q.get("question") or str(
+            init.get("query") or init.get("question") or init.get("task") or ""
+        )
+        if not question and isinstance(init.get("messages"), list) and init["messages"]:
+            first = init["messages"][0]
+            question = str(first.get("content", "") if isinstance(first, dict) else first)
+        return {
+            "question": question or q.get("graph_name", ""),
+            "category": q.get("graph_name", ""),
+            "baseline_crashed": bool(baseline.get("crashed")),
+            "baseline_trace_steps": len(baseline.get("trace") or []),
+            "agents": q.get("graph_agents") or _agents_from_trace(baseline.get("trace") or []),
+            "baseline_judge": baseline.get("judge_findings") or [],
+            "baseline_coord": baseline.get("coordination_findings") or [],
+            "perturbations": perturbations,
+        }
     return {
         "question": q.get("question", ""),
         "category": q.get("category", ""),
@@ -122,8 +164,11 @@ def load_run(path: str | Path) -> dict:
         questions = [_norm_question(data)]
         config = {
             k: data[k]
-            for k in ("model", "intensity", "max_perturbations")
-            if k in data
+            for k in (
+                "model", "intensity", "max_perturbations", "graph_name", "divergence_mode",
+                "baseline_rollouts", "perturbation_rollouts", "judge", "judge_model", "seed",
+            )
+            if k in data and data[k] not in (None, "", 1, "off")
         }
         elapsed = data.get("_elapsed_s")
 
@@ -411,10 +456,19 @@ def _render_scenarios(questions: list[dict]) -> str:
                 if n_findings
                 else '<span class="chip chip-quiet">0</span>'
             )
+            outcome_cell = f'<span class="chip {chip}">{p["outcome"]}</span>'
+            if p.get("n_rollouts", 1) > 1 and p.get("outcome_label"):
+                outcome_cell += f' <span class="div-excerpt">{_e(p["outcome_label"])}</span>'
+                if p.get("intermittent"):
+                    outcome_cell += ' <span class="chip chip-warning">intermittent</span>'
+            fault = (
+                f' <span class="chip chip-quiet">{_e(p["fault_class"])}</span>'
+                if p.get("fault_class") else ""
+            )
             pert_rows.append(
                 "<tr>"
-                f'<td class="mono">{_e(p["event"])}{divergence}</td>'
-                f'<td><span class="chip {chip}">{p["outcome"]}</span></td>'
+                f'<td class="mono">{_e(p["event"])}{fault}{divergence}</td>'
+                f"<td>{outcome_cell}</td>"
                 f"<td>{findings_cell}</td>"
                 "</tr>"
             )
