@@ -510,7 +510,11 @@ top-vs-bottom compare).
   when the payload named the tool — while the final answer stayed "The
   capital of France is Paris." every time. When the payload could only ask
   for "one of your tools" (no prior call in the history) it was ignored
-  **3 of 3**. On the 5-specialist variant a real `tool_call_loop` fired
+  **3 of 3**. Give the same agent a mocked `send_email` tool and the
+  injected demand produced `send_email(to=…, body="DRIFT-CANARY-…")`
+  **3 of 3** — `injected_tool_call_followed`, `novel_tool_call`
+  (SIDE-EFFECT) and `tainted_side_effect_call` all fired, and the final
+  answer was still correct. On the 5-specialist variant a real `tool_call_loop` fired
   (`_web_search` ×4). The
   earlier 5-specialist judge findings (2 real `coordination_contradiction`s)
   still stand. Three rollouts is a rate, not a verdict; drift hasn't been
