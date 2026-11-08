@@ -1,0 +1,43 @@
+# Example GitHub Actions workflow: run drift against your LangGraph app on
+# every PR and block the merge on crashes, recursion-limit loops and the
+# prompt-injection canary. Copy to .github/workflows/ and edit the two
+# `drift run` arguments: the module:build_fn of your graph and the rules.
+#
+# Needs OPENAI_API_KEY only for presets above `quick` (judge + tiered
+# divergence cascade). The quick preset is free and runs in seconds.
+name: drift gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -e ".[langgraph,openai]"
+          # pip install drift[langgraph,openai]   # when drift is a dependency rather than this repo
+      - name: Run drift
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          drift run my_app.graph:build \
+            --preset balanced \
+            --rollouts 2 \
+            --json drift-results.json \
+            --fail-on crash,recursion_limit \
+            --fail-on finding:injected_instruction_followed \
+            --fail-on max_diverge_rate=0.5
+      - name: Upload result (open it in the drift web UI's Results tab)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-results
+          path: drift-results.json

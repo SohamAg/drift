@@ -40,6 +40,23 @@ Same flow wired into the web UI under the **Adapter** tab.
 
 ---
 
+### From the command line — and as a CI gate
+
+```bash
+pip install drift[langgraph]
+drift run my_app.graph:build --preset quick --fail-on crash,finding:injected_instruction_followed
+```
+
+`my_app.graph` exposes `build()` → compiled graph and `initial_state()` →
+the dict you invoke it with. Add `--json drift-results.json` to write the
+same JSON the web UI renders, `--rollouts 3` to run every perturbed input
+three times (`crashed 1/3`), and `drift gate drift-results.json --fail-on …`
+to decide from the artifact on a box without the graph or the API key.
+Exit code 1 on a violated rule. Rules: `crash`, `recursion_limit`,
+`diverge`, `intermittent`, `finding`, `finding:<type>`, `baseline_finding`,
+`judge`, `max_crash_rate=`, `max_diverge_rate=`. Full guide and a GitHub
+Actions workflow in [`docs/ci.md`](docs/ci.md).
+
 ## What drift actually does
 
 Three concentric layers, each cheaper than the last:
@@ -389,25 +406,25 @@ OPENAI_API_KEY=sk-...
 e:\drift\
 ├── src/drift/
 │   ├── adapters/
-│   │   └── langgraph.py   — drift_test() + tiered cascade + judge wiring
-│   ├── agents/base.py     — Action / Agent data classes (used by adapter + library)
-│   ├── chaos/             — Schema-walked auto-chaos engine
-│   ├── events/base.py     — Event / EventRecord (used by chaos patterns)
+│   │   ├── langgraph.py   — drift_test() / drift_test_fork(): native streaming, rollouts,
+│   │   │                    tiered cascade, checkpoint forks, judge + detector wiring
+│   │   └── serialize.py   — the one JSON shape the UI, CLI, gate and report all read
+│   ├── chaos/             — schema-walked auto-chaos: patterns, message-aware patterns, planner
 │   ├── failures/
-│   │   ├── library/       — Coordination-failure detector library (3 detectors)
-│   │   ├── judge.py       — LLM judge over agent traces (6-family taxonomy)
-│   │   └── mast_eval.py   — MAST dataset evaluation helpers
-│   ├── llm/               — Protocol + ScriptedMockLLM + OpenAI adapter
-│   ├── world.py           — WorldState data primitive
-│   ├── server.py          — FastAPI app (adapter + results + MAST endpoints)
-│   ├── cli.py             — `drift serve`
-│   └── sdk.py             — @drift.agent decorator (data shape; runtime pending re-wire)
-├── web/                   — Vanilla HTML/CSS/JS frontend (3 tabs: Adapter / Results / Custom-stub)
-├── examples/adapters/     — drift_test runners + validation harnesses
-├── data/external/mast/    — MAST dataset (gitignored)
-├── docs/detectors/        — Curated per-detector explainer docs
-├── results/               — Saved experiment JSON (gitignored)
-└── tests/                 — Pytest suite (198 tests)
+│   │   ├── library/       — coordination-failure detector library (16 detectors)
+│   │   └── judge.py       — LLM judge over traces
+│   ├── gate.py            — pass/fail rules for `drift run --fail-on` / `drift gate`
+│   ├── regression.py      — run-over-run trend tracking
+│   ├── report.py          — self-contained HTML evidence report
+│   ├── server.py          — FastAPI app behind the web UI
+│   └── cli.py             — `drift run | gate | serve | report | history`
+├── web/                   — vanilla HTML/CSS/JS UI (Test, Import, Build, Fork, Results, …)
+├── examples/adapters/     — validation harnesses against real third-party graphs
+├── examples/targets/      — registry of real third-party MAS (see docs/targets_setup.md)
+├── examples/ci/           — GitHub Actions workflow for the gate
+├── docs/detectors/        — one explainer per detector; docs/ci.md for the CLI gate
+├── results/               — saved run JSON (gitignored)
+└── tests/                 — pytest suite (580+ tests)
 ```
 
 > **2026-06-29 cleanup:** the native per-tick simulator (topologies / scenarios
