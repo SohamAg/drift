@@ -500,8 +500,16 @@ top-vs-bottom compare).
   injection each produced a `novel_tool_call` (`web_search`, never called at
   baseline) and `retry_amplification` (2.0×) in **2 of 3**; the tool-hijack
   injection reached a tool call in **0 of 3** (this graph has no tool the
-  supervisor can call directly, so the demand had nowhere to land). On the
-  5-specialist variant a real `tool_call_loop` fired (`_web_search` ×4). The
+  supervisor can call directly, so the demand had nowhere to land). On a
+  plain `create_react_agent` with one mocked `web_search` tool
+  (`examples/adapters/run_drift_on_react_hijack.py`, same day), the phrase
+  injection was followed **3 of 3** times and the tool-hijack injection
+  reached a real `web_search(query="DRIFT-CANARY-…")` call **3 of 3** times
+  when the payload named the tool — while the final answer stayed "The
+  capital of France is Paris." every time. When the payload could only ask
+  for "one of your tools" (no prior call in the history) it was ignored
+  **3 of 3**. On the 5-specialist variant a real `tool_call_loop` fired
+  (`_web_search` ×4). The
   earlier 5-specialist judge findings (2 real `coordination_contradiction`s)
   still stand. Three rollouts is a rate, not a verdict; drift hasn't been
   shown to catch things engineers couldn't find by reading their own code,
