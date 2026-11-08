@@ -1026,7 +1026,19 @@ async def _stream_or_invoke(
         nonlocal step
         upd = _normalize_messages(update, ids=ids)
         if isinstance(upd, dict):
-            running.update(upd)
+            # Mirror `add_messages` for conversation channels: a node's update
+            # is a DELTA of new messages, so the accumulated state appends.
+            # Plain replacement (the pre-11-04 bug for native graphs) left
+            # `state_after.messages` holding only the latest message and
+            # every message-aware detector blind on hand-rolled stubs.
+            from drift.chaos.messages import is_messages_list as _is_msgs
+
+            for k, v in upd.items():
+                cur = running.get(k)
+                if isinstance(v, list) and isinstance(cur, list) and v and cur and _is_msgs(v) and _is_msgs(cur):
+                    running[k] = list(cur) + list(v)
+                else:
+                    running[k] = v
         step += 1
         trace.append({
             "step": step,
@@ -1617,6 +1629,8 @@ def _run_coordination_library(
     baseline_state: dict | None,
     *,
     enabled: bool = True,
+    baseline_trace: list[dict] | None = None,
+    baseline_initial_state: dict | None = None,
     roles_by_agent: dict[str, str] | None = None,
     required_followups: dict[str, str] | None = None,
     policy_field: str | None = None,
@@ -1625,7 +1639,9 @@ def _run_coordination_library(
 
     Free + deterministic — no LLM cost. Returns FailureRecord dicts. Empty
     when disabled, when the trace is empty (graph doesn't stream or crashed
-    at step 0), or when no detector matched.
+    at step 0), or when no detector matched. `baseline_trace` /
+    `baseline_initial_state` let comparison detectors (retry_amplification)
+    measure the unperturbed run the same way as this one.
     """
     if not enabled or not trace:
         return []
@@ -1633,6 +1649,8 @@ def _run_coordination_library(
         trace,
         initial_state=initial_state,
         baseline_state=baseline_state,
+        baseline_trace=baseline_trace,
+        baseline_initial_state=baseline_initial_state,
         roles_by_agent=roles_by_agent,
         required_followups=required_followups,
         policy_field=policy_field,
@@ -1829,6 +1847,8 @@ async def drift_test_async(
         pert_coord = _run_coordination_library(
             ptrace, post_state, baseline.final_state,
             enabled=run_coordination_detectors,
+            baseline_trace=baseline.trace,
+            baseline_initial_state=baseline.initial_state,
             roles_by_agent=coordination_roles,
             required_followups=required_followups,
             policy_field=policy_field,

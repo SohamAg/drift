@@ -35,6 +35,7 @@ from drift.failures.library import (
     policy_inconsistency_across_steps,
     premature_termination,
     repeated_identical_action,
+    retry_amplification,
     role_drift,
     silent_tool_failure,
     stale_state_reference,
@@ -71,6 +72,7 @@ ALL_DETECTORS = [
     tool_call_loop,
     silent_tool_failure,
     injected_instruction_followed,
+    retry_amplification,
 ]
 
 
@@ -79,6 +81,8 @@ def run_all_on_trace(
     *,
     initial_state: dict | None = None,
     baseline_state: dict | None = None,
+    baseline_trace: list[dict] | None = None,
+    baseline_initial_state: dict | None = None,
     roles_by_agent: dict[str, str] | None = None,
     required_followups: dict[str, str] | None = None,
     policy_field: str | None = None,
@@ -88,6 +92,8 @@ def run_all_on_trace(
         trace,
         initial_state=initial_state,
         baseline_state=baseline_state,
+        baseline_trace=baseline_trace,
+        baseline_initial_state=baseline_initial_state,
         roles_by_agent=roles_by_agent,
         required_followups=required_followups,
         policy_field=policy_field,

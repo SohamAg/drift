@@ -98,6 +98,15 @@ class CoordinationDetectorContext:
     steps: list[TraceStep]
     initial_state: dict[str, Any] | None = None
     baseline_state: dict[str, Any] | None = None
+    # The unperturbed run's own steps and input, when the caller has them
+    # (the adapter does for every perturbation). Lets a detector measure the
+    # baseline the same way it measures this run — `retry_amplification`
+    # counts work from per-step messages because a supervisor with
+    # output_mode="last_message" never writes its sub-agents' tool calls to
+    # the root state, so the final state under-reports work. None for the
+    # baseline run itself and for forks.
+    baseline_steps: list[TraceStep] | None = None
+    baseline_initial_state: dict[str, Any] | None = None
     roles_by_agent: dict[str, str] = field(default_factory=dict)
     # trigger agent/node name -> required follow-up agent/node name.
     required_followups: dict[str, str] = field(default_factory=dict)
@@ -117,6 +126,21 @@ class CoordinationDetectorContext:
             out.setdefault(s.agent, []).append(s)
         return out
 
+    def baseline_view(self) -> "CoordinationDetectorContext | None":
+        """A context over the BASELINE run's steps, so helpers like
+        `conversation()` read it exactly as they read this run. None when
+        the caller didn't supply the baseline trace."""
+        if self.baseline_steps is None:
+            return None
+        return CoordinationDetectorContext(
+            steps=self.baseline_steps,
+            initial_state=self.baseline_initial_state,
+            baseline_state=None,
+            roles_by_agent=self.roles_by_agent,
+            required_followups=self.required_followups,
+            policy_field=self.policy_field,
+        )
+
 
 CoordinationDetector = Callable[[CoordinationDetectorContext], list[FailureRecord]]
 
@@ -126,20 +150,7 @@ CoordinationDetector = Callable[[CoordinationDetectorContext], list[FailureRecor
 # ---------------------------------------------------------------------------
 
 
-def from_adapter_trace(
-    trace: list[dict],
-    *,
-    initial_state: dict | None = None,
-    baseline_state: dict | None = None,
-    roles_by_agent: dict[str, str] | None = None,
-    required_followups: dict[str, str] | None = None,
-    policy_field: str | None = None,
-) -> CoordinationDetectorContext:
-    """Build a coordination context from an adapter-shaped trace.
-
-    `trace` is what `_stream_or_invoke` returns: a list of
-    `{step, node, update, state_after}` records.
-    """
+def _steps_from_trace(trace: list[dict]) -> list[TraceStep]:
     steps: list[TraceStep] = []
     for entry in trace:
         update = entry.get("update") or {}
@@ -161,10 +172,33 @@ def from_adapter_trace(
             rationale=rationale,
             subagent=str(entry.get("subagent") or ""),
         ))
+    return steps
+
+
+def from_adapter_trace(
+    trace: list[dict],
+    *,
+    initial_state: dict | None = None,
+    baseline_state: dict | None = None,
+    baseline_trace: list[dict] | None = None,
+    baseline_initial_state: dict | None = None,
+    roles_by_agent: dict[str, str] | None = None,
+    required_followups: dict[str, str] | None = None,
+    policy_field: str | None = None,
+) -> CoordinationDetectorContext:
+    """Build a coordination context from an adapter-shaped trace.
+
+    `trace` is what `_stream_or_invoke` returns: a list of
+    `{step, node, update, state_after}` records. `baseline_trace` /
+    `baseline_initial_state` are the unperturbed run's, when known — see
+    `CoordinationDetectorContext.baseline_steps`.
+    """
     return CoordinationDetectorContext(
-        steps=steps,
+        steps=_steps_from_trace(trace),
         initial_state=initial_state,
         baseline_state=baseline_state,
+        baseline_steps=_steps_from_trace(baseline_trace) if baseline_trace is not None else None,
+        baseline_initial_state=baseline_initial_state,
         roles_by_agent=dict(roles_by_agent or {}),
         required_followups=dict(required_followups or {}),
         policy_field=policy_field or "",
