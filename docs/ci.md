@@ -64,7 +64,7 @@ Same four as the web UI; any knob overrides the preset.
 
 | Preset | Chaos | Divergence | Rollouts | Judge | Cost |
 |---|---|---|---|---|---|
-| `quick` (default) | light, ≤4 | exact | 1 | off | free, seconds |
+| `quick` (default) | moderate, ≤4 | exact | 1 | off | free, seconds |
 | `balanced` | aggressive, ≤6 | tiered, 3 baseline | 1 | openai | ~$0.01 |
 | `thorough` | aggressive, ≤12 | tiered, 5 baseline | 2 | openai | ~$0.20 |
 | `exhaustive` | every pattern | tiered, 5 baseline | 3 | openai | $1+ on wide schemas |

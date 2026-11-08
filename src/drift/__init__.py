@@ -15,7 +15,7 @@ The BYOA `@drift.agent` decorator survives but its runtime path (`drift.run`)
 was removed alongside the simulator. The decorator is preserved as a shape
 for future re-wiring against the adapter.
 """
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from drift.agents.base import Action, Agent
 from drift.events.base import Event, EventRecord

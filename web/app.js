@@ -362,7 +362,7 @@
 
   const ADAPTER_PRESETS = {
     quick: {
-      intensity: 'light', max_perturbations: 4, judge: 'off',
+      intensity: 'moderate', max_perturbations: 4, judge: 'off',
       divergence_mode: 'exact', baseline_rollouts: 1, perturbation_rollouts: 1, max_judge_calls: 0,
     },
     balanced: {
@@ -380,7 +380,7 @@
   };
 
   const ADAPTER_PRESET_HINTS = {
-    quick: 'Light chaos + exact-equality diff. No LLM calls, runs in seconds. Good for smoke tests.',
+    quick: 'Moderate chaos (up to 4 perturbations) + exact-equality diff. No LLM calls beyond your graph, runs in seconds. Good for smoke tests.',
     balanced: 'Aggressive chaos + judge on tiered cascade. ~$0.01 / run. Default for everyday use.',
     thorough: 'Aggressive chaos + 5 baseline rollouts + every perturbation run twice (k/N outcomes) + larger judge budget. ~$0.20 / run.',
     exhaustive: 'Every applicable chaos pattern in the schema, no sampling, each run 3 times so intermittent failures show as k/3. Cost scales with schema breadth — wide schemas can hit $1+ per run. Use as a pre-deploy gate.',

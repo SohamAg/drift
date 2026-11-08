@@ -36,7 +36,10 @@ from typing import Any
 
 #: Presets mirror web/app.js ADAPTER_PRESETS — keep both in step.
 PRESETS: dict[str, dict[str, Any]] = {
-    "quick": dict(intensity="light", max_perturbations=4, judge="off",
+    # quick is "moderate", not "light": light's 8% per-step draw yields ~2
+    # perturbations on a 30-step horizon and the planner's floor is 1 — too
+    # thin to call a smoke test. Moderate gives ~5, capped at 4, still free.
+    "quick": dict(intensity="moderate", max_perturbations=4, judge="off",
                   divergence_mode="exact", baseline_rollouts=1, perturbation_rollouts=1,
                   max_judge_calls=0),
     "balanced": dict(intensity="aggressive", max_perturbations=6, judge="openai",
