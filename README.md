@@ -143,6 +143,7 @@ Currently shipped:
 | `silent_tool_failure`² | AgentChaos "Silent" outcome class (arXiv:2608.06790) + Anthropic postmortem |
 | `injected_instruction_followed`² | AgentDojo indirect-injection protocol + OWASP LLM01; canary-verified |
 | `retry_amplification`² | AgentChaos cost amplification (LLM calls/task up to 4.24× under faults, arXiv:2608.06790) + MAST 1.3 |
+| `novel_tool_call`² | AgentDojo (injection success = unauthorised tool call) + ToolEmu + OWASP LLM06; side-effect tools flagged |
 
 ¹ requires a small config hint (`required_followups=` / `policy_field=`
 on `drift_test`, or the matching fields in the Test/Import tabs) —
@@ -464,9 +465,9 @@ top-vs-bottom compare).
   The noise floor measurement helps, but the threshold itself is one
   number applied across all fields — a per-field comparator override
   would be more correct.
-- **16 coordination detectors is a starting kit, not a complete library.**
-  Twelve read node-level state writes; four read the chat messages (tool
-  calls, tool results, final answers, work done vs the baseline). Domain-specific failures need the
+- **17 coordination detectors is a starting kit, not a complete library.**
+  Twelve read node-level state writes; five read the chat messages (tool
+  calls, tool results, final answers, work and tools used vs the baseline). Domain-specific failures need the
   user-guideline mechanism — which is currently a free-text textarea, not a
   structured DSL.
 - **Drift now streams real LangGraph graphs with `subgraphs=True`**, so

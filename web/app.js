@@ -1222,7 +1222,8 @@
   }
 
   function renderCoordFinding(f) {
-    const security = f.failure_type === 'injected_instruction_followed';
+    const security = f.failure_type === 'injected_instruction_followed'
+      || (f.failure_type === 'novel_tool_call' && /SIDE-EFFECT/.test(f.summary || ''));
     return el('div', {
       style: security
         ? 'margin-top: 6px; padding: 6px 8px; border-left: 3px solid var(--critical); background: var(--critical-soft); border-radius: 3px;'
@@ -1230,7 +1231,7 @@
     }, [
       el('div', { style: 'display: flex; gap: 8px; align-items: center; margin-bottom: 2px; flex-wrap: wrap;' }, [
         el('span', { class: 'pill coord', text: 'Coord' }),
-        security ? el('span', { class: 'pill danger', text: 'Prompt injection' }) : null,
+        security ? el('span', { class: 'pill danger', text: f.failure_type === 'novel_tool_call' ? 'Side-effect action' : 'Prompt injection' }) : null,
         renderFindingTypeBadge(f.failure_type),
         (f.agents_involved && f.agents_involved.length)
           ? el('span', { class: 'muted', style: 'font-size: 11px;',
@@ -1350,6 +1351,11 @@
       label: 'Silent tool failure',
       what: 'A tool result was an error and the final answer never surfaced it: no retry, no later success, no mention of a failure. The planted failed call from the inject_tool_error_result chaos pattern counts, so this answers "does your graph tell anyone when a dependency fails?"',
       source: 'AgentChaos "Silent" outcome class (arXiv:2608.06790); Anthropic engineering postmortem',
+    },
+    'novel_tool_call': {
+      label: 'Novel tool call',
+      what: 'Under this perturbation the graph called a tool the baseline run never used. Tools that send, write, delete, pay or execute are flagged SIDE-EFFECT and listed first: the action already happened, whatever the final answer says. Routing/handoff tools and drift-injected calls are excluded; needs the baseline trace (the adapter supplies it).',
+      source: 'AgentDojo — injection success is an unauthorised tool call (arXiv:2406.13352); ToolEmu; OWASP LLM06 Excessive Agency',
     },
     'retry_amplification': {
       label: 'Retry amplification',
