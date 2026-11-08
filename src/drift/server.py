@@ -278,6 +278,12 @@ class CustomGraphRequest(BaseModel):
     track_history: bool = False
 
 
+class GateRequest(BaseModel):
+    """Evaluate `drift gate` rules against a shaped result dict."""
+    result: dict[str, Any]
+    rules: list[str] = Field(default_factory=list)
+
+
 class SuiteRunRequest(BaseModel):
     """Run drift against several examples/targets/ registry entries in
     one pass. Backs the Test Suite tab.
@@ -899,6 +905,29 @@ def create_app() -> FastAPI:
         from targets import registry as target_registry
 
         return {"targets": target_registry()}
+
+    @app.post("/api/gate")
+    def gate_result(req: GateRequest) -> dict[str, Any]:
+        """Apply `drift gate` rules to a shaped result the client already
+        holds (the Test / Import / Results tabs). Same evaluator as the CLI,
+        so what the UI shows as PASS is what CI would return 0 on."""
+        from drift.gate import evaluate, parse_rules
+
+        try:
+            rules = parse_rules(req.rules)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        report = evaluate(req.result, rules)
+        return {
+            "passed": report.passed,
+            "rules": report.rules,
+            "n_perturbations": report.n_perturbations,
+            "violations": [
+                {"rule": v.rule, "summary": v.summary, "perturbations": v.perturbations}
+                for v in report.violations
+            ],
+            "lines": report.lines(),
+        }
 
     @app.get("/api/detectors")
     def list_detectors() -> dict[str, Any]:

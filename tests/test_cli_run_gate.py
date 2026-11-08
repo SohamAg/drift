@@ -197,3 +197,24 @@ def test_presets_match_the_web_ui():
         for k, v in knobs.items():
             want = f"'{v}'" if isinstance(v, str) else str(v)
             assert re.search(rf"\b{k}:\s*{re.escape(want)}", body), (name, k, v, body)
+
+
+def test_server_gate_endpoint_matches_the_cli_evaluator():
+    from fastapi.testclient import TestClient
+
+    from drift.server import create_app
+
+    client = TestClient(create_app())
+    run = client.post("/api/adapter-demo", json={
+        "graph_name": "ticket_triage", "intensity": "exhaustive", "judge": "off", "divergence_mode": "exact",
+    }).json()
+    r = client.post("/api/gate", json={"result": run, "rules": ["crash", "finding:tool_call_loop"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["rules"] == ["crash", "finding:tool_call_loop"]
+    assert body["n_perturbations"] == len(run["perturbations"])
+    expect = gate.evaluate(run, ["crash", "finding:tool_call_loop"])
+    assert body["passed"] == expect.passed
+    assert [v["rule"] for v in body["violations"]] == [v.rule for v in expect.violations]
+    bad = client.post("/api/gate", json={"result": run, "rules": ["nonsense"]})
+    assert bad.status_code == 400 and "unknown gate rule" in bad.json()["detail"]

@@ -664,6 +664,15 @@ button { font: inherit; cursor: pointer; }
 .pill.fault-crash    { background: var(--critical-soft); color: var(--critical); border-color: transparent; opacity: .85; }
 .pill.fault-omission { background: var(--warning-soft);  color: var(--warning);  border-color: transparent; opacity: .85; }
 .pill.fault-value    { background: var(--info-soft);     color: var(--info);     border-color: transparent; opacity: .85; }
+/* gate panel: the CI verdict for the run on screen */
+.gate-box { margin: 10px 0 4px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-elev-1); }
+.gate-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gate-title { font-weight: 600; font-size: 12px; letter-spacing: .02em; text-transform: uppercase; color: var(--fg-muted); }
+.gate-rules { flex: 1 1 260px; min-width: 200px; font-family: var(--mono); font-size: 12px; padding: 4px 8px; }
+.gate-details { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+.gate-violation { font-size: 12px; padding: 3px 8px; border-left: 3px solid var(--critical); background: var(--critical-soft); border-radius: 3px; }
+.gate-cli { margin-top: 8px; font-size: 11px; word-break: break-all; }
+.gate-cli code { font-size: 11px; user-select: all; }
 /* rollouts of one perturbation disagreed on the outcome bucket */
 .pill.intermittent { background: var(--warning-soft); color: var(--warning); border: 1px dashed var(--warning); font-weight: 600; }
 /* per-rollout list inside an expanded perturbation row */

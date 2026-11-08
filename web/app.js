@@ -981,6 +981,7 @@
     });
 
     renderRegressionPanel(data.regression, prefix);
+    renderGatePanel(data, prefix);
 
     const base = $(`#${prefix}-baseline-trace`);
     base.innerHTML = '';
@@ -1038,6 +1039,106 @@
       return r !== 0 ? r : p.event_name.localeCompare(q.event_name);
     });
     sorted.forEach(p => host.appendChild(renderPerturbation(p, b)));
+  }
+
+  // ---- Gate: "would CI pass on this run?" --------------------------------
+  // Same rules and evaluator as `drift run --fail-on` / `drift gate`, via
+  // /api/gate. Rules persist in localStorage so the panel keeps answering
+  // the question you actually care about across runs.
+  const GATE_RULES_KEY = 'drift-gate-rules';
+  const GATE_DEFAULT_RULES = 'crash, recursion_limit, finding:injected_instruction_followed, finding:novel_tool_call';
+
+  function gateRules() {
+    return localStorage.getItem(GATE_RULES_KEY) || GATE_DEFAULT_RULES;
+  }
+
+  function cliEquivalent(data, rules) {
+    // Only an imported module has a CLI spelling; bundled demo graphs don't.
+    const ctx = _activeForkCtx || {};
+    const parts = ['drift run'];
+    if (ctx.module) {
+      parts.push(ctx.build_fn && ctx.build_fn !== 'build' ? `${ctx.module}:${ctx.build_fn}` : ctx.module);
+      if (ctx.initial_state_fn && ctx.initial_state_fn !== 'initial_state') parts.push(`--initial-state-fn ${ctx.initial_state_fn}`);
+      if (ctx.query) parts.push(`--query ${JSON.stringify(ctx.query)}`);
+      if (ctx.model) parts.push(`--model ${ctx.model}`);
+    } else {
+      return null;
+    }
+    parts.push(`--intensity ${data.intensity}`);
+    if (data.perturbations) parts.push(`--max-perturbations ${Math.max(1, data.perturbations.length)}`);
+    if (data.divergence_mode) parts.push(`--divergence ${data.divergence_mode}`);
+    if (data.baseline_rollouts > 1) parts.push(`--baseline-rollouts ${data.baseline_rollouts}`);
+    if (data.perturbation_rollouts > 1) parts.push(`--rollouts ${data.perturbation_rollouts}`);
+    parts.push(`--judge ${data.judge || 'off'}`);
+    if (data.seed != null) parts.push(`--seed ${data.seed}`);
+    parts.push('--json drift-results.json');
+    const r = rules.split(',').map(x => x.trim()).filter(Boolean).join(',');
+    if (r) parts.push(`--fail-on ${r}`);
+    return parts.join(' ');
+  }
+
+  function renderGatePanel(data, prefix) {
+    const summary = $(`#${prefix}-summary`);
+    if (!summary || !summary.parentNode) return;
+    const host = summary.parentNode;
+    host.querySelectorAll('.gate-box').forEach(n => n.remove());
+
+    const box = el('div', { class: 'gate-box' });
+    const verdict = el('span', { class: 'pill', text: 'evaluating…' });
+    const input = el('input', { type: 'text', class: 'gate-rules', value: gateRules(), spellcheck: 'false',
+      'aria-label': 'gate rules', title: 'Comma-separated: crash, recursion_limit, diverge, intermittent, finding, finding:<type>, baseline_finding, judge, max_crash_rate=0.2, max_diverge_rate=0.5' });
+    const details = el('div', { class: 'gate-details' });
+    const cli = el('div', { class: 'gate-cli' });
+
+    async function evaluate() {
+      const rules = input.value;
+      localStorage.setItem(GATE_RULES_KEY, rules);
+      verdict.className = 'pill'; verdict.textContent = 'evaluating…';
+      details.innerHTML = '';
+      try {
+        const r = await api('/api/gate', { method: 'POST', body: { result: data, rules: rules.split(',').map(x => x.trim()).filter(Boolean) } });
+        if (!r.rules.length) {
+          verdict.className = 'pill'; verdict.textContent = 'no rules';
+        } else if (r.passed) {
+          verdict.className = 'pill success'; verdict.textContent = `PASS · ${r.rules.length} rule${r.rules.length === 1 ? '' : 's'}`;
+        } else {
+          verdict.className = 'pill danger'; verdict.textContent = `FAIL · ${r.violations.length} of ${r.rules.length} rule${r.rules.length === 1 ? '' : 's'}`;
+          r.violations.forEach(v => {
+            details.appendChild(el('div', { class: 'gate-violation' }, [
+              el('code', { text: v.rule }),
+              el('span', { text: ' ' + v.summary }),
+              v.perturbations.length ? el('span', { class: 'muted', text: ' — ' + v.perturbations.slice(0, 4).join(', ') + (v.perturbations.length > 4 ? ` … +${v.perturbations.length - 4}` : '') }) : null,
+            ]));
+          });
+        }
+      } catch (e) {
+        verdict.className = 'pill warning'; verdict.textContent = 'rule error';
+        details.appendChild(el('div', { class: 'gate-violation', text: e.message }));
+      }
+      cli.innerHTML = '';
+      const cmd = cliEquivalent(data, input.value);
+      if (cmd) {
+        cli.appendChild(el('span', { class: 'muted', text: 'Same run from the CLI / CI: ' }));
+        cli.appendChild(el('code', { class: 'mono', text: cmd }));
+      } else {
+        cli.appendChild(el('span', { class: 'muted', text: 'From CI: `drift run <module:build> … --fail-on ' + input.value.split(',').map(x => x.trim()).filter(Boolean).join(',') + '`, or save this run and `drift gate <file.json>`. See docs/ci.md.' }));
+      }
+    }
+
+    let timer = null;
+    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(evaluate, 400); });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(timer); evaluate(); } });
+
+    box.appendChild(el('div', { class: 'gate-head' }, [
+      el('span', { class: 'gate-title', text: 'Gate' }),
+      verdict,
+      el('span', { class: 'muted', style: 'font-size: 11px;', text: 'would CI pass this run? rules:' }),
+      input,
+    ]));
+    box.appendChild(details);
+    box.appendChild(cli);
+    summary.insertAdjacentElement('afterend', box);
+    evaluate();
   }
 
   function renderPerturbation(p, baseline) {
