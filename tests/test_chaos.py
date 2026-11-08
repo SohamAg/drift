@@ -348,3 +348,26 @@ def test_auto_chaos_events_helper_matches_plan_auto_chaos():
     b = plan_auto_chaos(state=state, steps=30, intensity="moderate", seed=17)
     assert [(t, type(e).__name__, e.field) for t, e in a] == \
            [(t, type(e).__name__, e.field) for t, e in b]
+
+
+def test_plan_never_empty_for_a_non_off_intensity_on_a_tiny_schema():
+    """One fuzzable field, light intensity, 30 steps: the old Bernoulli
+    schedule was empty for many seeds — a gate on that run passed vacuously."""
+    from pydantic import Field
+
+    class _OneField(drift.WorldState):
+        approved: bool = Field(default=False)
+
+    for seed in range(40):
+        plan = plan_auto_chaos(state=_OneField(), steps=30, intensity="light", seed=seed)
+        assert len(plan) >= 1, seed
+        assert all(2 <= t <= 29 for t, _ in plan)
+
+
+def test_plan_does_not_repeat_a_pattern_until_the_catalogue_is_exhausted():
+    for seed in range(20):
+        plan = plan_auto_chaos(state=_DemoState(), steps=60, intensity="moderate", seed=seed)
+        names = [f"{type(e).__name__}[{e.field}]" for _, e in plan]
+        catalogue = len(discover_field_patterns(_DemoState(), seed=seed))
+        if len(names) <= catalogue:
+            assert len(set(names)) == len(names), (seed, names)

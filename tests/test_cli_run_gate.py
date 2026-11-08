@@ -234,3 +234,20 @@ def test_targets_json(capsys) -> None:
     rows = _json.loads(capsys.readouterr().out)
     assert {r["name"] for r in rows} >= {"supervisor_basic", "swarm_peer"}
     assert all("importable" in r and "topology" in r for r in rows)
+
+
+def test_gate_never_passes_vacuously():
+    r = gate.evaluate(_shaped([]), ["crash"])
+    assert not r.passed and r.violations[0].rule == "no_perturbations"
+    # no rules → nothing to fail, as before
+    assert gate.evaluate(_shaped([]), []).passed
+
+
+def test_gate_fails_when_the_baseline_itself_crashed():
+    shaped = _shaped([_p("a")])
+    shaped["baseline"]["crashed"] = True
+    shaped["baseline"]["error_type"] = "KeyError"
+    shaped["baseline"]["error"] = "'messages'"
+    r = gate.evaluate(shaped, ["finding"])
+    assert [v.rule for v in r.violations] == ["baseline_crashed"]
+    assert "KeyError" in r.violations[0].summary

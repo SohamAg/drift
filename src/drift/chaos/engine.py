@@ -125,13 +125,26 @@ def plan_auto_chaos(
         return scheduled
 
     rng = random.Random(seed ^ 0xC4A05)  # decorrelate from agent RNGs
+    # Which steps fire is a per-step Bernoulli(freq) draw, as before. WHICH
+    # pattern fires is drawn without replacement from a shuffled catalogue
+    # (reshuffled only once every pattern has had a turn), so a run never
+    # spends two of its few perturbations on the same pattern. And a
+    # non-off intensity always schedules at least one event when the
+    # catalogue is non-empty: on a one-field schema, "light" (8%) over a
+    # 30-step horizon came out empty often enough that `drift run --preset
+    # quick` on a messages-only graph tested nothing and said PASS.
+    fire_steps = [t for t in range(first_step, last_step + 1) if rng.random() < freq]
+    if not fire_steps:
+        fire_steps = [rng.randint(first_step, last_step)]
+    ordered = sorted(catalog, key=lambda sp: sp.pattern_name)
+    queue: list = []
     scheduled = []
-    for t in range(first_step, last_step + 1):
-        if rng.random() >= freq:
-            continue
-        spec = rng.choice(catalog)
-        event = spec.build()
-        scheduled.append((t, event))
+    for t in fire_steps:
+        if not queue:
+            queue = list(ordered)
+            rng.shuffle(queue)
+        spec = queue.pop()
+        scheduled.append((t, spec.build()))
 
     return scheduled
 

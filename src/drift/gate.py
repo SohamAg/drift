@@ -21,6 +21,13 @@ express is a gate nobody will trust at 2am:
 
 Thresholds are fractions of scheduled perturbations, not of the schema's
 pattern count, so a run with `max_perturbations=4` is judged on those 4.
+
+A gate never passes vacuously: when rules are given and the run scheduled
+ZERO perturbations (a light intensity on a one-field schema can do that),
+the report carries a `no_perturbations` violation. Nothing was tested, so
+nothing passed. Seen live: `drift run --target supervisor_basic --preset
+quick` on a messages-only state → 0 perturbations → it would have said
+PASS.
 """
 from __future__ import annotations
 
@@ -128,6 +135,19 @@ def evaluate(shaped: dict[str, Any], rules: list[str]) -> GateReport:
     baseline: dict = dict(shaped.get("baseline") or {})
     n = len(perts)
     violations: list[Violation] = []
+    if rules and n == 0:
+        violations.append(Violation(
+            "no_perturbations",
+            "the run scheduled no perturbations, so nothing was tested — raise the intensity "
+            "(the quick preset is 'light', which can sample zero patterns on a one-field schema) "
+            "or pass --max-perturbations",
+        ))
+    if rules and baseline.get("crashed"):
+        violations.append(Violation(
+            "baseline_crashed",
+            f"the unperturbed run itself crashed ({baseline.get('error_type') or 'error'}: "
+            f"{str(baseline.get('error') or '')[:120]}) — no comparison is possible",
+        ))
 
     def names(pred) -> list[str]:
         return [str(p.get("event_name", "?")) for p in perts if pred(p)]

@@ -204,3 +204,5 @@ def test_web_and_cli_shaped_result_renders_event_names_and_rollouts(tmp_path: Pa
     assert "flip_bool[approved]" in html
     assert "2/2" in html  # outcome label rendered
     assert run["config"]["perturbation_rollouts"] == 2
+    # graph invocations, not rows: baseline + 2 rollouts per perturbation
+    assert run["summary"]["n_runs"] == shaped["n_graph_runs"] == 1 + 2 * len(shaped["perturbations"])

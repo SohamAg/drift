@@ -204,7 +204,10 @@ def load_run(path: str | Path) -> dict:
         "questions": questions,
         "summary": {
             "n_scenarios": len(questions),
-            "n_runs": len(questions) + len(all_perts),
+            # Graph invocations. A shaped single run knows its own count
+            # (baseline + noise rollouts + every perturbation rollout);
+            # runner files are one invocation per scenario + perturbation.
+            "n_runs": int(data.get("n_graph_runs") or 0) or (len(questions) + len(all_perts)),
             "n_perturbations": len(all_perts),
             "n_crashed": sum(1 for p in all_perts if p["outcome"] == "CRASH"),
             "n_diverged": sum(1 for p in all_perts if p["outcome"] == "DIVERGE"),
