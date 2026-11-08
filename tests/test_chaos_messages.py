@@ -284,3 +284,20 @@ def test_inject_tool_result_tool_hijack_names_the_tool_and_canary():
     assert CANARY_PATTERN.search(msgs[-1]["content"]).group(0) == ev.canary
     assert ev.canary in rec.summary and "search" in rec.summary
     assert ev.fault_class == "value"
+
+
+def test_tool_hijack_canary_differs_from_instruction_canary_for_the_same_seed():
+    from drift.chaos.patterns import InjectToolResultInstruction, InjectToolResultToolHijack
+
+    a = InjectToolResultInstruction("messages", seed=11).canary
+    b = InjectToolResultToolHijack("messages", seed=11).canary
+    assert a != b
+
+
+def test_tool_hijack_without_a_prior_tool_asks_for_any_tool():
+    from drift.chaos.patterns import InjectToolResultToolHijack
+
+    w = _world(messages=[{"type": "human", "content": "What is 7 times 8?"}])
+    rec = InjectToolResultToolHijack("messages", seed=1).apply(w)
+    assert "one of your tools" in w.state.messages[-1]["content"]
+    assert "any search/lookup tool" in rec.summary

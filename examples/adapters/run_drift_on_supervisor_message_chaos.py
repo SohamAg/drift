@@ -112,6 +112,11 @@ def _print(result: AdapterResult, label: str) -> None:
         print(f"  [{p.fault_class:<8s}] {p.pattern_type:<32s} {verdict:<24s} "
               f"{len(p.trace)} steps  {p.duration_s:.1f}s")
         print(f"             {p.event_summary[:150]}")
+        if p.n_rollouts > 1:
+            rates = ", ".join(f"{k} {v}/{p.n_rollouts}" for k, v in p.finding_rollout_counts.items())
+            print(f"             rollouts: {p.outcome_label()}"
+                  + (" — INTERMITTENT" if p.is_intermittent else "")
+                  + (f"; detectors: {rates}" if rates else "; detectors: none"))
         if p.crashed:
             print(f"             error: {p.error[:150]}")
         elif p.diverged:
@@ -142,25 +147,40 @@ async def _main(args) -> None:
         seed=11,
         divergence_mode="tiered",
         baseline_rollouts=args.baseline_rollouts,
+        perturbation_rollouts=args.rollouts,
         max_judge_calls=0,
     )
-    print(f"wall clock: {time.perf_counter() - t0:.0f}s", file=sys.stderr)
-    _print(result, label)
+    wall = time.perf_counter() - t0
+    print(f"wall clock: {wall:.0f}s", file=sys.stderr)
+    # Save FIRST: the run cost real money and a console encoding error in
+    # the pretty-printer must never lose it (it did, twice, on cp1252).
     if args.save_json:
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         out = RESULTS_DIR / f"{label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        payload = _result_to_json(result)
+        from drift.adapters.serialize import shape_adapter_result
+        payload = shape_adapter_result(
+            result, graph_meta={"name": label, "description": "langgraph-supervisor message chaos", "agents": []},
+            seed=11, judge="off", judge_model=None, user_guidelines=[],
+        )
         payload["_meta"] = {"target": label, "model": args.model, "question": question,
-                            "wall_clock_s": round(time.perf_counter() - t0, 1)}
+                            "rollouts": args.rollouts, "wall_clock_s": round(wall, 1)}
         out.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-        print(f"\nsaved: {out.relative_to(REPO_ROOT)}")
+        print(f"saved: {out.relative_to(REPO_ROOT)}", file=sys.stderr)
+    _print(result, label)
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--extended", action="store_true", help="5-specialist supervisor instead of the 2-agent README example")
     p.add_argument("--model", default="gpt-4o-mini")
     p.add_argument("--baseline-rollouts", type=int, default=2)
+    p.add_argument("--rollouts", type=int, default=1,
+                   help="run each perturbed input N times and report k/N (perturbation_rollouts)")
     p.add_argument("--save-json", action="store_true")
     asyncio.run(_main(p.parse_args()))
 

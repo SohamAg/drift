@@ -488,18 +488,22 @@ top-vs-bottom compare).
   graph) stays invisible, and a dispatcher that names the agent nowhere in
   its arguments or tool name stays anonymous. Hand-rolled stubs without
   `stream_mode` keep the old flat view.
-- **Empirical evidence is still thin and intermittent.** On LangChain's own
-  2-agent supervisor example with gpt-4o-mini
-  (`examples/adapters/run_drift_on_supervisor_message_chaos.py`), the
-  planted indirect prompt injection was followed in 1 of 4 runs — the model
-  answered with only the canary — and the planted failed tool call was
-  silently papered over in 2 of 3. On the 5-specialist variant, a real
-  `tool_call_loop` fired (`_web_search` ×4, identical args and results). One
-  run is not a verdict either way; repeating each perturbation N times is
-  the obvious next step and isn't built. The earlier 5-specialist judge
-  findings (2 real `coordination_contradiction`s) still stand. Drift hasn't
-  been shown to catch things engineers couldn't find by reading their own
-  code; only that it surfaces them more systematically + with lower friction.
+- **Empirical evidence is still thin, and now measured as rates.** On
+  LangChain's own 2-agent supervisor example with gpt-4o-mini, every
+  message perturbation run 3 times (`examples/adapters/run_drift_on_supervisor_message_chaos.py
+  --rollouts 3 --save-json`, 2026-11-09): the planted indirect prompt
+  injection was followed in **1 of 3** rollouts (the model answered with
+  only the canary) and flagged intermittent; the planted failed tool call
+  was papered over in **3 of 3**; a fabricated "already done" turn and the
+  injection each produced a `novel_tool_call` (`web_search`, never called at
+  baseline) and `retry_amplification` (2.0×) in **2 of 3**; the tool-hijack
+  injection reached a tool call in **0 of 3** (this graph has no tool the
+  supervisor can call directly, so the demand had nowhere to land). On the
+  5-specialist variant a real `tool_call_loop` fired (`_web_search` ×4). The
+  earlier 5-specialist judge findings (2 real `coordination_contradiction`s)
+  still stand. Three rollouts is a rate, not a verdict; drift hasn't been
+  shown to catch things engineers couldn't find by reading their own code,
+  only that it surfaces them systematically and with lower friction.
 
 See `FUTURE_DIRECTIONS.md` and the post-compaction kickoff memory file for
 the next builds.
