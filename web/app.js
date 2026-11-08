@@ -363,27 +363,27 @@
   const ADAPTER_PRESETS = {
     quick: {
       intensity: 'light', max_perturbations: 4, judge: 'off',
-      divergence_mode: 'exact', baseline_rollouts: 1, max_judge_calls: 0,
+      divergence_mode: 'exact', baseline_rollouts: 1, perturbation_rollouts: 1, max_judge_calls: 0,
     },
     balanced: {
       intensity: 'aggressive', max_perturbations: 6, judge: 'openai',
-      divergence_mode: 'tiered', baseline_rollouts: 3, max_judge_calls: 10,
+      divergence_mode: 'tiered', baseline_rollouts: 3, perturbation_rollouts: 1, max_judge_calls: 10,
     },
     thorough: {
       intensity: 'aggressive', max_perturbations: 12, judge: 'openai',
-      divergence_mode: 'tiered', baseline_rollouts: 5, max_judge_calls: 25,
+      divergence_mode: 'tiered', baseline_rollouts: 5, perturbation_rollouts: 2, max_judge_calls: 25,
     },
     exhaustive: {
       intensity: 'exhaustive', max_perturbations: 100, judge: 'openai',
-      divergence_mode: 'tiered', baseline_rollouts: 5, max_judge_calls: 50,
+      divergence_mode: 'tiered', baseline_rollouts: 5, perturbation_rollouts: 3, max_judge_calls: 50,
     },
   };
 
   const ADAPTER_PRESET_HINTS = {
     quick: 'Light chaos + exact-equality diff. No LLM calls, runs in seconds. Good for smoke tests.',
     balanced: 'Aggressive chaos + judge on tiered cascade. ~$0.01 / run. Default for everyday use.',
-    thorough: 'Aggressive chaos + 5 baseline rollouts + larger judge budget. ~$0.10 / run.',
-    exhaustive: 'Every applicable chaos pattern in the schema, no sampling. Cost scales with schema breadth — wide schemas can hit $0.50+ per run. Use as a pre-deploy gate.',
+    thorough: 'Aggressive chaos + 5 baseline rollouts + every perturbation run twice (k/N outcomes) + larger judge budget. ~$0.20 / run.',
+    exhaustive: 'Every applicable chaos pattern in the schema, no sampling, each run 3 times so intermittent failures show as k/3. Cost scales with schema breadth — wide schemas can hit $1+ per run. Use as a pre-deploy gate.',
     custom: 'Tweak any knob in Advanced settings.',
   };
 
@@ -403,7 +403,7 @@
     });
     [
       '#adapter-intensity', '#adapter-max-perturbations', '#adapter-judge',
-      '#adapter-divergence-mode', '#adapter-baseline-rollouts', '#adapter-max-judge-calls',
+      '#adapter-divergence-mode', '#adapter-baseline-rollouts', '#adapter-perturbation-rollouts', '#adapter-max-judge-calls',
     ].forEach(sel => {
       const node = $(sel);
       if (node) node.addEventListener('change', () => {
@@ -500,6 +500,7 @@
     $('#adapter-judge').value = p.judge;
     $('#adapter-divergence-mode').value = p.divergence_mode;
     $('#adapter-baseline-rollouts').value = p.baseline_rollouts;
+    $('#adapter-perturbation-rollouts').value = p.perturbation_rollouts || 1;
     $('#adapter-max-judge-calls').value = p.max_judge_calls;
   }
 
@@ -522,6 +523,7 @@
       .split('\n').map(s => s.trim()).filter(Boolean);
     const divergence_mode = $('#adapter-divergence-mode').value;
     const baseline_rollouts = parseInt($('#adapter-baseline-rollouts').value, 10) || 1;
+    const perturbation_rollouts = parseInt($('#adapter-perturbation-rollouts').value, 10) || 1;
     const max_judge_calls = parseInt($('#adapter-max-judge-calls').value, 10);
     const similarity_threshold = parseFloat($('#adapter-similarity-threshold').value);
     const coordination_roles = parseRolesTextarea('#adapter-coordination-roles');
@@ -540,7 +542,7 @@
           intensity, seed, max_perturbations,
           auto_chaos_exclude, judge, judge_model, user_guidelines,
           coordination_roles, required_followups, policy_field,
-          divergence_mode, baseline_rollouts,
+          divergence_mode, baseline_rollouts, perturbation_rollouts,
           max_judge_calls: Number.isFinite(max_judge_calls) ? max_judge_calls : 10,
           similarity_threshold: Number.isFinite(similarity_threshold) ? similarity_threshold : 0.85,
           track_history,
@@ -944,6 +946,10 @@
       ['Diverged',       data.n_diverged],
       ['Unchanged',      data.n_unchanged],
     );
+    if (data.perturbation_rollouts > 1) {
+      kvs.push(['Rollouts / perturbation', `${data.perturbation_rollouts} (${data.n_graph_runs} graph runs)`]);
+      kvs.push(['Intermittent', data.n_intermittent]);
+    }
     if (data.n_coordination_findings) {
       kvs.push(['Coord findings', data.n_coordination_findings]);
     }
@@ -1056,11 +1062,32 @@
       }
     }
 
+    const nRoll = p.n_rollouts || 1;
+    const multi = nRoll > 1 && p.outcome_counts;
+    if (multi) {
+      // "Crash · 1/3" — the row is the most severe rollout; say how often.
+      const bucket = p.crashed ? 'crashed' : p.diverged ? 'diverged' : 'unchanged';
+      pillText = `${pillText} · ${p.outcome_counts[bucket]}/${nRoll}`;
+      if (p.is_intermittent) {
+        detail = `${p.outcome_label}. Same perturbed input, ${nRoll} runs, different outcomes — the graph's response to this input is a coin flip. Expand for every rollout.\n\n${detail}`;
+      }
+    }
+
     const findingBadges = [];
+    if (multi && p.is_intermittent) {
+      findingBadges.push(el('span', {
+        class: 'pill intermittent',
+        text: 'intermittent',
+        title: `Rollouts disagreed: ${p.outcome_label}`,
+      }));
+    }
     if ((p.coordination_findings || []).length) {
+      const rc = multi ? p.finding_rollout_counts || {} : null;
+      const rates = rc ? Object.entries(rc).map(([k, v]) => `${k} ${v}/${nRoll}`).join(', ') : '';
       findingBadges.push(el('span', {
         class: 'pill coord',
         text: `Coord × ${p.coordination_findings.length}`,
+        title: rates ? `Fired in: ${rates}` : undefined,
       }));
     }
     if ((p.judge_findings || []).length) {
@@ -1119,6 +1146,8 @@
       ]));
     }
 
+    if (multi) bodyChildren.push(renderRolloutPanel(p, baseline));
+
     bodyChildren.push(el('details', { style: 'margin-top: 12px;' }, [
       el('summary', { class: 'help', text: 'Perturbed initial state' }),
       el('pre', { class: 'mono', style: 'max-height: 200px; overflow: auto; font-size: 11px;',
@@ -1137,6 +1166,54 @@
     const row = el('div', { class: 'failure-cell perturbation-row' }, [head, body]);
     head.addEventListener('click', () => row.classList.toggle('expanded'));
     return row;
+  }
+
+  // Every rollout of one perturbation: outcome, detectors that fired, and
+  // an expandable trace. The row above is the most severe rollout; this is
+  // where "1/3" becomes "which one, and what did the other two do".
+  function renderRolloutPanel(p, baseline) {
+    const nRoll = p.n_rollouts || 1;
+    const all = [p, ...(p.rollouts || [])].sort((a, b) => (a.rollout_index || 0) - (b.rollout_index || 0));
+    const host = el('div', { class: 'rollout-panel' });
+    host.appendChild(el('div', { class: 'help', style: 'margin: 12px 0 4px 0;',
+      text: `Rollouts — ${nRoll} runs of this exact perturbed input: ${p.outcome_label}` }));
+    const rates = Object.entries(p.finding_rollout_counts || {});
+    if (rates.length) {
+      host.appendChild(el('div', { class: 'muted', style: 'font-size: 12px; margin-bottom: 6px;',
+        text: 'Detectors by rollout: ' + rates.map(([k, v]) => `${k} ${v}/${nRoll}`).join(' · ') }));
+    }
+    const list = el('div', { class: 'rollout-list' });
+    all.forEach(r => {
+      const bucket = r.crashed ? 'crashed' : r.diverged ? 'diverged' : 'unchanged';
+      const pill = r.crashed ? 'pill danger' : r.diverged ? 'pill warning' : 'pill success';
+      const label = r.crashed
+        ? (r.crash_class === 'recursion_limit' ? 'Crash · recursion limit' : `Crash · ${r.error_type}`)
+        : r.diverged ? 'Diverge' : 'Unchanged';
+      const types = [...new Set((r.coordination_findings || []).map(f => f.failure_type))];
+      const head = el('div', { class: 'rollout-head' }, [
+        el('span', { class: 'mono muted', text: `#${(r.rollout_index || 0) + 1}` }),
+        el('span', { class: pill, text: label }),
+        r === p ? el('span', { class: 'pill', text: 'shown above', title: 'This rollout is the one the row summarises.' }) : null,
+        ...types.map(t => el('span', { class: 'pill coord', text: t })),
+        (r.judge_findings || []).length ? el('span', { class: 'pill info', text: `Judge × ${r.judge_findings.length}` }) : null,
+        el('span', { class: 'muted', style: 'margin-left: auto; font-size: 11px;', text: `${r.duration_s}s` }),
+      ]);
+      const detailText = r.crashed ? r.error : r.diverged ? r.divergence_summary : '';
+      const bodyKids = [];
+      if (detailText) bodyKids.push(el('div', { class: 'mono', style: 'white-space: pre-wrap; font-size: 12px; margin: 6px 0;', text: detailText }));
+      (r.coordination_findings || []).forEach(f => bodyKids.push(renderCoordFinding(f)));
+      (r.judge_findings || []).forEach(f => bodyKids.push(renderJudgeFinding(f)));
+      if ((r.trace || []).length) {
+        bodyKids.push(el('div', { class: 'help', style: 'margin: 8px 0 4px 0;', text: `trace (${r.trace.length} step(s))` }));
+        bodyKids.push(renderTraceList(r.trace));
+      }
+      const body = el('div', { class: 'rollout-body' }, bodyKids);
+      const row = el('div', { class: `rollout-row ${bucket}` }, [head, body]);
+      head.addEventListener('click', () => row.classList.toggle('expanded'));
+      list.appendChild(row);
+    });
+    host.appendChild(list);
+    return host;
   }
 
   function renderCoordFinding(f) {

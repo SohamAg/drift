@@ -99,6 +99,13 @@ _PLANNER_HORIZON = 30
 #   "off"        — skip divergence detection entirely; report crash only.
 DEFAULT_DIVERGENCE_MODE = "exact"
 DEFAULT_BASELINE_ROLLOUTS = 1            # >1 enables noise-floor measurement
+# How many times each perturbed state is run. 1 = one shot (the historical
+# behaviour). For an LLM-driven graph one perturbed run is a sample, not a
+# verdict: on a live 2-agent supervisor the planted prompt injection was
+# followed in 1 of 4 runs. N > 1 reports k/N per perturbation and marks the
+# perturbation intermittent when its rollouts disagree. Cost scales linearly.
+DEFAULT_PERTURBATION_ROLLOUTS = 1
+_OUTCOME_RANK = {"crashed": 0, "diverged": 1, "unchanged": 2}
 DEFAULT_MAX_JUDGE_CALLS = 10             # tier-3 hard ceiling across one drift_test run
 DEFAULT_SIMILARITY_THRESHOLD = 0.85      # tier-2 lexical cutoff (0..1, SequenceMatcher ratio)
 
@@ -221,6 +228,66 @@ class PerturbationResult:
     # LangGraph thread the run executed on when the graph has a checkpointer
     # (each run gets its own, so runs never share state). "" otherwise.
     thread_id: str = ""
+    # Repeated rollouts of the SAME perturbed state (perturbation_rollouts
+    # > 1). This object is the representative rollout — the most severe one
+    # (crashed > diverged > unchanged; ties → lowest index) — so the
+    # top-level `crashed` / `diverged` read "in at least one rollout".
+    # `rollouts` holds the other N-1 rollouts in full; empty when N == 1.
+    rollout_index: int = 0
+    rollouts: list["PerturbationResult"] = field(default_factory=list)
+
+    # -- rollout aggregates -------------------------------------------------
+    @property
+    def n_rollouts(self) -> int:
+        return 1 + len(self.rollouts)
+
+    def all_rollouts(self) -> list["PerturbationResult"]:
+        """Every rollout of this perturbation, representative included, in
+        execution order."""
+        return sorted([self, *self.rollouts], key=lambda r: r.rollout_index)
+
+    @property
+    def outcome(self) -> str:
+        """This rollout's bucket: "crashed" | "diverged" | "unchanged"."""
+        return "crashed" if self.crashed else "diverged" if self.diverged else "unchanged"
+
+    @property
+    def outcome_counts(self) -> dict[str, int]:
+        """How many rollouts landed in each bucket, e.g. {"crashed": 1,
+        "diverged": 2, "unchanged": 2}. Keys are always present."""
+        counts = {"crashed": 0, "diverged": 0, "unchanged": 0}
+        for r in self.all_rollouts():
+            counts[r.outcome] += 1
+        return counts
+
+    @property
+    def is_intermittent(self) -> bool:
+        """True when the rollouts of this perturbation did not all land in
+        the same bucket — the graph's response to this input is a coin
+        flip, which is itself a finding (and the reason one run proves
+        nothing either way)."""
+        return self.n_rollouts > 1 and sum(1 for v in self.outcome_counts.values() if v) > 1
+
+    @property
+    def finding_rollout_counts(self) -> dict[str, int]:
+        """failure_type -> number of ROLLOUTS in which that coordination
+        detector fired (not the number of findings). `tool_call_loop: 2`
+        with n_rollouts 5 reads "loops 2 times out of 5"."""
+        out: dict[str, int] = {}
+        for r in self.all_rollouts():
+            seen = {f.get("failure_type", "") for f in r.coordination_findings}
+            for ft in seen:
+                if ft:
+                    out[ft] = out.get(ft, 0) + 1
+        return dict(sorted(out.items()))
+
+    def outcome_label(self) -> str:
+        """One-line k/N summary: "crashed 1/5 · diverged 2/5 · unchanged 2/5".
+        For a single rollout just the bucket name."""
+        if self.n_rollouts == 1:
+            return self.outcome
+        n = self.n_rollouts
+        return " · ".join(f"{k} {v}/{n}" for k, v in self.outcome_counts.items() if v)
 
 
 @dataclass
@@ -262,6 +329,7 @@ class AdapterResult:
     # Phase 2: divergence cascade telemetry.
     divergence_mode: str = "exact"   # "exact" | "tiered" | "off"
     baseline_rollouts: int = 1       # how many baseline samples informed the noise band
+    perturbation_rollouts: int = 1   # how many times each perturbed state was run
     noise_band: dict[str, FieldNoiseBand] = field(default_factory=dict)
     judge_calls_used: int = 0        # tier-3 calls actually fired (cost telemetry)
     judge_calls_budget: int = DEFAULT_MAX_JUDGE_CALLS
@@ -290,6 +358,20 @@ class AdapterResult:
             for p in self.perturbations
             if not p.crashed and not p.diverged
         )
+
+    @property
+    def n_intermittent(self) -> int:
+        """Perturbations whose repeated rollouts disagreed on the outcome
+        bucket. Always 0 when perturbation_rollouts == 1 — one sample can't
+        disagree with itself, which is the point of running more."""
+        return sum(1 for p in self.perturbations if p.is_intermittent)
+
+    @property
+    def n_graph_runs(self) -> int:
+        """Total graph invocations this call made (baseline incl. noise
+        rollouts + every perturbation rollout). Cost telemetry."""
+        base = self.baseline_rollouts if self.baseline_rollouts > 1 else 0
+        return base + 1 + sum(p.n_rollouts for p in self.perturbations)
 
     @property
     def n_judge_findings(self) -> int:
@@ -329,6 +411,12 @@ class AdapterResult:
             f"  diverged        : {self.n_diverged}",
             f"  unchanged       : {self.n_unchanged}",
         ]
+        if self.perturbation_rollouts > 1:
+            out.append(
+                f"  rollouts        : {self.perturbation_rollouts} per perturbation "
+                f"({self.n_graph_runs} graph runs total)"
+            )
+            out.append(f"  intermittent    : {self.n_intermittent} (rollouts disagreed)")
         if self.n_judge_findings:
             out.append(f"  judge findings  : {self.n_judge_findings}")
         if self.n_coordination_findings:
@@ -1398,6 +1486,7 @@ async def drift_test_async(
     user_guidelines: Iterable[str] | None = None,
     divergence_mode: str = DEFAULT_DIVERGENCE_MODE,
     baseline_rollouts: int = DEFAULT_BASELINE_ROLLOUTS,
+    perturbation_rollouts: int = DEFAULT_PERTURBATION_ROLLOUTS,
     max_judge_calls: int = DEFAULT_MAX_JUDGE_CALLS,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     run_coordination_detectors: bool = True,
@@ -1419,6 +1508,10 @@ async def drift_test_async(
     if divergence_mode not in ("exact", "tiered", "off"):
         raise ValueError(
             f"divergence_mode must be 'exact', 'tiered', or 'off'; got {divergence_mode!r}"
+        )
+    if not isinstance(perturbation_rollouts, int) or perturbation_rollouts < 1:
+        raise ValueError(
+            f"perturbation_rollouts must be an int >= 1; got {perturbation_rollouts!r}"
         )
     _validate_graph(graph)
 
@@ -1523,18 +1616,15 @@ async def drift_test_async(
 
     judge_calls_used = 0
     perturbations: list[PerturbationResult] = []
-    for pert_index, (_t, event) in enumerate(scheduled):
-        # Each perturbation gets its own World built from a fresh copy of
-        # the user's state, then has one chaos event applied.
-        pert_input = (
-            deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
-        )
-        world = _materialize_world(state_cls, pert_input)
-        record = event.apply(world)
-        post_state = _state_to_dict(world)
 
-        pert_cfg = _cfg(f"p{pert_index}")
-        final, ptrace, etype, err, took = await _run_one(graph, post_state, pert_cfg)
+    async def _rollout(event: Any, record: Any, post_state: dict, label: str,
+                       rollout_index: int) -> PerturbationResult:
+        """Run ONE perturbed state once and score it. Called N times per
+        perturbation when perturbation_rollouts > 1 — same perturbed input
+        (deep-copied), its own thread, its own trace and findings."""
+        nonlocal judge_calls_used
+        pert_cfg = _cfg(label)
+        final, ptrace, etype, err, took = await _run_one(graph, deepcopy(post_state), pert_cfg)
 
         # Divergence detection: dispatch through the cost cascade.
         # `divfiltered` carries tier-2/3 candidates the cascade dropped —
@@ -1577,30 +1667,53 @@ async def drift_test_async(
             policy_field=policy_field,
         )
 
-        perturbations.append(
-            PerturbationResult(
-                event_name=event.name,
-                event_summary=record.summary,
-                perturbed_field=getattr(event, "field", ""),
-                pattern_type=getattr(event, "pattern", "auto_chaos"),
-                fault_class=getattr(event, "fault_class", ""),
-                perturbed_initial_state=post_state,
-                final_state=final,
-                crashed=bool(etype),
-                error=err,
-                error_type=etype,
-                crash_class=_classify_crash(etype, err),
-                diverged=diverged,
-                divergence_summary=divsum,
-                duration_s=took,
-                trace=ptrace,
-                judge_findings=pert_findings,
-                divergence_details=divdetails,
-                filtered_divergences=divfiltered,
-                coordination_findings=pert_coord,
-                thread_id=(pert_cfg or {}).get("configurable", {}).get("thread_id", ""),
-            )
+        return PerturbationResult(
+            event_name=event.name,
+            event_summary=record.summary,
+            perturbed_field=getattr(event, "field", ""),
+            pattern_type=getattr(event, "pattern", "auto_chaos"),
+            fault_class=getattr(event, "fault_class", ""),
+            perturbed_initial_state=post_state,
+            final_state=final,
+            crashed=bool(etype),
+            error=err,
+            error_type=etype,
+            crash_class=_classify_crash(etype, err),
+            diverged=diverged,
+            divergence_summary=divsum,
+            duration_s=took,
+            trace=ptrace,
+            judge_findings=pert_findings,
+            divergence_details=divdetails,
+            filtered_divergences=divfiltered,
+            coordination_findings=pert_coord,
+            thread_id=(pert_cfg or {}).get("configurable", {}).get("thread_id", ""),
+            rollout_index=rollout_index,
         )
+
+    for pert_index, (_t, event) in enumerate(scheduled):
+        # Each perturbation gets its own World built from a fresh copy of
+        # the user's state, then has one chaos event applied.
+        pert_input = (
+            deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
+        )
+        world = _materialize_world(state_cls, pert_input)
+        record = event.apply(world)
+        post_state = _state_to_dict(world)
+
+        # Rollout 0 keeps the historical thread label `p<i>`; repeats are
+        # `p<i>r<j>`. Every rollout is an independent sample of the graph's
+        # response to this exact input.
+        rollouts: list[PerturbationResult] = []
+        for j in range(perturbation_rollouts):
+            label = f"p{pert_index}" if j == 0 else f"p{pert_index}r{j}"
+            rollouts.append(await _rollout(event, record, post_state, label, j))
+        # The representative is the most severe rollout, so the top-level
+        # verdict reads "in at least one of N runs". The rest ride along.
+        primary = min(rollouts, key=lambda r: (_OUTCOME_RANK[r.outcome], r.rollout_index))
+        primary.rollouts = [r for r in rollouts if r is not primary]
+        perturbations.append(primary)
+
 
     return AdapterResult(
         baseline=baseline,
@@ -1609,6 +1722,7 @@ async def drift_test_async(
         patterns_total=len(all_specs),
         divergence_mode=divergence_mode,
         baseline_rollouts=baseline_rollouts,
+        perturbation_rollouts=perturbation_rollouts,
         noise_band=noise_band,
         judge_calls_used=judge_calls_used,
         judge_calls_budget=max_judge_calls,
@@ -1628,6 +1742,7 @@ def drift_test(
     user_guidelines: Iterable[str] | None = None,
     divergence_mode: str = DEFAULT_DIVERGENCE_MODE,
     baseline_rollouts: int = DEFAULT_BASELINE_ROLLOUTS,
+    perturbation_rollouts: int = DEFAULT_PERTURBATION_ROLLOUTS,
     max_judge_calls: int = DEFAULT_MAX_JUDGE_CALLS,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     run_coordination_detectors: bool = True,
@@ -1700,6 +1815,15 @@ def drift_test(
             noise floor that tier 2 consults. Cost = `baseline_rollouts`
             extra graph invocations once per drift_test call (amortized).
             Default 1 (no noise floor).
+        perturbation_rollouts: how many times to run EACH perturbed state.
+            Default 1. For an LLM-driven graph one perturbed run is a
+            sample, not a verdict (a planted prompt injection was followed
+            in 1 of 4 live runs). With N > 1 every PerturbationResult is
+            the most severe of its N rollouts, carries the others in
+            `.rollouts`, and reports `.outcome_counts` ("crashed 1/5 ·
+            unchanged 4/5"), `.finding_rollout_counts` (detector → rollouts
+            it fired in) and `.is_intermittent`. Cost = N × perturbation
+            graph runs (+ N × judge calls when a judge is on).
         max_judge_calls: hard ceiling on tier-3 judge calls across all
             perturbations in this drift_test call. Default 10. Tier 0-2
             are free; only tier 3 costs LLM tokens for divergence
@@ -1734,7 +1858,7 @@ def drift_test(
         This calls asyncio.run() internally — don't call from inside an
         already-running event loop. Use drift_test_async in that case.
         Cost in tiered mode with noise floor and budget B:
-            baseline_rollouts + 1 + len(scheduled_perturbations) graph runs
+            baseline_rollouts + 1 + perturbation_rollouts × len(scheduled_perturbations) graph runs
             + up to (B + 1 if baseline has trace) judge calls for coord findings
             + up to B judge calls for divergence equivalence (capped).
     """
@@ -1751,6 +1875,7 @@ def drift_test(
             user_guidelines=user_guidelines,
             divergence_mode=divergence_mode,
             baseline_rollouts=baseline_rollouts,
+            perturbation_rollouts=perturbation_rollouts,
             max_judge_calls=max_judge_calls,
             similarity_threshold=similarity_threshold,
             run_coordination_detectors=run_coordination_detectors,

@@ -174,6 +174,8 @@ class AdapterDemoRequest(BaseModel):
     # Divergence cascade.
     divergence_mode: str = "exact"
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
+    # Times each perturbed state is run; k/N outcome rates per perturbation.
+    perturbation_rollouts: int = Field(default=1, ge=1, le=10)
     max_judge_calls: int = Field(default=10, ge=0, le=100)
     similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
@@ -263,6 +265,8 @@ class CustomGraphRequest(BaseModel):
 
     divergence_mode: str = "exact"
     baseline_rollouts: int = Field(default=1, ge=1, le=10)
+    # Times each perturbed state is run; k/N outcome rates per perturbation.
+    perturbation_rollouts: int = Field(default=1, ge=1, le=10)
     max_judge_calls: int = Field(default=10, ge=0, le=100)
     similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
@@ -777,8 +781,9 @@ def _shape_adapter_result(
             "thread_id": getattr(b, "thread_id", ""),
         }
 
-    def _pert_dict(p: Any) -> dict[str, Any]:
-        return {
+    def _pert_dict(p: Any, *, with_rollouts: bool = True) -> dict[str, Any]:
+        n_rollouts = getattr(p, "n_rollouts", 1)
+        d = {
             "event_name": p.event_name,
             "event_summary": p.event_summary,
             "perturbed_field": p.perturbed_field,
@@ -798,7 +803,22 @@ def _shape_adapter_result(
             "coordination_findings": p.coordination_findings,
             "divergence_details": [_divergence_dict(d) for d in p.divergence_details],
             "filtered_divergences": [_divergence_dict(d) for d in p.filtered_divergences],
+            "thread_id": getattr(p, "thread_id", ""),
+            # Repeated rollouts (perturbation_rollouts > 1). The row itself is
+            # the most severe rollout; `rollouts` holds the others in full.
+            "rollout_index": getattr(p, "rollout_index", 0),
+            "n_rollouts": n_rollouts,
         }
+        if with_rollouts and n_rollouts > 1:
+            d["outcome_counts"] = p.outcome_counts
+            d["is_intermittent"] = p.is_intermittent
+            d["finding_rollout_counts"] = p.finding_rollout_counts
+            d["outcome_label"] = p.outcome_label()
+            d["rollouts"] = [
+                dict(_pert_dict(r, with_rollouts=False), n_rollouts=n_rollouts)
+                for r in p.rollouts
+            ]
+        return d
 
     noise_band_dump = {
         name: {
@@ -833,6 +853,9 @@ def _shape_adapter_result(
         "n_user_guidelines": len(user_guidelines or []),
         "divergence_mode": result.divergence_mode,
         "baseline_rollouts": result.baseline_rollouts,
+        "perturbation_rollouts": getattr(result, "perturbation_rollouts", 1),
+        "n_intermittent": getattr(result, "n_intermittent", 0),
+        "n_graph_runs": getattr(result, "n_graph_runs", None),
         "judge_calls_used": result.judge_calls_used,
         "judge_calls_budget": result.judge_calls_budget,
         "noise_band": noise_band_dump,
@@ -1474,6 +1497,7 @@ def create_app() -> FastAPI:
                 user_guidelines=req.user_guidelines or None,
                 divergence_mode=req.divergence_mode,
                 baseline_rollouts=req.baseline_rollouts,
+                perturbation_rollouts=req.perturbation_rollouts,
                 max_judge_calls=req.max_judge_calls,
                 similarity_threshold=req.similarity_threshold,
                 coordination_roles=req.coordination_roles or None,
@@ -1524,6 +1548,7 @@ def create_app() -> FastAPI:
                 user_guidelines=req.user_guidelines or None,
                 divergence_mode=req.divergence_mode,
                 baseline_rollouts=req.baseline_rollouts,
+                perturbation_rollouts=req.perturbation_rollouts,
                 max_judge_calls=req.max_judge_calls,
                 similarity_threshold=req.similarity_threshold,
                 coordination_roles=req.coordination_roles or None,

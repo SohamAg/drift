@@ -196,6 +196,15 @@
 
             <div class="row two-col">
               <div class="field">
+                <label for="adapter-perturbation-rollouts">Rollouts per perturbation <span class="muted">(k/N outcomes)</span></label>
+                <input type="number" id="adapter-perturbation-rollouts" value="1" min="1" max="10" />
+                <div class="help">Run each perturbed input N times. One LLM run is a sample, not a verdict; N &gt; 1 reports "crashed 1/3" and flags perturbations whose runs disagree as intermittent. Cost × N.</div>
+              </div>
+              <div class="field"></div>
+            </div>
+
+            <div class="row two-col">
+              <div class="field">
                 <label for="adapter-similarity-threshold">Tier 2 similarity threshold</label>
                 <input type="number" id="adapter-similarity-threshold" value="0.85" min="0" max="1" step="0.05" />
               </div>

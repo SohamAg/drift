@@ -20,6 +20,7 @@ result = drift_test(
     intensity="aggressive",   # or "exhaustive" for full schema coverage
     divergence_mode="tiered",
     baseline_rollouts=3,
+    perturbation_rollouts=3,  # run each perturbed input 3× → "crashed 1/3"
 )
 
 for p in result.perturbations:
@@ -92,6 +93,16 @@ Trades a few cents per run for ~zero false positives on LLM-driven graphs.
 Every drop at t2/t3 is preserved in `PerturbationResult.filtered_divergences`
 with its reasoning intact, so UNCHANGED verdicts are auditable — you can
 see exactly which diffs the noise band or the judge cleared and why.
+
+**One perturbed run is a sample, not a verdict.** On a live 2-agent
+supervisor the planted prompt injection was followed in 1 of 4 runs.
+`perturbation_rollouts=N` runs every perturbed input N times: each
+`PerturbationResult` is the most severe of its rollouts (so `crashed` reads
+"in at least one run"), carries the others in `.rollouts`, and reports
+`.outcome_counts` (`crashed 1/3 · unchanged 2/3`), `.finding_rollout_counts`
+(detector → how many rollouts it fired in) and `.is_intermittent` when the
+rollouts disagree — which is itself the finding. The Thorough and Exhaustive
+UI presets use 2 and 3.
 
 ### 3. Coordination-failure detector library
 Curated, source-cited detectors for documented multi-agent failure modes.
