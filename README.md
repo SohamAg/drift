@@ -7,6 +7,8 @@
 > trace, and reports the crashes + silent divergences + named coordination
 > failures you wouldn't find with a happy-path test.
 
+What changed and when: [`CHANGELOG.md`](CHANGELOG.md).
+
 ---
 
 ## Quickstart — run it against a LangGraph app
