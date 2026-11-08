@@ -248,3 +248,54 @@ def test_report_to_json_includes_is_regression_property() -> None:
     )
     d = report.to_json()
     assert d["is_regression"] is True
+
+
+def test_rates_use_perturbations_run_not_pattern_catalogue():
+    """max_perturbations=4 on a 14-pattern schema: 2 crashes is 50%, not 14%."""
+    from drift.regression import RunSnapshot, compare
+
+    def snap(n_crashed, ts):
+        return RunSnapshot(
+            graph_signature="g", timestamp=ts, intensity="light", patterns_total=14,
+            n_crashed=n_crashed, n_diverged=0, n_unchanged=4 - n_crashed,
+            n_judge_findings=0, n_coordination_findings=0, n_perturbations=4,
+        )
+
+    report = compare(snap(2, 2.0), [snap(0, 1.0)])
+    assert abs(report.crash_rate_delta - 0.5) < 1e-9
+    assert any("crash rate up +50%" in f.summary for f in report.flags)
+
+
+def test_old_snapshots_without_new_fields_still_load_and_compare():
+    from drift.regression import RunSnapshot, compare
+
+    old = RunSnapshot.from_json({
+        "graph_signature": "g", "timestamp": 1.0, "intensity": "light", "patterns_total": 10,
+        "n_crashed": 1, "n_diverged": 0, "n_unchanged": 9, "n_judge_findings": 0,
+        "n_coordination_findings": 0,
+    })
+    assert old.n_perturbations == 0 and old.rate_denominator == 10 and old.perturbation_rollouts == 1
+    new = RunSnapshot(
+        graph_signature="g", timestamp=2.0, intensity="light", patterns_total=10,
+        n_crashed=1, n_diverged=0, n_unchanged=9, n_judge_findings=0, n_coordination_findings=0,
+        n_perturbations=10, perturbation_rollouts=3, n_intermittent=2,
+    )
+    report = compare(new, [old])
+    assert any("2 perturbation(s) now give different outcomes across 3 rollouts" in f.summary for f in report.flags)
+    assert any("rollouts per perturbation changed 1 → 3" in f.summary for f in report.flags)
+
+
+def test_snapshot_from_result_records_rollout_fields():
+    from drift.adapters.langgraph import drift_test
+    from drift.regression import snapshot_from_result
+
+    class _G:
+        def invoke(self, state, *a, **k):
+            return {**state, "reply": "ok"}
+
+    res = drift_test(graph=_G(), initial_state={"query": "q", "reply": "", "n": 1},
+                     intensity="light", seed=1, perturbation_rollouts=2)
+    snap = snapshot_from_result(res, "stub")
+    assert snap.n_perturbations == len(res.perturbations)
+    assert snap.perturbation_rollouts == 2 and snap.n_intermittent == 0
+    assert snap.rate_denominator == len(res.perturbations)

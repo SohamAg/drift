@@ -64,6 +64,19 @@ class RunSnapshot:
     baseline_duration_s: float = 0.0
     mean_perturbation_duration_s: float = 0.0
     baseline_crashed: bool = False
+    # Added 2026-11-09. Older snapshots lack these; from_json leaves the
+    # defaults, and compare() falls back to patterns_total for rates.
+    n_perturbations: int = 0          # perturbations actually RUN (≤ patterns_total)
+    perturbation_rollouts: int = 1    # runs per perturbed input
+    n_intermittent: int = 0           # perturbations whose rollouts disagreed
+
+    @property
+    def rate_denominator(self) -> int:
+        """Crash / divergence rates are over the perturbations that ran, not
+        the schema's pattern catalogue — with max_perturbations=4 on a
+        14-pattern schema the old denominator made 2 crashes read as 14%
+        instead of 50%. Falls back to patterns_total for old snapshots."""
+        return self.n_perturbations or self.patterns_total
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -103,6 +116,9 @@ def snapshot_from_result(result: Any, graph_signature: str) -> RunSnapshot:
         baseline_duration_s=result.baseline.duration_s,
         mean_perturbation_duration_s=mean_duration,
         baseline_crashed=result.baseline.crashed,
+        n_perturbations=len(result.perturbations),
+        perturbation_rollouts=int(getattr(result, "perturbation_rollouts", 1) or 1),
+        n_intermittent=int(getattr(result, "n_intermittent", 0) or 0),
     )
 
 
@@ -188,11 +204,11 @@ def compare(current: RunSnapshot, history: list[RunSnapshot]) -> RegressionRepor
     def _rate(n: int, total: int) -> float:
         return (n / total) if total else 0.0
 
-    crash_delta = _rate(current.n_crashed, current.patterns_total) - _rate(
-        previous.n_crashed, previous.patterns_total
+    crash_delta = _rate(current.n_crashed, current.rate_denominator) - _rate(
+        previous.n_crashed, previous.rate_denominator
     )
-    diverge_delta = _rate(current.n_diverged, current.patterns_total) - _rate(
-        previous.n_diverged, previous.patterns_total
+    diverge_delta = _rate(current.n_diverged, current.rate_denominator) - _rate(
+        previous.n_diverged, previous.rate_denominator
     )
     judge_delta = current.judge_calls_used - previous.judge_calls_used
 
@@ -219,6 +235,22 @@ def compare(current: RunSnapshot, history: list[RunSnapshot]) -> RegressionRepor
         flags.append(
             RegressionFlag(
                 "regression", f"mean perturbation runtime up {duration_pct:+.0%} vs last run"
+            )
+        )
+    if current.perturbation_rollouts > 1 and current.n_intermittent > previous.n_intermittent:
+        flags.append(
+            RegressionFlag(
+                "regression",
+                f"{current.n_intermittent} perturbation(s) now give different outcomes across "
+                f"{current.perturbation_rollouts} rollouts (was {previous.n_intermittent})",
+            )
+        )
+    if current.perturbation_rollouts != previous.perturbation_rollouts and previous.perturbation_rollouts:
+        flags.append(
+            RegressionFlag(
+                "info",
+                f"rollouts per perturbation changed {previous.perturbation_rollouts} → "
+                f"{current.perturbation_rollouts}; rates are per perturbation either way",
             )
         )
 

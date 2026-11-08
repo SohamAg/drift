@@ -305,6 +305,11 @@ class SuiteRunRequest(BaseModel):
     judge: str = "off"
     judge_model: str | None = None
 
+    # Divergence cascade + rollouts, shared across targets like everything else.
+    divergence_mode: str = "exact"
+    baseline_rollouts: int = Field(default=1, ge=1, le=10)
+    perturbation_rollouts: int = Field(default=1, ge=1, le=10)
+
     track_history: bool = False
 
 
@@ -1599,6 +1604,9 @@ def create_app() -> FastAPI:
                     graph=graph,
                     initial_state=initial_state,
                     intensity=req.intensity,
+                    divergence_mode=req.divergence_mode,
+                    baseline_rollouts=req.baseline_rollouts,
+                    perturbation_rollouts=req.perturbation_rollouts,
                     seed=req.seed,
                     max_perturbations=req.max_perturbations,
                     judge_llm=judge_llm,

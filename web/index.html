@@ -649,6 +649,20 @@
         </div>
         <div class="row two-col">
           <div class="field">
+            <label for="suite-divergence-mode">Divergence mode</label>
+            <select id="suite-divergence-mode">
+              <option value="exact" selected>exact (fast, noisy on LLM graphs)</option>
+              <option value="tiered">tiered (cascade, 3 baseline rollouts)</option>
+              <option value="off">off (crash detection only)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="suite-perturbation-rollouts">Rollouts per perturbation <span class="muted">(k/N)</span></label>
+            <input type="number" id="suite-perturbation-rollouts" value="1" min="1" max="10" />
+          </div>
+        </div>
+        <div class="row two-col">
+          <div class="field">
             <label for="suite-max-perturbations">Max perturbations per target</label>
             <input type="number" id="suite-max-perturbations" value="3" min="0" max="200" />
           </div>

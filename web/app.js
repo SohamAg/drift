@@ -2186,6 +2186,9 @@
     const max_perturbations = parseInt($('#suite-max-perturbations').value, 10) || 0;
     const judge = $('#suite-judge').value;
     const track_history = $('#suite-track-history').checked;
+    const divergence_mode = $('#suite-divergence-mode').value;
+    const perturbation_rollouts = parseInt($('#suite-perturbation-rollouts').value, 10) || 1;
+    const baseline_rollouts = divergence_mode === 'tiered' ? 3 : 1;
 
     const btn = $('#suite-run');
     const status = $('#suite-status');
@@ -2194,7 +2197,8 @@
     try {
       const data = await api('/api/suite-run', {
         method: 'POST',
-        body: { target_names, intensity, seed, max_perturbations, judge, track_history },
+        body: { target_names, intensity, seed, max_perturbations, judge, track_history,
+                divergence_mode, baseline_rollouts, perturbation_rollouts },
       });
       const results = data.results || [];
       renderSuiteResults(results);
