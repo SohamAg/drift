@@ -42,6 +42,7 @@ from drift.failures.library import (
     silent_tool_failure,
     stale_state_reference,
     subagent_fanout_excess,
+    tainted_side_effect_call,
     tool_call_loop,
     unacknowledged_error,
     verifier_always_approves,
@@ -77,6 +78,7 @@ ALL_DETECTORS = [
     injected_tool_call_followed,
     retry_amplification,
     novel_tool_call,
+    tainted_side_effect_call,
 ]
 
 
