@@ -1220,6 +1220,12 @@
         ? el('span', { class: `pill fault-${p.fault_class}`, text: p.fault_class,
                        title: 'Fault class: crash = a dependency failed loudly; omission = input missing or cut short; value = input present but wrong.' })
         : null,
+      p.fault_layer === 'tool'
+        ? el('span', { class: 'pill layer-tool', text: p.fault_fired === false ? 'tool · did not fire' : 'tool',
+                       title: p.fault_fired === false
+                         ? 'Runtime fault on a tool call, but the graph never made that call on this run — the outcome says nothing about the fault.'
+                         : 'Runtime fault on one tool call while the graph ran (drift.chaos.tools); the initial state was untouched.' })
+        : null,
       el('span', { class: 'muted', text: `(${p.duration_s}s)` }),
       ...findingBadges,
       el('span', { class: 'muted', style: 'margin-left: auto; font-size: 11px;', text: 'click to expand' }),

@@ -7,6 +7,24 @@ are rates over N rollouts, not verdicts.
 ## Unreleased — 2026-11-11
 
 ### Added
+- **Tool-layer chaos** (`drift.chaos.tools`, `docs/tool_chaos.md`) — faults
+  on one call to one tool *while the graph runs*, installed through
+  LangGraph's `ToolNode.wrap_tool_call` for the duration of a single run
+  (subgraphs included, previous wrappers kept and restored). Nine faults:
+  `tool_error`, `tool_timeout`, `tool_rate_limit`, `tool_exception`,
+  `tool_empty`, `tool_truncated`, `tool_stale`, `tool_inject_instruction`,
+  `tool_hijack`, named `tool_timeout[web_search]` and excludable like any
+  pattern. Discovered per graph and scheduled by the planner alongside the
+  state patterns (five curated faults below `exhaustive`); results carry
+  `fault_layer` and `fault_fired` so a fault the graph never reached is
+  not mistaken for a pass. `drift.yml` gained `chaos:` — chaos asked for by
+  name (`{tool, fault, on_call}` or `{pattern, field}`) always runs, first,
+  outside the ceiling; typos are load-time errors. `drift_test(tool_chaos=)`,
+  `drift run --no-tool-chaos`, request field `tool_chaos`. Live
+  (gpt-4o-mini react agent, 3 rollouts, `results/tool_faults/`): every
+  fault fired 3/3; error / timeout / rate-limit were papered over 3/3
+  (`silent_tool_failure`); the mid-run injection was followed 3/3 and the
+  mid-run hijack reached a tool call 3/3 with a correct final answer.
 - **Guideline rules** (`drift.guidelines`, `docs/guidelines.md`) — the
   deterministic half of the user-guideline language. A `drift.yml` (or
   `.drift/guidelines.yml`) at the repo root declares `judge:` strings for

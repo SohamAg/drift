@@ -28,7 +28,7 @@ have at least one detector tick to catch them).
 from __future__ import annotations
 
 import random
-from typing import Iterable
+from typing import Any, Iterable
 
 from drift.chaos.fuzzer import ChaosSpec, discover_field_patterns
 from drift.chaos.patterns import AutoChaosEvent
@@ -84,8 +84,14 @@ def plan_auto_chaos(
     intensity: str | bool | None,
     seed: int = 0,
     exclude: Iterable[str] | None = None,
+    extra_catalog: Iterable[Any] | None = None,
 ) -> list[tuple[int, Event]]:
     """Build the auto-chaos schedule for one run.
+
+    `extra_catalog` adds specs discovered elsewhere than the state schema
+    (the LangGraph adapter passes tool-layer patterns from
+    drift.chaos.tools); they are scheduled, excluded and de-duplicated
+    exactly like field patterns.
 
     See `auto_chaos_events` for the parameter contract — this is the
     underlying implementation that returns concrete scheduled events.
@@ -99,7 +105,7 @@ def plan_auto_chaos(
 
     exclude_set = list(exclude or [])
     catalog = [
-        spec for spec in discover_field_patterns(state, seed=seed)
+        spec for spec in [*discover_field_patterns(state, seed=seed), *(extra_catalog or [])]
         if not _exclude_match(spec.pattern_name, exclude_set)
     ]
     if not catalog:

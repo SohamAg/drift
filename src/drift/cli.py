@@ -199,7 +199,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             perturbation_rollouts=knobs["perturbation_rollouts"],
             max_judge_calls=knobs["max_judge_calls"],
             auto_chaos_exclude=args.exclude or None,
-            rules=rule_list or None,
+            rules=spec,
+            tool_chaos=not args.no_tool_chaos,
         )
     except (TypeError, ValueError) as e:
         raise SystemExit(f"drift_test: {e}")
@@ -255,6 +256,8 @@ def _print_run(shaped: dict, took: float) -> None:
             extra = f"  [{p.get('outcome_label')}]"
             if p.get("is_intermittent"):
                 extra += " intermittent"
+        if p.get("fault_layer") == "tool":
+            extra += "  (tool fault" + ("" if p.get("fault_fired") else " — did not fire") + ")"
         print(f"{verdict} {p.get('event_name')}{extra}")
         if p.get("crashed"):
             print(f"           {p.get('error_type')}: {str(p.get('error', ''))[:160]}")
@@ -456,6 +459,8 @@ def main(argv: list[str] | None = None) -> int:
                             "or a text file with one judge guideline per line. Defaults to ./drift.yml or "
                             "./.drift/guidelines.yml when present.")
     run_p.add_argument("--no-guidelines", action="store_true", help="ignore a default drift.yml")
+    run_p.add_argument("--no-tool-chaos", action="store_true",
+                       help="skip tool-layer patterns (runtime faults on the graph's ToolNode tools)")
     run_p.add_argument("--seed", type=int, default=7)
     run_p.add_argument("--json", default=None, help="write the shaped result JSON here")
     run_p.add_argument("--fail-on", action="append", default=None,

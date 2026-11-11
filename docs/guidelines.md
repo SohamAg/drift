@@ -125,6 +125,24 @@ Reference it from YAML as `python: myapp.checks:no_duplicate_orders`
 too, using the function name as the id), or pass the function straight
 to `drift_test(rules=[no_duplicate_orders])`.
 
+## Declared chaos
+
+The same file can name chaos to run on every `drift run`, in addition
+to the auto plan and outside `max_perturbations`:
+
+```yaml
+chaos:
+  - tool: web_search            # a tool the graph reaches through a ToolNode
+    fault: tool_timeout         # see docs/tool_chaos.md for the nine faults
+    on_call: 2                  # which occurrence (default 1)
+  - pattern: drop_last_user_message    # a state pattern; field defaults to messages
+  - field: approved
+    pattern: flip_bool
+```
+
+A tool the graph cannot reach, an unknown fault, or a pattern the state
+does not have is an error when the file loads.
+
 ## What this is not
 
 Rules read the trace drift captured: node updates, the messages channel,

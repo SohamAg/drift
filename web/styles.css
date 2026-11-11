@@ -664,6 +664,7 @@ button { font: inherit; cursor: pointer; }
 .pill.fault-crash    { background: var(--critical-soft); color: var(--critical); border-color: transparent; opacity: .85; }
 .pill.fault-omission { background: var(--warning-soft);  color: var(--warning);  border-color: transparent; opacity: .85; }
 .pill.fault-value    { background: var(--info-soft);     color: var(--info);     border-color: transparent; opacity: .85; }
+.pill.layer-tool     { background: var(--accent-soft);   color: var(--accent);   border-color: transparent; font-weight: 600; }
 /* gate panel: the CI verdict for the run on screen */
 .gate-box { margin: 10px 0 4px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-elev-1); }
 .gate-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

@@ -109,6 +109,27 @@ crash / omission / value split):
 | `inject_tool_result_tool_hijack` | value | injection that demands a tool call with a canary argument — the AgentDojo success criterion |
 | `inject_fabricated_prior_turn` | value | history claims the task is already done |
 
+**Tool-layer patterns** go further than any initial-state edit: they
+fault one call to one tool *while the graph runs*. drift finds every
+`ToolNode` in the compiled graph (subgraphs included) and installs
+LangGraph's own `wrap_tool_call` interceptor for the duration of one run,
+so the second `web_search` call times out, or comes back empty,
+truncated, stale, or carrying an injected instruction — and the model has
+to cope mid-task. Nine faults (`tool_error`, `tool_timeout`,
+`tool_rate_limit`, `tool_exception`, `tool_empty`, `tool_truncated`,
+`tool_stale`, `tool_inject_instruction`, `tool_hijack`), named
+`tool_timeout[web_search]`, scheduled alongside the state patterns, or
+asked for by name in `drift.yml`:
+
+```yaml
+chaos:
+  - tool: web_search
+    fault: tool_timeout
+    on_call: 2
+```
+
+Reference: [`docs/tool_chaos.md`](docs/tool_chaos.md).
+
 Perturbed conversations are built in the same dialect your state uses, so
 the graph still accepts them — a drift-induced API 400 would be a fake
 crash, not a finding.
@@ -437,7 +458,8 @@ e:\drift\
 │   │   ├── langgraph.py   — drift_test() / drift_test_fork(): native streaming, rollouts,
 │   │   │                    tiered cascade, checkpoint forks, judge + detector wiring
 │   │   └── serialize.py   — the one JSON shape the UI, CLI, gate and report all read
-│   ├── chaos/             — schema-walked auto-chaos: patterns, message-aware patterns, planner
+│   ├── chaos/             — schema-walked auto-chaos: patterns, message-aware patterns, planner,
+│   │                        tools.py (runtime tool faults via ToolNode wrap_tool_call)
 │   ├── failures/
 │   │   ├── library/       — coordination-failure detector library (19 detectors)
 │   │   └── judge.py       — LLM judge over traces

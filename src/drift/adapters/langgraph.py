@@ -54,6 +54,7 @@ target is the initial-state schema.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 import inspect
 import json
@@ -71,6 +72,13 @@ from difflib import SequenceMatcher
 from drift.agents.base import Action
 from drift.chaos.engine import _normalize_intensity, plan_auto_chaos
 from drift.chaos.fuzzer import discover_field_patterns
+from drift.chaos.tools import (
+    DEFAULT_AUTO_FAULTS,
+    FAULT_LAYER_STATE,
+    FAULT_LAYER_TOOL,
+    discover_tool_patterns,
+    is_tool_event,
+)
 from drift.failures.base import DetectorContext
 from drift.failures.judge import JudgeLLM, LLMJudgeDetector
 from drift.failures.library import run_all_on_trace as _run_library_on_trace
@@ -199,6 +207,13 @@ class PerturbationResult:
     # (see drift.chaos.patterns). Lets results group "the input went missing"
     # apart from "the input was wrong" apart from "a dependency failed".
     fault_class: str = ""
+    # "state" — the initial state was perturbed and the graph rerun;
+    # "tool" — a runtime fault on one tool call (drift.chaos.tools), state
+    # untouched. `fault_fired` is None for state patterns; for tool patterns
+    # it says whether the graph actually made the faulted call on this run
+    # (False = the fault never landed, so the outcome says nothing).
+    fault_layer: str = "state"
+    fault_fired: bool | None = None
     final_state: dict | None = None
     crashed: bool = False
     error: str = ""
@@ -1661,70 +1676,75 @@ def _run_coordination_library(
     return [f.model_dump(mode="json") for f in findings]
 
 
-def _normalize_rules(rules: Any) -> tuple[list, list[str]]:
-    """(rule objects for the library, judge strings) from whatever the caller
-    passed as `rules`. Raises ValueError on a malformed spec so the error
-    reaches the caller instead of being swallowed as a detector crash."""
+def _normalize_rules(rules: Any) -> tuple[list, list[str], list[dict]]:
+    """(rule objects for the library, judge strings, declared chaos entries)
+    from whatever the caller passed as `rules`. Raises ValueError on a
+    malformed spec so the error reaches the caller instead of being
+    swallowed as a detector crash."""
     if rules is None:
-        return [], []
+        return [], [], []
     from drift import guidelines as _g
 
     if isinstance(rules, _g.GuidelineSpec):
-        return list(rules.rules), list(rules.judge)
+        return list(rules.rules), list(rules.judge), list(rules.chaos)
     if isinstance(rules, (str, Path)):
         try:
             spec = _g.load(rules)
         except (OSError, _g.GuidelineError) as exc:
             raise ValueError(f"rules: {exc}") from exc
-        return list(spec.rules), list(spec.judge)
+        return list(spec.rules), list(spec.judge), list(spec.chaos)
     try:
-        return _g.parse_rules(list(rules)), []
+        return _g.parse_rules(list(rules)), [], []
     except _g.GuidelineError as exc:
         raise ValueError(f"rules: {exc}") from exc
 
 
-def _normalize_rules(rules: Any) -> tuple[list, list[str]]:
-    """(rule objects for the library, judge strings) from whatever the caller
-    passed as `rules`. Raises ValueError on a malformed spec so the error
-    reaches the caller instead of being swallowed as a detector crash."""
-    if rules is None:
-        return [], []
-    from drift import guidelines as _g
+def _build_declared_chaos(entries: list[dict], catalog: list) -> list:
+    """Turn drift.yml `chaos:` entries into events, matched against the
+    discovered catalogue so a typo is an error, not a silent skip.
 
-    if isinstance(rules, _g.GuidelineSpec):
-        return list(rules.rules), list(rules.judge)
-    if isinstance(rules, (str, Path)):
-        try:
-            spec = _g.load(rules)
-        except (OSError, _g.GuidelineError) as exc:
-            raise ValueError(f"rules: {exc}") from exc
-        return list(spec.rules), list(spec.judge)
-    try:
-        return _g.parse_rules(list(rules)), []
-    except _g.GuidelineError as exc:
-        raise ValueError(f"rules: {exc}") from exc
+        - {tool: web_search, fault: tool_timeout, on_call: 2}
+        - {field: approved, pattern: flip_bool}
+        - {pattern: inject_tool_result_instruction}        # messages field implied
+    """
+    if not entries:
+        return []
+    from drift.chaos.tools import TOOL_FAULTS, ToolChaosEvent
 
-
-def _normalize_rules(rules: Any) -> tuple[list, list[str]]:
-    """(rule objects for the library, judge strings) from whatever the caller
-    passed as `rules`. Raises ValueError on a malformed spec so the error
-    reaches the caller instead of being swallowed as a detector crash."""
-    if rules is None:
-        return [], []
-    from drift import guidelines as _g
-
-    if isinstance(rules, _g.GuidelineSpec):
-        return list(rules.rules), list(rules.judge)
-    if isinstance(rules, (str, Path)):
-        try:
-            spec = _g.load(rules)
-        except (OSError, _g.GuidelineError) as exc:
-            raise ValueError(f"rules: {exc}") from exc
-        return list(spec.rules), list(spec.judge)
-    try:
-        return _g.parse_rules(list(rules)), []
-    except _g.GuidelineError as exc:
-        raise ValueError(f"rules: {exc}") from exc
+    by_name = {sp.pattern_name: sp for sp in catalog}
+    events = []
+    for i, raw in enumerate(entries, start=1):
+        e = dict(raw)
+        if "tool" in e:
+            tool, fault = str(e.pop("tool")), str(e.pop("fault", "tool_error"))
+            on_call = e.pop("on_call", 1)
+            if fault not in TOOL_FAULTS:
+                raise ValueError(f"chaos #{i}: unknown tool fault {fault!r}; one of {', '.join(TOOL_FAULTS)}")
+            if f"{fault}[{tool}]" not in by_name:
+                have = sorted({sp.field for sp in catalog if sp.pattern_type in TOOL_FAULTS})
+                raise ValueError(
+                    f"chaos #{i}: tool {tool!r} is not reachable through a ToolNode of this graph "
+                    f"(tools found: {', '.join(have) or 'none'})"
+                )
+            if not isinstance(on_call, int) or isinstance(on_call, bool) or on_call < 1:
+                raise ValueError(f"chaos #{i}: on_call must be an int >= 1")
+            events.append(ToolChaosEvent(tool, fault=fault, on_call=on_call, seed=i))
+        elif "pattern" in e:
+            pattern = str(e.pop("pattern"))
+            fld = str(e.pop("field", "messages"))
+            name = f"{pattern}[{fld}]"
+            if name not in by_name:
+                near = sorted(n for n in by_name if n.startswith(pattern + "[") or n.endswith(f"[{fld}]"))
+                raise ValueError(
+                    f"chaos #{i}: no pattern {name!r} for this state"
+                    + (f"; close: {', '.join(near[:6])}" if near else "")
+                )
+            events.append(by_name[name].build())
+        else:
+            raise ValueError(f"chaos #{i}: needs `tool:` + `fault:` or `pattern:` (+ `field:`)")
+        if e:
+            raise ValueError(f"chaos #{i}: unknown key(s) {', '.join(sorted(e))}")
+    return events
 
 
 async def drift_test_async(
@@ -1748,6 +1768,7 @@ async def drift_test_async(
     required_followups: dict[str, str] | None = None,
     policy_field: str | None = None,
     rules: Any = None,
+    tool_chaos: bool = True,
 ) -> AdapterResult:
     """Async variant of drift_test. Use from inside an existing event loop.
 
@@ -1776,21 +1797,7 @@ async def drift_test_async(
     # `rules` may be a GuidelineSpec, a path to a guideline file, or a list
     # of rule mappings / callables. A spec's judge strings join the judge's
     # guidelines; its rules run inside the coordination library.
-    rule_list, spec_judge = _normalize_rules(rules)
-    for g in spec_judge:
-        if g not in guidelines:
-            guidelines.append(g)
-    # `rules` may be a GuidelineSpec, a path to a guideline file, or a list
-    # of rule mappings / callables. A spec's judge strings join the judge's
-    # guidelines; its rules run inside the coordination library.
-    rule_list, spec_judge = _normalize_rules(rules)
-    for g in spec_judge:
-        if g not in guidelines:
-            guidelines.append(g)
-    # `rules` may be a GuidelineSpec, a path to a guideline file, or a list
-    # of rule mappings / callables. A spec's judge strings join the judge's
-    # guidelines; its rules run inside the coordination library.
-    rule_list, spec_judge = _normalize_rules(rules)
+    rule_list, spec_judge, declared_chaos = _normalize_rules(rules)
     for g in spec_judge:
         if g not in guidelines:
             guidelines.append(g)
@@ -1816,12 +1823,23 @@ async def drift_test_async(
         exclude_fields=None,
         seed=seed,
     )
+    # Tool-layer patterns: one per (tool the graph can call through a
+    # ToolNode × fault). The auto plan draws from a curated subset of faults
+    # so a three-tool graph is not all tool chaos; `exhaustive` takes every
+    # fault; a drift.yml `chaos:` entry can name any of them.
+    tool_specs_all = discover_tool_patterns(graph, seed=seed) if tool_chaos else []
+    tool_specs_auto = (
+        tool_specs_all if level == "exhaustive"
+        else [sp for sp in tool_specs_all if sp.pattern_type in DEFAULT_AUTO_FAULTS]
+    )
+    all_specs = [*all_specs, *tool_specs_all]
     scheduled = plan_auto_chaos(
         state=seed_state,  # type: ignore[arg-type]
         steps=_PLANNER_HORIZON,
         intensity=level,
         seed=seed,
         exclude=auto_chaos_exclude,
+        extra_catalog=tool_specs_auto,
     )
 
     # In exhaustive mode the user opted into "every applicable pattern" —
@@ -1837,6 +1855,13 @@ async def drift_test_async(
     # schema doesn't silently rack up LLM cost (plus optional judge cost).
     if len(scheduled) > max_perturbations:
         scheduled = scheduled[:max_perturbations]
+
+    # Chaos the user asked for by name (drift.yml `chaos:`) always runs,
+    # first, on top of the plan and outside the ceiling — it is explicit.
+    declared = _build_declared_chaos(declared_chaos, all_specs)
+    if declared:
+        names = {ev.name for ev in declared}
+        scheduled = [(0, ev) for ev in declared] + [(t, ev) for t, ev in scheduled if ev.name not in names]
 
     # Baseline run uses a fresh copy of the user's state so the graph can't
     # mutate the input dict and leak across perturbation runs.
@@ -1901,7 +1926,13 @@ async def drift_test_async(
         (deep-copied), its own thread, its own trace and findings."""
         nonlocal judge_calls_used
         pert_cfg = _cfg(label)
-        final, ptrace, etype, err, took = await _run_one(graph, deepcopy(post_state), pert_cfg)
+        # A tool-layer event lands while the graph runs: its wrapper sits on
+        # the graph's ToolNodes for exactly this invocation.
+        installer = event.install(graph) if is_tool_event(event) else contextlib.nullcontext()
+        with installer:
+            final, ptrace, etype, err, took = await _run_one(graph, deepcopy(post_state), pert_cfg)
+        tool_note = event.outcome_note() if is_tool_event(event) else ""
+        fault_fired = event.fired if is_tool_event(event) else None
 
         # Divergence detection: dispatch through the cost cascade.
         # `divfiltered` carries tier-2/3 candidates the cascade dropped —
@@ -1949,10 +1980,12 @@ async def drift_test_async(
 
         return PerturbationResult(
             event_name=event.name,
-            event_summary=record.summary,
+            event_summary=record.summary + tool_note,
             perturbed_field=getattr(event, "field", ""),
             pattern_type=getattr(event, "pattern", "auto_chaos"),
             fault_class=getattr(event, "fault_class", ""),
+            fault_layer=FAULT_LAYER_TOOL if is_tool_event(event) else FAULT_LAYER_STATE,
+            fault_fired=fault_fired,
             perturbed_initial_state=post_state,
             final_state=final,
             crashed=bool(etype),
@@ -2030,6 +2063,7 @@ def drift_test(
     required_followups: dict[str, str] | None = None,
     policy_field: str | None = None,
     rules: Any = None,
+    tool_chaos: bool = True,
 ) -> AdapterResult:
     """Run drift's auto-chaos against a compiled graph and report results.
 
@@ -2089,21 +2123,17 @@ def drift_test(
             baseline and every perturbation; violations are coordination
             findings with `failure_type = "guideline:<id>"`, so
             `--fail-on guideline` / `finding:guideline:<id>` gate on them.
-            A spec's `judge:` strings are added to `user_guidelines`.
-        rules: deterministic guideline rules (see drift.guidelines): a
-            `GuidelineSpec`, a path to `drift.yml`, or a list of rule
-            mappings / `@drift.guideline` functions. Run for free on the
-            baseline and every perturbation; violations are coordination
-            findings with `failure_type = "guideline:<id>"`, so
-            `--fail-on guideline` / `finding:guideline:<id>` gate on them.
-            A spec's `judge:` strings are added to `user_guidelines`.
-        rules: deterministic guideline rules (see drift.guidelines): a
-            `GuidelineSpec`, a path to `drift.yml`, or a list of rule
-            mappings / `@drift.guideline` functions. Run for free on the
-            baseline and every perturbation; violations are coordination
-            findings with `failure_type = "guideline:<id>"`, so
-            `--fail-on guideline` / `finding:guideline:<id>` gate on them.
-            A spec's `judge:` strings are added to `user_guidelines`.
+            A spec's `judge:` strings are added to `user_guidelines`; its
+            `chaos:` entries (`{tool: web_search, fault: tool_timeout,
+            on_call: 2}` / `{field: approved, pattern: flip_bool}`) are
+            always scheduled, first, outside `max_perturbations`.
+        tool_chaos: also discover tool-layer patterns (drift.chaos.tools):
+            runtime faults on one call to one tool the graph reaches
+            through a ToolNode — error, timeout, rate limit, empty,
+            truncated, stale, injected instruction, hijack. The state is
+            untouched; the graph meets the fault mid-run. Patterns are
+            named `tool_timeout[web_search]` and excludable like any other.
+            Default True; a graph without ToolNodes gets none.
         divergence_mode: how to compare baseline vs perturbed final state.
             "exact" (default) — equality on the whole dict; fast/free but
             noisy on LLM-driven graphs. "tiered" — cost cascade: structural
@@ -2185,6 +2215,7 @@ def drift_test(
             required_followups=required_followups,
             policy_field=policy_field,
             rules=rules,
+            tool_chaos=tool_chaos,
         )
     )
 

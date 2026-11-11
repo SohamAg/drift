@@ -33,6 +33,12 @@ from drift.chaos.engine import (
     plan_auto_chaos,
 )
 from drift.chaos.fuzzer import ChaosSpec, discover_field_patterns
+from drift.chaos.tools import (
+    TOOL_FAULTS,
+    ToolChaosEvent,
+    discover_tool_patterns,
+    tool_names,
+)
 from drift.chaos.patterns import (
     AUTO_CHAOS_PREFIX,
     CANARY_PATTERN,

@@ -157,9 +157,11 @@ class AdapterDemoRequest(BaseModel):
     judge: str = "off"
     judge_model: str | None = None
     user_guidelines: list[str] = Field(default_factory=list)
-    # drift.yml contents (judge strings + deterministic `rules:`), parsed
-    # server-side with drift.guidelines; a malformed file is a 400.
+    # drift.yml contents (judge strings + deterministic `rules:` + declared
+    # `chaos:`), parsed server-side with drift.guidelines; malformed → 400.
     rules_yaml: str = ""
+    # Tool-layer patterns (runtime faults on ToolNode tools) in the plan.
+    tool_chaos: bool = True
 
     # Agent/node name -> role label (e.g. "verifier", "executor"). Powers
     # role-aware library detectors (role_drift); falls back to name-pattern
@@ -266,9 +268,11 @@ class CustomGraphRequest(BaseModel):
     judge: str = "off"
     judge_model: str | None = None
     user_guidelines: list[str] = Field(default_factory=list)
-    # drift.yml contents (judge strings + deterministic `rules:`), parsed
-    # server-side with drift.guidelines; a malformed file is a 400.
+    # drift.yml contents (judge strings + deterministic `rules:` + declared
+    # `chaos:`), parsed server-side with drift.guidelines; malformed → 400.
     rules_yaml: str = ""
+    # Tool-layer patterns (runtime faults on ToolNode tools) in the plan.
+    tool_chaos: bool = True
 
     coordination_roles: dict[str, str] = Field(default_factory=dict)
     required_followups: dict[str, str] = Field(default_factory=dict)
@@ -311,6 +315,7 @@ class SuiteRunRequest(BaseModel):
     judge: str = "off"
     judge_model: str | None = None
     rules_yaml: str = ""
+    tool_chaos: bool = True
 
     # Divergence cascade + rollouts, shared across targets like everything else.
     divergence_mode: str = "exact"
@@ -1500,6 +1505,7 @@ def create_app() -> FastAPI:
                 judge_llm=judge_llm,
                 user_guidelines=req.user_guidelines or None,
                 rules=spec,
+                tool_chaos=req.tool_chaos,
                 divergence_mode=req.divergence_mode,
                 baseline_rollouts=req.baseline_rollouts,
                 perturbation_rollouts=req.perturbation_rollouts,
@@ -1554,6 +1560,7 @@ def create_app() -> FastAPI:
                 judge_llm=judge_llm,
                 user_guidelines=req.user_guidelines or None,
                 rules=spec,
+                tool_chaos=req.tool_chaos,
                 divergence_mode=req.divergence_mode,
                 baseline_rollouts=req.baseline_rollouts,
                 perturbation_rollouts=req.perturbation_rollouts,
@@ -1640,6 +1647,7 @@ def create_app() -> FastAPI:
                     max_perturbations=req.max_perturbations,
                     judge_llm=judge_llm,
                     rules=suite_spec,
+                    tool_chaos=req.tool_chaos,
                 )
             except (TypeError, ValueError) as e:
                 results.append({
