@@ -201,6 +201,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             auto_chaos_exclude=args.exclude or None,
             rules=spec,
             tool_chaos=not args.no_tool_chaos,
+            chaos_timing=args.chaos_timing,
         )
     except (TypeError, ValueError) as e:
         raise SystemExit(f"drift_test: {e}")
@@ -258,6 +259,10 @@ def _print_run(shaped: dict, took: float) -> None:
                 extra += " intermittent"
         if p.get("fault_layer") == "tool":
             extra += "  (tool fault" + ("" if p.get("fault_fired") else " — did not fire") + ")"
+        if p.get("chaos_timing") == "mid_run":
+            extra += f"  (mid-run @ step {p.get('fork_step')})"
+        elif p.get("timing_note"):
+            extra += "  (initial — " + str(p["timing_note"]).replace("fell back to initial-state timing: ", "") + ")"
         print(f"{verdict} {p.get('event_name')}{extra}")
         if p.get("crashed"):
             print(f"           {p.get('error_type')}: {str(p.get('error', ''))[:160]}")
@@ -461,6 +466,9 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--no-guidelines", action="store_true", help="ignore a default drift.yml")
     run_p.add_argument("--no-tool-chaos", action="store_true",
                        help="skip tool-layer patterns (runtime faults on the graph's ToolNode tools)")
+    run_p.add_argument("--timing", dest="chaos_timing", choices=("initial", "mid_run"), default="initial",
+                       help="where state patterns land: perturb the initial state (default) or fork the "
+                            "baseline at the scheduled step and apply the pattern mid-run")
     run_p.add_argument("--seed", type=int, default=7)
     run_p.add_argument("--json", default=None, help="write the shaped result JSON here")
     run_p.add_argument("--fail-on", action="append", default=None,

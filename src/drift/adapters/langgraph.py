@@ -107,6 +107,24 @@ _PLANNER_HORIZON = 30
 #                  reach the judge, keeping LLM cost O(handful) per run.
 #   "off"        — skip divergence detection entirely; report crash only.
 DEFAULT_DIVERGENCE_MODE = "exact"
+
+# When a state/messages chaos pattern lands.
+#   "initial" — perturb the initial state and rerun the graph from the top
+#               (every pattern since v0.1).
+#   "mid_run" — run the baseline on a checkpointer, fork it at the step the
+#               planner scheduled the event for, apply the pattern to that
+#               checkpoint's state through `update_state`, resume. The graph
+#               meets the fault in the middle of its own run, with its own
+#               context in place. Needs a compiled LangGraph; drift attaches
+#               a process-wide MemorySaver when the graph has no checkpointer.
+#               Anything that cannot be forked (stub graph, a baseline with
+#               fewer than two root steps, an update_state failure) falls
+#               back to "initial" for that perturbation and says so in
+#               `timing_note`. Tool-layer faults are mid-run by nature and
+#               are unaffected.
+CHAOS_TIMING_INITIAL = "initial"
+CHAOS_TIMING_MID_RUN = "mid_run"
+CHAOS_TIMINGS = (CHAOS_TIMING_INITIAL, CHAOS_TIMING_MID_RUN)
 DEFAULT_BASELINE_ROLLOUTS = 1            # >1 enables noise-floor measurement
 # How many times each perturbed state is run. 1 = one shot (the historical
 # behaviour). For an LLM-driven graph one perturbed run is a sample, not a
@@ -214,6 +232,12 @@ class PerturbationResult:
     # (False = the fault never landed, so the outcome says nothing).
     fault_layer: str = "state"
     fault_fired: bool | None = None
+    # "initial" | "mid_run" — where this perturbation landed (see
+    # CHAOS_TIMING_*). `fork_step` is the baseline root super-step the run
+    # was forked after when mid-run; `timing_note` explains a fallback.
+    chaos_timing: str = "initial"
+    fork_step: int | None = None
+    timing_note: str = ""
     final_state: dict | None = None
     crashed: bool = False
     error: str = ""
@@ -349,6 +373,7 @@ class AdapterResult:
     noise_band: dict[str, FieldNoiseBand] = field(default_factory=dict)
     judge_calls_used: int = 0        # tier-3 calls actually fired (cost telemetry)
     judge_calls_budget: int = DEFAULT_MAX_JUDGE_CALLS
+    chaos_timing: str = CHAOS_TIMING_INITIAL   # what the caller asked for
 
     @property
     def n_crashed(self) -> int:
@@ -1706,6 +1731,7 @@ def _build_declared_chaos(entries: list[dict], catalog: list) -> list:
         - {tool: web_search, fault: tool_timeout, on_call: 2}
         - {field: approved, pattern: flip_bool}
         - {pattern: inject_tool_result_instruction}        # messages field implied
+        - {pattern: drop_last_user_message, step: 3}       # mid-run timing: fork after baseline step 3
     """
     if not entries:
         return []
@@ -1715,6 +1741,9 @@ def _build_declared_chaos(entries: list[dict], catalog: list) -> list:
     events = []
     for i, raw in enumerate(entries, start=1):
         e = dict(raw)
+        step = e.pop("step", None)
+        if step is not None and (not isinstance(step, int) or isinstance(step, bool) or step < 1):
+            raise ValueError(f"chaos #{i}: step must be an int >= 1 (a baseline root step to fork after)")
         if "tool" in e:
             tool, fault = str(e.pop("tool")), str(e.pop("fault", "tool_error"))
             on_call = e.pop("on_call", 1)
@@ -1744,6 +1773,8 @@ def _build_declared_chaos(entries: list[dict], catalog: list) -> list:
             raise ValueError(f"chaos #{i}: needs `tool:` + `fault:` or `pattern:` (+ `field:`)")
         if e:
             raise ValueError(f"chaos #{i}: unknown key(s) {', '.join(sorted(e))}")
+        if step is not None:
+            events[-1].fork_rank = step
     return events
 
 
@@ -1769,6 +1800,7 @@ async def drift_test_async(
     policy_field: str | None = None,
     rules: Any = None,
     tool_chaos: bool = True,
+    chaos_timing: str = CHAOS_TIMING_INITIAL,
 ) -> AdapterResult:
     """Async variant of drift_test. Use from inside an existing event loop.
 
@@ -1789,7 +1821,11 @@ async def drift_test_async(
         raise ValueError(
             f"perturbation_rollouts must be an int >= 1; got {perturbation_rollouts!r}"
         )
+    if chaos_timing not in CHAOS_TIMINGS:
+        raise ValueError(f"chaos_timing must be one of {', '.join(CHAOS_TIMINGS)}; got {chaos_timing!r}")
     _validate_graph(graph)
+    if chaos_timing == CHAOS_TIMING_MID_RUN:
+        ensure_checkpointer(graph)
 
     state_cls = _build_state_model(initial_state)
     level = _normalize_intensity(intensity)
@@ -1861,7 +1897,8 @@ async def drift_test_async(
     declared = _build_declared_chaos(declared_chaos, all_specs)
     if declared:
         names = {ev.name for ev in declared}
-        scheduled = [(0, ev) for ev in declared] + [(t, ev) for t, ev in scheduled if ev.name not in names]
+        mid = _PLANNER_HORIZON // 2   # mid-run timing forks a declared event mid-baseline unless `step:` says where
+        scheduled = [(mid, ev) for ev in declared] + [(t, ev) for t, ev in scheduled if ev.name not in names]
 
     # Baseline run uses a fresh copy of the user's state so the graph can't
     # mutate the input dict and leak across perturbation runs.
@@ -1915,24 +1952,84 @@ async def drift_test_async(
         coordination_findings=baseline_coord,
         thread_id=(baseline_cfg or {}).get("configurable", {}).get("thread_id", ""),
     )
+    # Mid-run timing forks the baseline: pin its root checkpoints now,
+    # before any fork writes a branch onto the same thread.
+    root_snaps: dict[int, Any] = {}
+    n_root_steps = sum(1 for rec in btrace if not rec.get("namespace"))
+    midrun_blocker = ""
+    if chaos_timing == CHAOS_TIMING_MID_RUN:
+        if betype:
+            midrun_blocker = "the baseline crashed, so there is no run to fork"
+        elif not baseline.thread_id or not callable(getattr(graph, "update_state", None)):
+            midrun_blocker = "the graph has no checkpointer / update_state (not a compiled LangGraph?)"
+        elif n_root_steps < 2:
+            midrun_blocker = f"the baseline has {n_root_steps} root step(s); forking needs at least 2"
+        else:
+            root_snaps = _capture_root_checkpoints(graph, baseline.thread_id)
+            if not any(1 <= r <= n_root_steps - 1 for r in root_snaps):
+                midrun_blocker = "no root checkpoints were recorded on the baseline thread"
 
     judge_calls_used = 0
     perturbations: list[PerturbationResult] = []
 
     async def _rollout(event: Any, record: Any, post_state: dict, label: str,
-                       rollout_index: int) -> PerturbationResult:
+                       rollout_index: int, fork: dict | None = None,
+                       timing_note: str = "") -> PerturbationResult:
         """Run ONE perturbed state once and score it. Called N times per
         perturbation when perturbation_rollouts > 1 — same perturbed input
-        (deep-copied), its own thread, its own trace and findings."""
+        (deep-copied), its own thread, its own trace and findings.
+
+        `fork` (mid-run timing) = {"snap", "rank", "edits"}: instead of a
+        fresh run, write `edits` onto the baseline checkpoint `snap` with
+        update_state (a new branch each call) and resume it."""
         nonlocal judge_calls_used
         pert_cfg = _cfg(label)
+        timing = CHAOS_TIMING_INITIAL
+        fork_step: int | None = None
+        if fork is not None:
+            try:
+                cfg = _write_fork_edits(graph, fork)
+                resumed = _normalize_messages(dict(graph.get_state(cfg).values or {}))
+            except Exception as exc:  # noqa: BLE001
+                # update_state writes the edit AS the last node and then
+                # evaluates that node's outgoing edges, so a routing function
+                # that cannot cope with the perturbed state raises here —
+                # e.g. `state["messages"][-1]` after clear_list emptied the
+                # channel. That is the graph crashing on the perturbation,
+                # and it is reported as exactly that.
+                return PerturbationResult(
+                    event_name=event.name,
+                    event_summary=record.summary + f" — applied mid-run, after baseline step {fork['rank']}"
+                    + " — the graph raised while the edit was being written to the checkpoint (update_state "
+                      "re-evaluates the last node's routing)",
+                    perturbed_field=getattr(event, "field", ""),
+                    pattern_type=getattr(event, "pattern", "auto_chaos"),
+                    fault_class=getattr(event, "fault_class", ""),
+                    perturbed_initial_state=post_state,
+                    final_state=None, crashed=True, error=str(exc), error_type=type(exc).__name__,
+                    crash_class=_classify_crash(type(exc).__name__, str(exc)),
+                    thread_id=baseline.thread_id, rollout_index=rollout_index,
+                    chaos_timing=CHAOS_TIMING_MID_RUN, fork_step=fork["rank"], timing_note=timing_note,
+                )
+            timing, fork_step, pert_cfg, post_state = CHAOS_TIMING_MID_RUN, fork["rank"], cfg, resumed
         # A tool-layer event lands while the graph runs: its wrapper sits on
         # the graph's ToolNodes for exactly this invocation.
         installer = event.install(graph) if is_tool_event(event) else contextlib.nullcontext()
         with installer:
-            final, ptrace, etype, err, took = await _run_one(graph, deepcopy(post_state), pert_cfg)
+            if fork is not None:
+                final, ptrace, etype, err, took = await _run_one_resume(graph, pert_cfg, post_state)
+            else:
+                final, ptrace, etype, err, took = await _run_one(graph, deepcopy(post_state), pert_cfg)
         tool_note = event.outcome_note() if is_tool_event(event) else ""
         fault_fired = event.fired if is_tool_event(event) else None
+        if timing == CHAOS_TIMING_MID_RUN:
+            tool_note += f" — applied mid-run, after baseline step {fork_step}"
+            # A resumed run's steps continue the baseline's numbering, so
+            # step 5 in this trace is the same position as baseline step 5.
+            for rec in ptrace:
+                rec["step"] = int(rec.get("step", 0)) + int(fork_step or 0)
+        if timing_note:
+            tool_note += f" — {timing_note}"
 
         # Divergence detection: dispatch through the cost cascade.
         # `divfiltered` carries tier-2/3 candidates the cascade dropped —
@@ -1942,7 +2039,11 @@ async def drift_test_async(
         # run's input at the front of the final value, and the perturbed run's
         # input differs by construction. See _output_view.
         baseline_out = _output_view(_normalize_messages(baseline_input), baseline.final_state)
-        perturbed_out = _output_view(_normalize_messages(post_state), final)
+        # A resumed run's final state carries the whole thread from step 1,
+        # so it is viewed against the ORIGINAL input, like the baseline.
+        perturbed_out = _output_view(
+            _normalize_messages(baseline_input if timing == CHAOS_TIMING_MID_RUN else post_state), final,
+        )
         if divergence_mode == "off":
             diverged, divsum, divdetails = (False, "", [])
         elif divergence_mode == "tiered":
@@ -2002,17 +2103,52 @@ async def drift_test_async(
             coordination_findings=pert_coord,
             thread_id=(pert_cfg or {}).get("configurable", {}).get("thread_id", ""),
             rollout_index=rollout_index,
+            chaos_timing=timing,
+            fork_step=fork_step,
+            timing_note=timing_note,
         )
 
     for pert_index, (_t, event) in enumerate(scheduled):
-        # Each perturbation gets its own World built from a fresh copy of
-        # the user's state, then has one chaos event applied.
-        pert_input = (
-            deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
-        )
-        world = _materialize_world(state_cls, pert_input)
-        record = event.apply(world)
-        post_state = _state_to_dict(world)
+        fork: dict | None = None
+        timing_note = ""
+        if chaos_timing == CHAOS_TIMING_MID_RUN and not is_tool_event(event):
+            if midrun_blocker:
+                timing_note = f"fell back to initial-state timing: {midrun_blocker}"
+            else:
+                wanted = getattr(event, "fork_rank", None)
+                rank = min(n_root_steps - 1, wanted) if wanted else _fork_rank_for(_t, n_root_steps)
+                if not wanted:
+                    rank = _choose_fork_rank(rank, root_snaps, n_root_steps)
+                snap = root_snaps.get(rank)
+                if snap is None:
+                    timing_note = f"fell back to initial-state timing: no checkpoint after baseline step {rank}"
+                else:
+                    # Apply the pattern to the checkpoint's own values (real
+                    # message objects, ids intact) and express the change as
+                    # an update_state payload. Applied once; every rollout
+                    # writes the same edits onto a fresh branch.
+                    before = {k: deepcopy(v) for k, v in dict(snap.values or {}).items() if k != "timestep"}
+                    try:
+                        world = _materialize_world(state_cls, before)
+                        record = event.apply(world)
+                        edits = _checkpoint_edits(before, _world_fields(world, before.keys()))
+                    except Exception as exc:  # noqa: BLE001
+                        timing_note = (f"fell back to initial-state timing: could not apply the pattern to "
+                                       f"the checkpoint ({type(exc).__name__}: {exc})")
+                    else:
+                        root_nodes = [rec.get("node") for rec in btrace if not rec.get("namespace")]
+                        as_node = str(root_nodes[rank - 1]) if 0 < rank <= len(root_nodes) else ""
+                        fork = {"snap": snap, "rank": rank, "edits": edits, "as_node": as_node}
+                        post_state = _normalize_messages(before)
+        if fork is None:
+            # Each perturbation gets its own World built from a fresh copy of
+            # the user's state, then has one chaos event applied.
+            pert_input = (
+                deepcopy(state_factory()) if state_factory else deepcopy(initial_state)
+            )
+            world = _materialize_world(state_cls, pert_input)
+            record = event.apply(world)
+            post_state = _state_to_dict(world)
 
         # Rollout 0 keeps the historical thread label `p<i>`; repeats are
         # `p<i>r<j>`. Every rollout is an independent sample of the graph's
@@ -2020,7 +2156,7 @@ async def drift_test_async(
         rollouts: list[PerturbationResult] = []
         for j in range(perturbation_rollouts):
             label = f"p{pert_index}" if j == 0 else f"p{pert_index}r{j}"
-            rollouts.append(await _rollout(event, record, post_state, label, j))
+            rollouts.append(await _rollout(event, record, post_state, label, j, fork=fork, timing_note=timing_note))
         # The representative is the most severe rollout, so the top-level
         # verdict reads "in at least one of N runs". The rest ride along.
         primary = min(rollouts, key=lambda r: (_OUTCOME_RANK[r.outcome], r.rollout_index))
@@ -2039,6 +2175,7 @@ async def drift_test_async(
         noise_band=noise_band,
         judge_calls_used=judge_calls_used,
         judge_calls_budget=max_judge_calls,
+        chaos_timing=chaos_timing,
     )
 
 
@@ -2064,6 +2201,7 @@ def drift_test(
     policy_field: str | None = None,
     rules: Any = None,
     tool_chaos: bool = True,
+    chaos_timing: str = CHAOS_TIMING_INITIAL,
 ) -> AdapterResult:
     """Run drift's auto-chaos against a compiled graph and report results.
 
@@ -2134,6 +2272,16 @@ def drift_test(
             untouched; the graph meets the fault mid-run. Patterns are
             named `tool_timeout[web_search]` and excludable like any other.
             Default True; a graph without ToolNodes gets none.
+        chaos_timing: "initial" (default) perturbs the initial state and
+            reruns the graph. "mid_run" runs the baseline on a checkpointer,
+            forks it at the step the planner scheduled each pattern for,
+            applies the pattern to that checkpoint's state via update_state
+            and resumes — the graph meets the fault mid-task, context in
+            place (an injected tool result is then always "warm"). Needs a
+            compiled LangGraph (drift attaches a MemorySaver if there is
+            none); anything that cannot be forked falls back to "initial"
+            for that perturbation, with `timing_note` saying why. Each
+            result carries `chaos_timing` and `fork_step`.
         divergence_mode: how to compare baseline vs perturbed final state.
             "exact" (default) — equality on the whole dict; fast/free but
             noisy on LLM-driven graphs. "tiered" — cost cascade: structural
@@ -2216,6 +2364,7 @@ def drift_test(
             policy_field=policy_field,
             rules=rules,
             tool_chaos=tool_chaos,
+            chaos_timing=chaos_timing,
         )
     )
 
@@ -2449,11 +2598,212 @@ def _find_checkpoint(graph: Any, thread_id: str, root_rank: int) -> Any:
     history = getattr(graph, "get_state_history", None)
     if not callable(history):
         return None
+    # History is newest-first and holds every branch on the thread: once a
+    # fork has resumed, its own checkpoints carry the same `step` numbers as
+    # the original run's later steps. The ORIGINAL run's checkpoint is the
+    # oldest with that step, so keep the last match rather than the first.
+    found = None
     for snap in history(_thread_config(thread_id)):
         meta = getattr(snap, "metadata", None) or {}
         if meta.get("step") == root_rank and not (snap.config.get("configurable") or {}).get("checkpoint_ns"):
-            return snap
-    return None
+            found = snap
+    return found
+
+
+def _capture_root_checkpoints(graph: Any, thread_id: str) -> dict[int, Any]:
+    """`{root_rank: StateSnapshot}` for every root-namespace checkpoint on
+    `thread_id` right now — taken straight after the baseline run, before
+    any fork writes a branch to the thread."""
+    history = getattr(graph, "get_state_history", None)
+    if not callable(history) or not thread_id:
+        return {}
+    out: dict[int, Any] = {}
+    try:
+        for snap in history(_thread_config(thread_id)):
+            meta = getattr(snap, "metadata", None) or {}
+            step = meta.get("step")
+            if isinstance(step, int) and step >= 0 and not (snap.config.get("configurable") or {}).get("checkpoint_ns"):
+                out[step] = snap   # newest-first: the last write wins = the oldest = the baseline's
+    except Exception:  # noqa: BLE001 — a saver that cannot list; mid-run falls back
+        return {}
+    return out
+
+
+_PROCESS_CHECKPOINTER: Any = None
+
+
+def _process_checkpointer() -> Any:
+    """One in-memory saver shared by every graph drift runs in this process
+    (the web server reuses it), so forks resume real checkpoints."""
+    global _PROCESS_CHECKPOINTER
+    if _PROCESS_CHECKPOINTER is None:
+        try:
+            from langgraph.checkpoint.memory import MemorySaver
+        except Exception:  # noqa: BLE001
+            return None
+        _PROCESS_CHECKPOINTER = MemorySaver()
+    return _PROCESS_CHECKPOINTER
+
+
+def ensure_checkpointer(graph: Any) -> Any:
+    """Give a compiled LangGraph graph without a checkpointer the process-wide
+    one, in place. Leaves anything else — a graph compiled with its own
+    saver, a hand-rolled stub, a plain callable — untouched. Returns graph."""
+    if _checkpointer_of(graph) is not None:
+        return graph
+    looks_compiled = (
+        hasattr(graph, "checkpointer")
+        and callable(getattr(graph, "get_state_history", None))
+        and callable(getattr(graph, "update_state", None))
+    )
+    if not looks_compiled:
+        return graph
+    saver = _process_checkpointer()
+    if saver is None:
+        return graph
+    try:
+        graph.checkpointer = saver
+    except Exception:  # noqa: BLE001 — a frozen/odd Pregel subclass; keep the rerun path
+        return graph
+    return graph
+
+
+def _fork_rank_for(planner_t: int, n_root: int) -> int:
+    """Map the planner's step (2..horizon-1 over a synthetic horizon) onto
+    a baseline root step to fork after, in [1, n_root - 1] — never the last
+    step, so there is something left to resume."""
+    span = max(1, _PLANNER_HORIZON - 3)
+    frac = min(1.0, max(0.0, (planner_t - 2) / span))
+    rank = 1 + round(frac * max(0, n_root - 2))
+    return max(1, min(n_root - 1, rank))
+
+
+def _has_pending_tool_calls(snap: Any) -> bool:
+    """True when the checkpoint's last message is an AI message with tool
+    calls — i.e. a ToolNode is about to run. Appending a chaos message
+    there would both orphan that call (an AI tool call with no result is
+    an invalid sequence for every chat API) and re-route the graph on the
+    appended message instead; forking after the tool step is the right
+    place for a mid-run message perturbation."""
+    from drift.chaos import messages as _m
+
+    values = dict(getattr(snap, "values", None) or {})
+    for v in values.values():
+        if _m.is_messages_list(v) and v:
+            last = v[-1]
+            return _m.message_role(last) == "ai" and bool(_m.message_tool_calls(last))
+    return False
+
+
+def _choose_fork_rank(preferred: int, root_snaps: dict[int, Any], n_root: int) -> int:
+    """The root step to fork after: `preferred` unless its checkpoint has a
+    pending tool call, in which case the nearest step (later first) whose
+    checkpoint does not. Falls back to `preferred` when none qualifies."""
+    hi = max(1, n_root - 1)
+    order = sorted(range(1, hi + 1), key=lambda r: (abs(r - preferred), -r))
+    for r in order:
+        snap = root_snaps.get(r)
+        if snap is not None and not _has_pending_tool_calls(snap):
+            return r
+    return preferred
+
+
+def _world_fields(world: World, keys: Iterable[str]) -> dict:
+    """The live (post-mutation) values of `keys` on the world's state — the
+    objects themselves, not a model_dump, so langchain messages keep their
+    class and id."""
+    return {k: getattr(world.state, k) for k in keys if hasattr(world.state, k)}
+
+
+def _checkpoint_edits(before: dict, after: dict) -> dict:
+    """The `update_state` payload that turns checkpoint values `before` into
+    `after`. Plain fields are written whole (replace channels). A messages
+    list goes through add_messages, so it is expressed as a delta: removed
+    ids become RemoveMessage, changed messages keep their id (replace),
+    appended ones are new."""
+    from drift.chaos import messages as _m
+
+    edits: dict = {}
+    for k, new in after.items():
+        old = before.get(k)
+        if k == "timestep":
+            continue
+        if isinstance(new, list) and (_m.is_messages_list(old) or _m.is_messages_list(new)):
+            delta = _messages_delta(list(old or []), list(new))
+            if delta:
+                edits[k] = delta
+            continue
+        if old != new:
+            edits[k] = new
+    return edits
+
+
+def _messages_delta(old: list, new: list) -> list:
+    from drift.chaos import messages as _m
+
+    def _id(m: Any) -> Any:
+        if isinstance(m, dict):
+            return m.get("id")
+        return getattr(m, "id", None)
+
+    def _sig(m: Any) -> tuple:
+        return (_m.message_role(m), _m.message_text(m), repr(_m.message_tool_calls(m)))
+
+    old_ids = [_id(m) for m in old]
+    new_ids = [_id(m) for m in new]
+    out: list = []
+    removed = [i for i in old_ids if i is not None and i not in new_ids]
+    if removed:
+        try:
+            from langchain_core.messages import RemoveMessage
+            out.extend(RemoveMessage(id=i) for i in removed)
+        except Exception:  # noqa: BLE001 — no langchain: cannot express a removal
+            pass
+    for m in new:
+        mid = _id(m)
+        if mid is None or mid not in old_ids:
+            out.append(m)
+        else:
+            orig = old[old_ids.index(mid)]
+            if orig is not m and _sig(orig) != _sig(m):
+                out.append(m)
+    return out
+
+
+def _write_fork_edits(graph: Any, fork: dict) -> dict:
+    """`update_state` the fork's edits onto its checkpoint, AS the node that
+    produced that checkpoint. Left to infer `as_node`, LangGraph can pick
+    the wrong writer and then evaluate the wrong node's outgoing edges —
+    on `create_react_agent`, an injected tool result written "as agent"
+    routes to END (no tool calls on the last message) and the resumed run
+    is empty. Written as `tools`, the tools→agent edge fires and the agent
+    sees the poisoned result. Falls back to inference if the name is not a
+    node the graph accepts."""
+    snap, edits, as_node = fork["snap"], fork["edits"], fork.get("as_node")
+    if not edits:
+        return snap.config
+    if as_node:
+        try:
+            return graph.update_state(snap.config, edits, as_node=as_node)
+        except (ValueError, KeyError, TypeError):
+            pass
+    return graph.update_state(snap.config, edits)
+
+
+async def _run_one_resume(
+    graph: Any, config: dict, resume_state: dict,
+) -> tuple[dict | None, list[dict], str, str, float]:
+    """Like `_run_one`, but continue a checkpoint (input None) — `config`
+    names it; `resume_state` seeds the trace builder."""
+    t0 = time.perf_counter()
+    sink: list[dict] = []
+    try:
+        final, trace, _truncated = await _stream_or_invoke(
+            graph, None, trace_sink=sink, config=config, resume_state=resume_state,
+        )
+        return (final, trace, "", "", time.perf_counter() - t0)
+    except Exception as exc:  # noqa: BLE001
+        return (None, sink, type(exc).__name__, str(exc), time.perf_counter() - t0)
 
 
 async def drift_test_fork_async(

@@ -200,7 +200,14 @@
                 <input type="number" id="adapter-perturbation-rollouts" value="1" min="1" max="10" />
                 <div class="help">Run each perturbed input N times. One LLM run is a sample, not a verdict; N &gt; 1 reports "crashed 1/3" and flags perturbations whose runs disagree as intermittent. Cost × N.</div>
               </div>
-              <div class="field"></div>
+              <div class="field">
+                <label for="adapter-chaos-timing">Chaos timing</label>
+                <select id="adapter-chaos-timing">
+                  <option value="initial" selected>initial state (rerun from the top)</option>
+                  <option value="mid_run">mid-run (fork the baseline checkpoint, resume)</option>
+                </select>
+                <div class="help">Where state patterns land. <b>initial</b>: perturb the initial state and rerun from the top. <b>mid-run</b>: fork the baseline at the scheduled step, apply the pattern to that checkpoint (injected tool results arrive after the agent&#39;s own tool round-trip), resume. Falls back to initial, and says so, for anything that cannot be forked.</div>
+              </div>
             </div>
 
             <div class="row two-col">
@@ -498,6 +505,18 @@
           <div class="field">
             <label for="import-perturbation-rollouts">Rollouts per perturbation <span class="muted">(k/N outcomes)</span></label>
             <input type="number" id="import-perturbation-rollouts" value="1" min="1" max="10" />
+          </div>
+        </div>
+        <div class="row two-col">
+          <div class="field">
+            <label for="import-chaos-timing">Chaos timing</label>
+            <select id="import-chaos-timing">
+              <option value="initial" selected>initial state (rerun from the top)</option>
+              <option value="mid_run">mid-run (fork the baseline checkpoint, resume)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label><input type="checkbox" id="import-tool-chaos" checked /> Tool-layer chaos <span class="muted">(runtime faults on ToolNode tools)</span></label>
           </div>
         </div>
 

@@ -7,6 +7,29 @@ are rates over N rollouts, not verdicts.
 ## Unreleased — 2026-11-11
 
 ### Added
+- **Mid-run chaos timing** — `drift_test(chaos_timing="mid_run")`, `drift run
+  --timing mid_run`, UI select. State and message patterns are applied to
+  the baseline's checkpoint at the step the planner scheduled them for
+  (`update_state`, a fresh branch per rollout) and the run resumes, so the
+  graph meets the fault with its own context in place. Results carry
+  `chaos_timing`, `fork_step` and `timing_note`; resumed traces continue
+  the baseline's step numbers; a routing function that raises on the
+  perturbed checkpoint is reported as the crash it is. drift attaches a
+  process-wide `MemorySaver` to a compiled graph that has none
+  (`ensure_checkpointer`, which the web server now reuses). Also fixed:
+  `_find_checkpoint` took the *newest* checkpoint with a given step, which
+  after one fork could be the fork's own branch — it now takes the oldest.
+  Two things the live run taught: a mid-run message perturbation must fork
+  after a step whose checkpoint has no pending tool call (an AI tool call
+  with no result is an invalid sequence for every chat API, and the graph
+  re-routes on the appended message), and the edit must be written
+  `as_node` the step's own node — inferred, `create_react_agent` routed the
+  injected tool result to END and the resumed run was empty. Live
+  (gpt-4o-mini react agent, cold conversation, 3 rollouts,
+  `results/midrun_injection/`): seeded phrase injection 3/3 at both
+  timings; seeded tool hijack **0/3 at the initial state, 3/3 mid-run** —
+  the fork lands after the agent's own `web_search` round-trip, so the
+  demand names a tool that is in context.
 - **Tool-layer chaos** (`drift.chaos.tools`, `docs/tool_chaos.md`) — faults
   on one call to one tool *while the graph runs*, installed through
   LangGraph's `ToolNode.wrap_tool_call` for the duration of a single run

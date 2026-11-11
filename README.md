@@ -130,6 +130,18 @@ chaos:
 
 Reference: [`docs/tool_chaos.md`](docs/tool_chaos.md).
 
+**Mid-run timing.** `drift_test(chaos_timing="mid_run")` (CLI `--timing
+mid_run`) applies the state and message patterns to a *checkpoint* of the
+baseline run instead of the initial state: drift runs the baseline on a
+checkpointer, forks it at the step the planner scheduled each pattern
+for, writes the perturbation through `update_state` and resumes. The
+               '(injected tool results arrive after the agent&#39;s own tool round-trip), resume. Falls back to '
+the dropped user message vanishes from a conversation already under way,
+and the trace continues the baseline's step numbering. Anything that
+cannot be forked falls back to initial timing and says so. Live, on a
+react agent with a cold conversation, the seeded tool hijack landed 0/3
+at the initial state and 3/3 mid-run (`results/midrun_injection/`).
+
 Perturbed conversations are built in the same dialect your state uses, so
 the graph still accepts them — a drift-induced API 400 would be a fake
 crash, not a finding.

@@ -68,6 +68,8 @@ def _norm_perturbation(p: dict) -> dict:
         "fault_class": p.get("fault_class") or "",
         "fault_layer": p.get("fault_layer") or "state",
         "fault_fired": p.get("fault_fired"),
+        "chaos_timing": p.get("chaos_timing") or "initial",
+        "fork_step": p.get("fork_step"),
         "outcome": outcome,
         "error": p.get("error", ""),
         "divergence": p.get("divergence") or p.get("divergence_summary") or "",
@@ -473,6 +475,8 @@ def _render_scenarios(questions: list[dict]) -> str:
             if p.get("fault_layer") == "tool":
                 fault += (' <span class="chip chip-warning">tool · did not fire</span>'
                           if p.get("fault_fired") is False else ' <span class="chip chip-quiet">tool</span>')
+            if p.get("chaos_timing") == "mid_run":
+                fault += f' <span class="chip chip-quiet">mid-run @ {_e(str(p.get("fork_step")))}</span>'
             pert_rows.append(
                 "<tr>"
                 f'<td class="mono">{_e(p["event"])}{fault}{divergence}</td>'

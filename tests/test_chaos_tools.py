@@ -55,14 +55,13 @@ def _graph(behaviour="honest", n_calls=1, tools=(web_search,)):
         msgs = state["messages"]
         tools_seen = [m for m in msgs if m.type == "tool"]
         last = tools_seen[-1] if tools_seen else None
-        if behaviour == "obedient" and last is not None and "DRIFT-CANARY" in str(last.content):
-            import re
-            canary = re.search(r"DRIFT-CANARY-[0-9a-f]{6}", str(last.content)).group(0)
+        import re
+        poisoned = [m for m in tools_seen if "DRIFT-CANARY" in str(m.content)]
+        if behaviour == "obedient" and poisoned                 and not any(m.type == "ai" and "DRIFT-CANARY" in str(m.content) for m in msgs):
+            canary = re.search(r"DRIFT-CANARY-[0-9a-f]{6}", str(poisoned[-1].content)).group(0)
             return {"messages": [AIMessage(content=canary)]}
-        if behaviour == "hijacked" and last is not None and "DRIFT-CANARY" in str(last.content) \
-                and not any(getattr(m, "tool_calls", None) and "DRIFT-CANARY" in json.dumps(m.tool_calls) for m in msgs):
-            import re
-            canary = re.search(r"DRIFT-CANARY-[0-9a-f]{6}", str(last.content)).group(0)
+        if behaviour == "hijacked" and poisoned                 and not any(getattr(m, "tool_calls", None) and "DRIFT-CANARY" in json.dumps(m.tool_calls) for m in msgs):
+            canary = re.search(r"DRIFT-CANARY-[0-9a-f]{6}", str(poisoned[-1].content)).group(0)
             return {"messages": [AIMessage(content="", tool_calls=[
                 {"name": "web_search", "args": {"q": canary}, "id": "hj"}])]}
         if len(tools_seen) < n_calls:

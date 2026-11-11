@@ -525,6 +525,7 @@
     const divergence_mode = $('#adapter-divergence-mode').value;
     const baseline_rollouts = parseInt($('#adapter-baseline-rollouts').value, 10) || 1;
     const perturbation_rollouts = parseInt($('#adapter-perturbation-rollouts').value, 10) || 1;
+    const chaos_timing = $('#adapter-chaos-timing').value || 'initial';
     const max_judge_calls = parseInt($('#adapter-max-judge-calls').value, 10);
     const similarity_threshold = parseFloat($('#adapter-similarity-threshold').value);
     const coordination_roles = parseRolesTextarea('#adapter-coordination-roles');
@@ -543,7 +544,7 @@
           intensity, seed, max_perturbations,
           auto_chaos_exclude, judge, judge_model, user_guidelines, rules_yaml,
           coordination_roles, required_followups, policy_field,
-          divergence_mode, baseline_rollouts, perturbation_rollouts,
+          divergence_mode, baseline_rollouts, perturbation_rollouts, chaos_timing,
           max_judge_calls: Number.isFinite(max_judge_calls) ? max_judge_calls : 10,
           similarity_threshold: Number.isFinite(similarity_threshold) ? similarity_threshold : 0.85,
           track_history,
@@ -956,6 +957,10 @@
       kvs.push(['Rollouts / perturbation', `${data.perturbation_rollouts} (${data.n_graph_runs} graph runs)`]);
       kvs.push(['Intermittent', data.n_intermittent]);
     }
+    if (data.chaos_timing === 'mid_run') {
+      const n = (data.perturbations || []).filter(p => p.chaos_timing === 'mid_run').length;
+      kvs.push(['Chaos timing', `mid-run (${n} of ${(data.perturbations || []).length} forked)`]);
+    }
     if (data.n_coordination_findings) {
       kvs.push(['Coord findings', data.n_coordination_findings]);
     }
@@ -1073,6 +1078,8 @@
     if (data.divergence_mode) parts.push(`--divergence ${data.divergence_mode}`);
     if (data.baseline_rollouts > 1) parts.push(`--baseline-rollouts ${data.baseline_rollouts}`);
     if (data.perturbation_rollouts > 1) parts.push(`--rollouts ${data.perturbation_rollouts}`);
+    if (data.chaos_timing === 'mid_run') parts.push('--timing mid_run');
+    if (ctx.tool_chaos === false) parts.push('--no-tool-chaos');
     parts.push(`--judge ${data.judge || 'off'}`);
     if (data.seed != null) parts.push(`--seed ${data.seed}`);
     if (ctx.rules_yaml && ctx.rules_yaml.trim()) parts.push('--guidelines drift.yml');
@@ -1220,6 +1227,12 @@
         ? el('span', { class: `pill fault-${p.fault_class}`, text: p.fault_class,
                        title: 'Fault class: crash = a dependency failed loudly; omission = input missing or cut short; value = input present but wrong.' })
         : null,
+      p.chaos_timing === 'mid_run'
+        ? el('span', { class: 'pill layer-tool', text: `mid-run @ ${p.fork_step}`,
+                       title: `Applied to the baseline checkpoint after step ${p.fork_step} and resumed from there; the trace below continues the baseline's step numbering.` })
+        : (p.timing_note
+          ? el('span', { class: 'pill', text: 'initial (fallback)', title: p.timing_note })
+          : null),
       p.fault_layer === 'tool'
         ? el('span', { class: 'pill layer-tool', text: p.fault_fired === false ? 'tool · did not fire' : 'tool',
                        title: p.fault_fired === false
@@ -1881,6 +1894,8 @@
     const policy_field = ($('#import-policy-field').value || '').trim();
     const track_history = $('#import-track-history').checked;
     const rules_yaml = $('#import-rules-yaml').value || '';
+    const chaos_timing = $('#import-chaos-timing').value || 'initial';
+    const tool_chaos = $('#import-tool-chaos').checked;
 
     const btn = $('#import-run');
     const status = $('#import-status');
@@ -1893,10 +1908,10 @@
           module, build_fn, initial_state_fn, query, model,
           intensity, judge, max_perturbations,
           coordination_roles, required_followups, policy_field, track_history,
-          divergence_mode, baseline_rollouts, perturbation_rollouts, rules_yaml,
+          divergence_mode, baseline_rollouts, perturbation_rollouts, rules_yaml, chaos_timing, tool_chaos,
         },
       });
-      setActiveRun(data, { module, build_fn, initial_state_fn, query, model, rules_yaml });
+      setActiveRun(data, { module, build_fn, initial_state_fn, query, model, rules_yaml, chaos_timing, tool_chaos });
       renderAdapterResult(data, 'import');
       $('#import-result').classList.remove('hidden');
       $('#import-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
