@@ -92,8 +92,11 @@ def run_all_on_trace(
     roles_by_agent: dict[str, str] | None = None,
     required_followups: dict[str, str] | None = None,
     policy_field: str | None = None,
+    guideline_rules: list | None = None,
 ) -> list[FailureRecord]:
-    """Run every library detector over an adapter trace, return concatenated findings."""
+    """Run every library detector over an adapter trace, return concatenated
+    findings. `guideline_rules` (drift.guidelines) run after the generic
+    detectors and report as `guideline:<id>`."""
     ctx = from_adapter_trace(
         trace,
         initial_state=initial_state,
@@ -120,6 +123,10 @@ def run_all_on_trace(
                 summary=f"detector crashed: {type(exc).__name__}: {exc}",
                 snapshot_timestep=0,
             ))
+    if guideline_rules:
+        from drift.guidelines import evaluate as _evaluate_guidelines  # local: avoids an import cycle
+
+        out.extend(_evaluate_guidelines(guideline_rules, ctx))
     return out
 
 

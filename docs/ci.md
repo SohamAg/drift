@@ -50,6 +50,7 @@ or render a self-contained HTML evidence report with
 | `finding` | any coordination detector fired, on the baseline or a perturbation |
 | `finding:<type>` | that detector fired, e.g. `finding:silent_tool_failure` |
 | `baseline_finding` | a detector fired on the **unperturbed** run — a bug that needs no chaos |
+| `guideline` | a rule from your `drift.yml` was violated, on any run (see [guidelines](guidelines.md)) |
 | `judge` | any LLM-judge finding |
 | `max_crash_rate=0.2` | crashed ÷ perturbations above the fraction |
 | `max_diverge_rate=0.5` | diverged ÷ perturbations above the fraction |

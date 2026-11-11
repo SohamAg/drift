@@ -230,9 +230,20 @@
             </div>
 
             <div class="field">
-              <label for="adapter-user-guidelines">User guidelines <span class="muted">(optional, one per line)</span></label>
+              <label for="adapter-user-guidelines">User guidelines <span class="muted">(optional, one per line — plain English, read by the judge)</span></label>
               <textarea id="adapter-user-guidelines" class="mono" rows="3"
                         placeholder="agent must escalate when sentiment drops below 0.3"></textarea>
+            </div>
+
+            <div class="field">
+              <label for="adapter-rules-yaml">Guideline rules <span class="muted">(optional, <code>drift.yml</code> format — deterministic, free, run on every graph run · <a href="https://github.com/SohamAg/drift/blob/main/docs/guidelines.md" target="_blank" rel="noopener">reference</a>)</span></label>
+              <textarea id="adapter-rules-yaml" class="mono" rows="4"
+                        placeholder="rules:
+  - id: approve-first
+    tool_order: {before: approve_refund, after: issue_refund}
+  - id: no-email
+    forbid_tool: send_*
+    agent: researcher"></textarea>
             </div>
 
             <div class="field">
@@ -500,6 +511,17 @@
           <label for="import-required-followups">Required follow-ups <span class="muted">(optional, one "trigger_node: followup_node" per line — powers premature_termination)</span></label>
           <textarea id="import-required-followups" class="mono" rows="2"
                     placeholder="escalate: human_review"></textarea>
+        </div>
+
+        <div class="field">
+          <label for="import-rules-yaml">Guideline rules <span class="muted">(optional, <code>drift.yml</code> format — the CLI picks the same file up from the repo root)</span></label>
+          <textarea id="import-rules-yaml" class="mono" rows="4"
+                    placeholder="rules:
+  - id: approve-first
+    tool_order: {before: approve_refund, after: issue_refund}
+  - id: no-email
+    forbid_tool: send_*
+    agent: researcher"></textarea>
         </div>
 
         <div class="field">

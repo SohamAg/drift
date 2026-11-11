@@ -521,6 +521,7 @@
     const judge_model = ($('#adapter-judge-model').value || '').trim() || null;
     const user_guidelines = ($('#adapter-user-guidelines').value || '')
       .split('\n').map(s => s.trim()).filter(Boolean);
+    const rules_yaml = $('#adapter-rules-yaml').value || '';
     const divergence_mode = $('#adapter-divergence-mode').value;
     const baseline_rollouts = parseInt($('#adapter-baseline-rollouts').value, 10) || 1;
     const perturbation_rollouts = parseInt($('#adapter-perturbation-rollouts').value, 10) || 1;
@@ -540,7 +541,7 @@
         body: {
           graph_name, state_overrides,
           intensity, seed, max_perturbations,
-          auto_chaos_exclude, judge, judge_model, user_guidelines,
+          auto_chaos_exclude, judge, judge_model, user_guidelines, rules_yaml,
           coordination_roles, required_followups, policy_field,
           divergence_mode, baseline_rollouts, perturbation_rollouts,
           max_judge_calls: Number.isFinite(max_judge_calls) ? max_judge_calls : 10,
@@ -965,6 +966,9 @@
     if (data.n_user_guidelines) {
       kvs.push(['User guidelines', data.n_user_guidelines]);
     }
+    if (data.guideline_rules && data.guideline_rules.length) {
+      kvs.push(['Guideline rules', data.guideline_rules.map(r => r.id).join(', ')]);
+    }
     if (data.divergence_mode && data.divergence_mode !== 'exact') {
       kvs.push(['Divergence mode', data.divergence_mode]);
       if (data.baseline_rollouts > 1) {
@@ -1071,6 +1075,7 @@
     if (data.perturbation_rollouts > 1) parts.push(`--rollouts ${data.perturbation_rollouts}`);
     parts.push(`--judge ${data.judge || 'off'}`);
     if (data.seed != null) parts.push(`--seed ${data.seed}`);
+    if (ctx.rules_yaml && ctx.rules_yaml.trim()) parts.push('--guidelines drift.yml');
     parts.push('--json drift-results.json');
     const r = rules.split(',').map(x => x.trim()).filter(Boolean).join(',');
     if (r) parts.push(`--fail-on ${r}`);
@@ -1086,7 +1091,7 @@
     const box = el('div', { class: 'gate-box' });
     const verdict = el('span', { class: 'pill', text: 'evaluating…' });
     const input = el('input', { type: 'text', class: 'gate-rules', value: gateRules(), spellcheck: 'false',
-      'aria-label': 'gate rules', title: 'Comma-separated: crash, recursion_limit, diverge, intermittent, finding, finding:<type>, baseline_finding, judge, max_crash_rate=0.2, max_diverge_rate=0.5' });
+      'aria-label': 'gate rules', title: 'Comma-separated: crash, recursion_limit, diverge, intermittent, finding, finding:<type>, baseline_finding, guideline, judge, max_crash_rate=0.2, max_diverge_rate=0.5' });
     const details = el('div', { class: 'gate-details' });
     const cli = el('div', { class: 'gate-cli' });
 
@@ -1489,6 +1494,17 @@
 
   function _glossaryEntry(failureType) {
     if (FINDING_GLOSSARY[failureType]) return FINDING_GLOSSARY[failureType];
+    if (failureType && failureType.startsWith('guideline:')) {
+      const id = failureType.slice('guideline:'.length);
+      const isError = id.endsWith(':error');
+      return {
+        label: isError ? `Guideline rule ${id.replace(/:error$/, '')} could not be evaluated` : `Guideline rule ${id}`,
+        what: isError
+          ? 'A rule you wrote could not be evaluated (bad regex, a state field that does not exist, an import that failed). drift reports this rather than passing silently — fix the rule.'
+          : 'A deterministic rule from your drift.yml (or the Guideline rules box) was violated on this run. No LLM involved; the summary quotes the step and the call. Gate on it with --fail-on guideline or finding:' + failureType + '.',
+        source: 'Your guideline rules (docs/guidelines.md)',
+      };
+    }
     if (failureType && failureType.startsWith('llm:user_guideline')) {
       return {
         label: 'User guideline match',
@@ -1858,6 +1874,7 @@
     const required_followups = parseRolesTextarea('#import-required-followups');
     const policy_field = ($('#import-policy-field').value || '').trim();
     const track_history = $('#import-track-history').checked;
+    const rules_yaml = $('#import-rules-yaml').value || '';
 
     const btn = $('#import-run');
     const status = $('#import-status');
@@ -1870,10 +1887,10 @@
           module, build_fn, initial_state_fn, query, model,
           intensity, judge, max_perturbations,
           coordination_roles, required_followups, policy_field, track_history,
-          divergence_mode, baseline_rollouts, perturbation_rollouts,
+          divergence_mode, baseline_rollouts, perturbation_rollouts, rules_yaml,
         },
       });
-      setActiveRun(data, { module, build_fn, initial_state_fn, query, model });
+      setActiveRun(data, { module, build_fn, initial_state_fn, query, model, rules_yaml });
       renderAdapterResult(data, 'import');
       $('#import-result').classList.remove('hidden');
       $('#import-result').scrollIntoView({ behavior: 'smooth', block: 'start' });

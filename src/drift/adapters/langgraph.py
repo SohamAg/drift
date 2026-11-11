@@ -54,6 +54,7 @@ target is the initial-state schema.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 import inspect
 import json
 import time
@@ -1634,6 +1635,7 @@ def _run_coordination_library(
     roles_by_agent: dict[str, str] | None = None,
     required_followups: dict[str, str] | None = None,
     policy_field: str | None = None,
+    guideline_rules: list | None = None,
 ) -> list[dict]:
     """Run the curated coordination-failure detector library over one trace.
 
@@ -1654,8 +1656,75 @@ def _run_coordination_library(
         roles_by_agent=roles_by_agent,
         required_followups=required_followups,
         policy_field=policy_field,
+        guideline_rules=guideline_rules,
     )
     return [f.model_dump(mode="json") for f in findings]
+
+
+def _normalize_rules(rules: Any) -> tuple[list, list[str]]:
+    """(rule objects for the library, judge strings) from whatever the caller
+    passed as `rules`. Raises ValueError on a malformed spec so the error
+    reaches the caller instead of being swallowed as a detector crash."""
+    if rules is None:
+        return [], []
+    from drift import guidelines as _g
+
+    if isinstance(rules, _g.GuidelineSpec):
+        return list(rules.rules), list(rules.judge)
+    if isinstance(rules, (str, Path)):
+        try:
+            spec = _g.load(rules)
+        except (OSError, _g.GuidelineError) as exc:
+            raise ValueError(f"rules: {exc}") from exc
+        return list(spec.rules), list(spec.judge)
+    try:
+        return _g.parse_rules(list(rules)), []
+    except _g.GuidelineError as exc:
+        raise ValueError(f"rules: {exc}") from exc
+
+
+def _normalize_rules(rules: Any) -> tuple[list, list[str]]:
+    """(rule objects for the library, judge strings) from whatever the caller
+    passed as `rules`. Raises ValueError on a malformed spec so the error
+    reaches the caller instead of being swallowed as a detector crash."""
+    if rules is None:
+        return [], []
+    from drift import guidelines as _g
+
+    if isinstance(rules, _g.GuidelineSpec):
+        return list(rules.rules), list(rules.judge)
+    if isinstance(rules, (str, Path)):
+        try:
+            spec = _g.load(rules)
+        except (OSError, _g.GuidelineError) as exc:
+            raise ValueError(f"rules: {exc}") from exc
+        return list(spec.rules), list(spec.judge)
+    try:
+        return _g.parse_rules(list(rules)), []
+    except _g.GuidelineError as exc:
+        raise ValueError(f"rules: {exc}") from exc
+
+
+def _normalize_rules(rules: Any) -> tuple[list, list[str]]:
+    """(rule objects for the library, judge strings) from whatever the caller
+    passed as `rules`. Raises ValueError on a malformed spec so the error
+    reaches the caller instead of being swallowed as a detector crash."""
+    if rules is None:
+        return [], []
+    from drift import guidelines as _g
+
+    if isinstance(rules, _g.GuidelineSpec):
+        return list(rules.rules), list(rules.judge)
+    if isinstance(rules, (str, Path)):
+        try:
+            spec = _g.load(rules)
+        except (OSError, _g.GuidelineError) as exc:
+            raise ValueError(f"rules: {exc}") from exc
+        return list(spec.rules), list(spec.judge)
+    try:
+        return _g.parse_rules(list(rules)), []
+    except _g.GuidelineError as exc:
+        raise ValueError(f"rules: {exc}") from exc
 
 
 async def drift_test_async(
@@ -1678,6 +1747,7 @@ async def drift_test_async(
     coordination_roles: dict[str, str] | None = None,
     required_followups: dict[str, str] | None = None,
     policy_field: str | None = None,
+    rules: Any = None,
 ) -> AdapterResult:
     """Async variant of drift_test. Use from inside an existing event loop.
 
@@ -1703,6 +1773,27 @@ async def drift_test_async(
     state_cls = _build_state_model(initial_state)
     level = _normalize_intensity(intensity)
     guidelines = [g for g in (user_guidelines or []) if g and str(g).strip()]
+    # `rules` may be a GuidelineSpec, a path to a guideline file, or a list
+    # of rule mappings / callables. A spec's judge strings join the judge's
+    # guidelines; its rules run inside the coordination library.
+    rule_list, spec_judge = _normalize_rules(rules)
+    for g in spec_judge:
+        if g not in guidelines:
+            guidelines.append(g)
+    # `rules` may be a GuidelineSpec, a path to a guideline file, or a list
+    # of rule mappings / callables. A spec's judge strings join the judge's
+    # guidelines; its rules run inside the coordination library.
+    rule_list, spec_judge = _normalize_rules(rules)
+    for g in spec_judge:
+        if g not in guidelines:
+            guidelines.append(g)
+    # `rules` may be a GuidelineSpec, a path to a guideline file, or a list
+    # of rule mappings / callables. A spec's judge strings join the judge's
+    # guidelines; its rules run inside the coordination library.
+    rule_list, spec_judge = _normalize_rules(rules)
+    for g in spec_judge:
+        if g not in guidelines:
+            guidelines.append(g)
 
     # A graph compiled with a checkpointer refuses to run without a thread_id,
     # and two runs on the SAME thread would share state (the second run's
@@ -1784,6 +1875,7 @@ async def drift_test_async(
         roles_by_agent=coordination_roles,
         required_followups=required_followups,
         policy_field=policy_field,
+        guideline_rules=rule_list,
     )
     baseline = BaselineResult(
         initial_state=baseline_input,
@@ -1852,6 +1944,7 @@ async def drift_test_async(
             roles_by_agent=coordination_roles,
             required_followups=required_followups,
             policy_field=policy_field,
+            guideline_rules=rule_list,
         )
 
         return PerturbationResult(
@@ -1936,6 +2029,7 @@ def drift_test(
     coordination_roles: dict[str, str] | None = None,
     required_followups: dict[str, str] | None = None,
     policy_field: str | None = None,
+    rules: Any = None,
 ) -> AdapterResult:
     """Run drift's auto-chaos against a compiled graph and report results.
 
@@ -1989,6 +2083,27 @@ def drift_test(
             judge's prompt. Matches show up under
             `failure_type = "llm:user_guideline:<n>"`. Use to express
             coordination rules specific to your domain.
+        rules: deterministic guideline rules (see drift.guidelines): a
+            `GuidelineSpec`, a path to `drift.yml`, or a list of rule
+            mappings / `@drift.guideline` functions. Run for free on the
+            baseline and every perturbation; violations are coordination
+            findings with `failure_type = "guideline:<id>"`, so
+            `--fail-on guideline` / `finding:guideline:<id>` gate on them.
+            A spec's `judge:` strings are added to `user_guidelines`.
+        rules: deterministic guideline rules (see drift.guidelines): a
+            `GuidelineSpec`, a path to `drift.yml`, or a list of rule
+            mappings / `@drift.guideline` functions. Run for free on the
+            baseline and every perturbation; violations are coordination
+            findings with `failure_type = "guideline:<id>"`, so
+            `--fail-on guideline` / `finding:guideline:<id>` gate on them.
+            A spec's `judge:` strings are added to `user_guidelines`.
+        rules: deterministic guideline rules (see drift.guidelines): a
+            `GuidelineSpec`, a path to `drift.yml`, or a list of rule
+            mappings / `@drift.guideline` functions. Run for free on the
+            baseline and every perturbation; violations are coordination
+            findings with `failure_type = "guideline:<id>"`, so
+            `--fail-on guideline` / `finding:guideline:<id>` gate on them.
+            A spec's `judge:` strings are added to `user_guidelines`.
         divergence_mode: how to compare baseline vs perturbed final state.
             "exact" (default) — equality on the whole dict; fast/free but
             noisy on LLM-driven graphs. "tiered" — cost cascade: structural
@@ -2069,6 +2184,7 @@ def drift_test(
             coordination_roles=coordination_roles,
             required_followups=required_followups,
             policy_field=policy_field,
+            rules=rules,
         )
     )
 

@@ -15,6 +15,7 @@ express is a gate nobody will trust at 2am:
     finding               any coordination-detector finding, baseline or perturbed
     finding:<type>        a specific detector fired, e.g. finding:injected_instruction_followed
     baseline_finding      a detector fired on the UNPERTURBED run (a bug without chaos)
+    guideline             any user guideline rule (drift.yml `rules:`) was violated
     judge                 any LLM-judge finding
     max_crash_rate=<0..1> crashed / perturbations above this fraction
     max_diverge_rate=<0..1>
@@ -55,7 +56,7 @@ PRESETS: dict[str, dict[str, Any]] = {
 
 SIMPLE_RULES = (
     "crash", "recursion_limit", "diverge", "intermittent", "finding",
-    "baseline_finding", "judge",
+    "baseline_finding", "guideline", "judge",
 )
 RATE_RULES = ("max_crash_rate", "max_diverge_rate")
 
@@ -196,6 +197,36 @@ def evaluate(shaped: dict[str, Any], rules: list[str]) -> GateReport:
                 violations.append(Violation(
                     rule, f"detector(s) fired on the unperturbed run: {', '.join(sorted(set(base)))}",
                 ))
+        elif rule == "guideline":
+            def _gl(findings: list[dict] | None) -> list[str]:
+                return [t for t in _finding_types(findings) if t.startswith("guideline:")]
+            hit = names(lambda p: _gl(p.get("coordination_findings")))
+            base = _gl(baseline.get("coordination_findings"))
+            if hit or base:
+                ids = sorted({t.split(":", 1)[1] for p in perts for t in _gl(p.get("coordination_findings"))}
+                             | {t.split(":", 1)[1] for t in base})
+                where = f"{len(hit)}/{n} perturbation(s)" + (" and the baseline" if base else "")
+                violations.append(Violation(rule, f"guideline rule(s) {', '.join(ids)} violated on {where}", hit))
+        elif rule == "guideline":
+            def _gl(findings: list[dict] | None) -> list[str]:
+                return [t for t in _finding_types(findings) if t.startswith("guideline:")]
+            hit = names(lambda p: _gl(p.get("coordination_findings")))
+            base = _gl(baseline.get("coordination_findings"))
+            if hit or base:
+                ids = sorted({t.split(":", 1)[1] for p in perts for t in _gl(p.get("coordination_findings"))}
+                             | {t.split(":", 1)[1] for t in base})
+                where = f"{len(hit)}/{n} perturbation(s)" + (" and the baseline" if base else "")
+                violations.append(Violation(rule, f"guideline rule(s) {', '.join(ids)} violated on {where}", hit))
+        elif rule == "guideline":
+            def _gl(findings: list[dict] | None) -> list[str]:
+                return [t for t in _finding_types(findings) if t.startswith("guideline:")]
+            hit = names(lambda p: _gl(p.get("coordination_findings")))
+            base = _gl(baseline.get("coordination_findings"))
+            if hit or base:
+                ids = sorted({t.split(":", 1)[1] for p in perts for t in _gl(p.get("coordination_findings"))}
+                             | {t.split(":", 1)[1] for t in base})
+                where = f"{len(hit)}/{n} perturbation(s)" + (" and the baseline" if base else "")
+                violations.append(Violation(rule, f"guideline rule(s) {', '.join(ids)} violated on {where}", hit))
         elif rule == "judge":
             hit = names(lambda p: p.get("judge_findings"))
             base = baseline.get("judge_findings") or []

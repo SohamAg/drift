@@ -21,6 +21,7 @@ def shape_adapter_result(
     user_guidelines: list[str] | None,
     track_history: bool = False,
     history_dir: Path | None = None,
+    guideline_rules: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Turn an AdapterResult into the JSON-safe dict every drift surface
     speaks: the web UI (Test / Import / Results tabs), `drift run --json`,
@@ -131,6 +132,9 @@ def shape_adapter_result(
         "judge": judge,
         "judge_model": judge_model,
         "n_user_guidelines": len(user_guidelines or []),
+        "guideline_rules": list(guideline_rules or []),
+        "guideline_rules": list(guideline_rules or []),
+        "guideline_rules": list(guideline_rules or []),
         "divergence_mode": result.divergence_mode,
         "baseline_rollouts": result.baseline_rollouts,
         "perturbation_rollouts": getattr(result, "perturbation_rollouts", 1),

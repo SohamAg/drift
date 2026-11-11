@@ -19,6 +19,8 @@ __version__ = "0.3.0"
 
 from drift.agents.base import Action, Agent
 from drift.events.base import Event, EventRecord
+from drift.guidelines import GuidelineSpec, guideline
+from drift.guidelines import load as load_guidelines
 from drift.sdk import agent
 from drift.world import World, WorldState
 
@@ -29,6 +31,9 @@ __all__ = [
     "EventRecord",
     "World",
     "WorldState",
+    "GuidelineSpec",
     "agent",
+    "guideline",
+    "load_guidelines",
     "__version__",
 ]

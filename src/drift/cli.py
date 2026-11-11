@@ -161,9 +161,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         except ValueError as e:
             raise SystemExit(f"judge: {e}")
 
-    guidelines = []
-    if args.guidelines:
-        guidelines = [ln.strip() for ln in Path(args.guidelines).read_text(encoding="utf-8").splitlines() if ln.strip()]
+    from drift import guidelines as _g
+
+    spec = None
+    try:
+        if args.guidelines:
+            spec = _g.load(args.guidelines)
+        elif not args.no_guidelines:
+            spec = _g.load_default()
+    except (OSError, _g.GuidelineError) as e:
+        raise SystemExit(f"guidelines: {e}")
+    guidelines = list(spec.judge) if spec else []
+    rule_list = list(spec.rules) if spec else []
+    if spec and not args.quiet:
+        print(f"guidelines: {spec.source} — {len(spec.judge)} judge string(s), {len(spec.rules)} rule(s)",
+              file=sys.stderr)
 
     if not args.quiet:
         print(
@@ -187,6 +199,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             perturbation_rollouts=knobs["perturbation_rollouts"],
             max_judge_calls=knobs["max_judge_calls"],
             auto_chaos_exclude=args.exclude or None,
+            rules=rule_list or None,
         )
     except (TypeError, ValueError) as e:
         raise SystemExit(f"drift_test: {e}")
@@ -196,6 +209,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         result, graph_meta=meta, seed=args.seed, judge=knobs["judge"], judge_model=args.judge_model,
         user_guidelines=guidelines, track_history=args.track_history,
         history_dir=Path(args.history_dir) if args.history_dir else None,
+        guideline_rules=[r.to_dict() for r in rule_list],
     )
 
     if args.json:
@@ -437,12 +451,16 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--max-judge-calls", dest="max_judge_calls", type=int, default=None)
     run_p.add_argument("--exclude", action="append", default=None,
                        help="chaos pattern to skip (repeatable), e.g. --exclude inject_tool_result_instruction")
-    run_p.add_argument("--guidelines", default=None, help="text file, one user guideline per line, for the judge")
+    run_p.add_argument("--guidelines", default=None,
+                       help="guideline file: drift.yml (judge strings + deterministic rules, see docs/guidelines.md) "
+                            "or a text file with one judge guideline per line. Defaults to ./drift.yml or "
+                            "./.drift/guidelines.yml when present.")
+    run_p.add_argument("--no-guidelines", action="store_true", help="ignore a default drift.yml")
     run_p.add_argument("--seed", type=int, default=7)
     run_p.add_argument("--json", default=None, help="write the shaped result JSON here")
     run_p.add_argument("--fail-on", action="append", default=None,
                        help="gate rule(s), comma-separable and repeatable: crash, recursion_limit, diverge, "
-                            "intermittent, finding, finding:<type>, baseline_finding, judge, "
+                            "intermittent, finding, finding:<type>, baseline_finding, guideline, judge, "
                             "max_crash_rate=<0..1>, max_diverge_rate=<0..1>")
     run_p.add_argument("--track-history", action="store_true",
                        help="append a regression snapshot (see `drift history`)")

@@ -56,8 +56,28 @@ three times (`crashed 1/3`), and `drift gate drift-results.json --fail-on …`
 to decide from the artifact on a box without the graph or the API key.
 Exit code 1 on a violated rule. Rules: `crash`, `recursion_limit`,
 `diverge`, `intermittent`, `finding`, `finding:<type>`, `baseline_finding`,
-`judge`, `max_crash_rate=`, `max_diverge_rate=`. Full guide and a GitHub
-Actions workflow in [`docs/ci.md`](docs/ci.md).
+`guideline`, `judge`, `max_crash_rate=`, `max_diverge_rate=`. Full guide and
+a GitHub Actions workflow in [`docs/ci.md`](docs/ci.md).
+
+### Your own rules — `drift.yml`
+
+```yaml
+rules:
+  - id: approve-first
+    tool_order: {before: approve_refund, after: issue_refund}
+  - id: researcher-is-read-only
+    forbid_tool: send_*
+    agent: researcher
+  - id: budget
+    state: "budget_remaining >= 0"
+  - id: cite-ticket
+    final_answer: {must_match: "#\d+"}
+```
+
+Deterministic, free, evaluated on the baseline and every perturbation;
+`drift run` picks the file up from the repo root and `--fail-on guideline`
+gates on it. Nine rule kinds plus `python: pkg.mod:func` /
+`@drift.guideline` for the rest. Reference: [`docs/guidelines.md`](docs/guidelines.md).
 
 ## What drift actually does
 
@@ -419,9 +439,10 @@ e:\drift\
 │   │   └── serialize.py   — the one JSON shape the UI, CLI, gate and report all read
 │   ├── chaos/             — schema-walked auto-chaos: patterns, message-aware patterns, planner
 │   ├── failures/
-│   │   ├── library/       — coordination-failure detector library (16 detectors)
+│   │   ├── library/       — coordination-failure detector library (19 detectors)
 │   │   └── judge.py       — LLM judge over traces
 │   ├── gate.py            — pass/fail rules for `drift run --fail-on` / `drift gate`
+│   ├── guidelines.py      — drift.yml rule language (+ @drift.guideline) — docs/guidelines.md
 │   ├── regression.py      — run-over-run trend tracking
 │   ├── report.py          — self-contained HTML evidence report
 │   ├── server.py          — FastAPI app behind the web UI

@@ -16,6 +16,7 @@ results/
 data/
 /*.md
 !/README.md
+!/CHANGELOG.md
 
 # MCP / editor configs with credentials
 .vscode/mcp.json

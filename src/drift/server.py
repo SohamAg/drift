@@ -157,6 +157,9 @@ class AdapterDemoRequest(BaseModel):
     judge: str = "off"
     judge_model: str | None = None
     user_guidelines: list[str] = Field(default_factory=list)
+    # drift.yml contents (judge strings + deterministic `rules:`), parsed
+    # server-side with drift.guidelines; a malformed file is a 400.
+    rules_yaml: str = ""
 
     # Agent/node name -> role label (e.g. "verifier", "executor"). Powers
     # role-aware library detectors (role_drift); falls back to name-pattern
@@ -263,6 +266,9 @@ class CustomGraphRequest(BaseModel):
     judge: str = "off"
     judge_model: str | None = None
     user_guidelines: list[str] = Field(default_factory=list)
+    # drift.yml contents (judge strings + deterministic `rules:`), parsed
+    # server-side with drift.guidelines; a malformed file is a 400.
+    rules_yaml: str = ""
 
     coordination_roles: dict[str, str] = Field(default_factory=dict)
     required_followups: dict[str, str] = Field(default_factory=dict)
@@ -304,6 +310,7 @@ class SuiteRunRequest(BaseModel):
 
     judge: str = "off"
     judge_model: str | None = None
+    rules_yaml: str = ""
 
     # Divergence cascade + rollouts, shared across targets like everything else.
     divergence_mode: str = "exact"
@@ -812,6 +819,19 @@ def _shape_mast_response(entry: dict[str, Any], result: dict[str, Any], *, mode:
 # the frontend renders both with the same code.
 
 
+def _parse_rules_yaml(text: str) -> Any:
+    """Parse a request's `rules_yaml` (drift.yml contents) into a
+    GuidelineSpec; a malformed file is the caller's error, not a 500."""
+    from drift import guidelines as _g
+
+    if not (text or "").strip():
+        return _g.GuidelineSpec()
+    try:
+        return _g.parse_yaml(text)
+    except _g.GuidelineError as e:
+        raise HTTPException(400, f"rules: {e}")
+
+
 def _shape_adapter_result(
     result: Any,
     *,
@@ -821,6 +841,7 @@ def _shape_adapter_result(
     judge_model: str | None,
     user_guidelines: list[str],
     track_history: bool = False,
+    guideline_rules: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Server-side wrapper: the shared shaper with the server's history dir."""
     from drift.adapters.serialize import shape_adapter_result
@@ -828,6 +849,7 @@ def _shape_adapter_result(
     return shape_adapter_result(
         result, graph_meta=graph_meta, seed=seed, judge=judge, judge_model=judge_model,
         user_guidelines=user_guidelines, track_history=track_history, history_dir=HISTORY_DIR,
+        guideline_rules=guideline_rules,
     )
 
 
@@ -1465,6 +1487,7 @@ def create_app() -> FastAPI:
             judge_llm = build_judge(req.judge, model=req.judge_model)
         except ValueError as e:
             raise HTTPException(400, str(e))
+        spec = _parse_rules_yaml(req.rules_yaml)
 
         try:
             result = await drift_test_async(
@@ -1476,6 +1499,7 @@ def create_app() -> FastAPI:
                 max_perturbations=req.max_perturbations,
                 judge_llm=judge_llm,
                 user_guidelines=req.user_guidelines or None,
+                rules=spec,
                 divergence_mode=req.divergence_mode,
                 baseline_rollouts=req.baseline_rollouts,
                 perturbation_rollouts=req.perturbation_rollouts,
@@ -1491,8 +1515,9 @@ def create_app() -> FastAPI:
         return _shape_adapter_result(
             result, graph_meta=graph_meta, seed=req.seed,
             judge=req.judge, judge_model=req.judge_model,
-            user_guidelines=req.user_guidelines,
+            user_guidelines=req.user_guidelines + [g for g in spec.judge if g not in req.user_guidelines],
             track_history=req.track_history,
+            guideline_rules=spec.rule_dicts(),
         )
 
     @app.post("/api/custom-graph-run")
@@ -1516,6 +1541,7 @@ def create_app() -> FastAPI:
             judge_llm = build_judge(req.judge, model=req.judge_model)
         except ValueError as e:
             raise HTTPException(400, str(e))
+        spec = _parse_rules_yaml(req.rules_yaml)
 
         try:
             result = await drift_test_async(
@@ -1527,6 +1553,7 @@ def create_app() -> FastAPI:
                 max_perturbations=req.max_perturbations,
                 judge_llm=judge_llm,
                 user_guidelines=req.user_guidelines or None,
+                rules=spec,
                 divergence_mode=req.divergence_mode,
                 baseline_rollouts=req.baseline_rollouts,
                 perturbation_rollouts=req.perturbation_rollouts,
@@ -1547,8 +1574,9 @@ def create_app() -> FastAPI:
         return _shape_adapter_result(
             result, graph_meta=graph_meta, seed=req.seed,
             judge=req.judge, judge_model=req.judge_model,
-            user_guidelines=req.user_guidelines,
+            user_guidelines=req.user_guidelines + [g for g in spec.judge if g not in req.user_guidelines],
             track_history=req.track_history,
+            guideline_rules=spec.rule_dicts(),
         )
 
     @app.post("/api/suite-run")
@@ -1568,6 +1596,7 @@ def create_app() -> FastAPI:
             judge_llm = build_judge(req.judge, model=req.judge_model)
         except ValueError as e:
             raise HTTPException(400, str(e))
+        suite_spec = _parse_rules_yaml(req.rules_yaml)
 
         results: list[dict[str, Any]] = []
         for name in req.target_names:
@@ -1610,6 +1639,7 @@ def create_app() -> FastAPI:
                     seed=req.seed,
                     max_perturbations=req.max_perturbations,
                     judge_llm=judge_llm,
+                    rules=suite_spec,
                 )
             except (TypeError, ValueError) as e:
                 results.append({
@@ -1621,8 +1651,9 @@ def create_app() -> FastAPI:
             shaped = _shape_adapter_result(
                 result, graph_meta=graph_meta, seed=req.seed,
                 judge=req.judge, judge_model=req.judge_model,
-                user_guidelines=[],
+                user_guidelines=list(suite_spec.judge),
                 track_history=req.track_history,
+                guideline_rules=suite_spec.rule_dicts(),
             )
             results.append({
                 "target_name": name, "status": "ok", "error": None, "result": shaped,
