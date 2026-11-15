@@ -452,3 +452,41 @@ def test_gate_reports_each_rule_at_most_once():
     got = [v.rule for v in report.violations]
     assert len(got) == len(set(got))
     assert "guideline" in got
+
+
+def test_fork_branches_run_the_parent_runs_guideline_rules():
+    pytest.importorskip("langgraph")
+    from typing import TypedDict
+
+    from langgraph.graph import END, START, StateGraph
+
+    from drift.adapters.langgraph import drift_test, drift_test_fork
+
+    class S(TypedDict):
+        budget: int
+        spent: int
+
+    def spend(state):
+        return {"spent": state["spent"] + 5}
+
+    sg = StateGraph(S)
+    sg.add_node("plan", lambda s: {})
+    sg.add_node("spend", spend)
+    sg.add_edge(START, "plan")
+    sg.add_edge("plan", "spend")
+    sg.add_edge("spend", END)
+    g = sg.compile()
+
+    rules = [{"id": "within-budget", "state": "spent <= budget"}]
+    parent = drift_test(graph=g, initial_state={"budget": 10, "spent": 0}, intensity="off", rules=rules)
+    assert not [f for f in parent.baseline.coordination_findings if f["failure_type"].startswith("guideline:")]
+    assert [r.id for r in parent.guideline_rules] == ["within-budget"]
+
+    # the fork edits the budget below what the run spends → the inherited rule fires on the branch
+    fork = drift_test_fork(graph=g, parent_result=parent, fork_step=1, edits={"budget": 1})
+    types = [f["failure_type"] for f in fork.fork_branch.coordination_findings]
+    assert "guideline:within-budget" in types
+
+    # rules=[] turns them off for the fork
+    off = drift_test_fork(graph=g, parent_result=parent, fork_step=1, edits={"budget": 1}, rules=[])
+    assert not [f for f in off.fork_branch.coordination_findings if f["failure_type"].startswith("guideline:")]

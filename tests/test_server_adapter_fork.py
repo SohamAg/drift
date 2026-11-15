@@ -168,3 +168,23 @@ def test_fork_step_out_of_range_is_a_400() -> None:
         },
     )
     assert resp.status_code == 400
+
+
+def test_fork_runs_rules_yaml_on_the_branch() -> None:
+    client = TestClient(create_app())
+    run = _run_baseline(client)
+    body = {
+        "graph_name": "ticket_triage",
+        "parent_baseline_trace": run["baseline"]["trace"],
+        "parent_initial_state": run["baseline"]["initial_state"],
+        "fork_step": 1,
+        "edits": {},
+        # the demo escalates "site is down" tickets; a rule forbidding that fires on the branch
+        "rules_yaml": "rules:\n  - id: never-escalate\n    state: \"not escalated\"\n",
+    }
+    resp = client.post("/api/adapter-fork", json=body)
+    assert resp.status_code == 200, resp.text
+    types = [f["failure_type"] for f in resp.json()["fork_branch"]["coordination_findings"]]
+    assert "guideline:never-escalate" in types
+    body["rules_yaml"] = "rules: [nope"
+    assert client.post("/api/adapter-fork", json=body).status_code == 400

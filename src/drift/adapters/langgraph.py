@@ -378,6 +378,10 @@ class AdapterResult:
     perturbation_rollouts: int = 1   # how many times each perturbed state was run
     noise_band: dict[str, FieldNoiseBand] = field(default_factory=dict)
     judge_calls_used: int = 0        # tier-3 calls actually fired (cost telemetry)
+    # The guideline rules every run was checked against (drift.guidelines
+    # Rule objects / callables). drift_test_fork re-applies them to its
+    # branches unless told otherwise.
+    guideline_rules: list = field(default_factory=list)
     judge_calls_budget: int = DEFAULT_MAX_JUDGE_CALLS
     chaos_timing: str = CHAOS_TIMING_INITIAL   # what the caller asked for
 
@@ -2240,6 +2244,7 @@ async def drift_test_async(
         judge_calls_used=judge_calls_used,
         judge_calls_budget=max_judge_calls,
         chaos_timing=chaos_timing,
+        guideline_rules=list(rule_list),
     )
 
 
@@ -2599,6 +2604,7 @@ async def _run_one_fork_branch(
     max_steps: int | None = None,
     config: dict | None = None,
     resume: bool = False,
+    guideline_rules: list | None = None,
 ) -> ForkBranch:
     """Run the graph once, capture trace + coord findings.
 
@@ -2623,6 +2629,7 @@ async def _run_one_fork_branch(
                 initial_state=initial_state,
                 baseline_state=final_state,
                 roles_by_agent=coordination_roles,
+                guideline_rules=guideline_rules or None,
             )
             coord = [f.model_dump(mode="json") for f in findings]
         return ForkBranch(
@@ -2917,8 +2924,14 @@ async def drift_test_fork_async(
     coordination_roles: dict[str, str] | None = None,
     parent_run_id: str | None = None,
     max_steps: int | None = None,
+    rules: Any = None,
 ) -> ForkResult:
     """Fork a completed adapter run at `fork_step`, apply `edits`, re-run forward.
+
+    `rules`: guideline rules for the branches (same forms as drift_test's
+    `rules`). None (default) re-applies the rules the parent run was
+    checked against, so a fork that fixes one finding is also checked for
+    breaking the team's own rules; pass `[]` to run none.
 
     Two execution models, chosen automatically (see `ForkResult.execution_note`
     and `ForkBranch.execution_mode`):
@@ -2970,6 +2983,8 @@ async def drift_test_fork_async(
             f"fork_step={fork_step} out of range [1, {len(trace)}] "
             f"(parent baseline has {len(trace)} steps)"
         )
+    fork_rules = (list(getattr(parent_result, "guideline_rules", None) or []) if rules is None
+                  else _normalize_rules(rules)[0])
 
     t0 = time.perf_counter()
     fork_point_state = deepcopy(trace[fork_step - 1].get("state_after") or {})
@@ -3017,6 +3032,7 @@ async def drift_test_fork_async(
                         resumed_state,
                         run_coordination_detectors=run_coordination_detectors,
                         coordination_roles=coordination_roles,
+                        guideline_rules=fork_rules,
                         max_steps=max_steps,
                         config=cfg,
                         resume=True,
@@ -3028,6 +3044,7 @@ async def drift_test_fork_async(
             edited_state_at_fork,
             run_coordination_detectors=run_coordination_detectors,
             coordination_roles=coordination_roles,
+            guideline_rules=fork_rules,
             max_steps=max_steps,
             config=_thread_config(f"drift-fork-{uuid.uuid4().hex[:10]}") if checkpointer else None,
         )
@@ -3043,6 +3060,7 @@ async def drift_test_fork_async(
             edited_initial,
             run_coordination_detectors=run_coordination_detectors,
             coordination_roles=coordination_roles,
+            guideline_rules=fork_rules,
             max_steps=max_steps,
             config=_thread_config(f"drift-fork-top-{uuid.uuid4().hex[:10]}") if checkpointer else None,
         )
@@ -3071,6 +3089,7 @@ def drift_test_fork(
     coordination_roles: dict[str, str] | None = None,
     parent_run_id: str | None = None,
     max_steps: int | None = None,
+    rules: Any = None,
 ) -> ForkResult:
     """Synchronous wrapper around `drift_test_fork_async`.
 
@@ -3087,6 +3106,7 @@ def drift_test_fork(
             coordination_roles=coordination_roles,
             parent_run_id=parent_run_id,
             max_steps=max_steps,
+            rules=rules,
         )
     )
 

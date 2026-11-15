@@ -242,6 +242,9 @@ class AdapterForkRequest(BaseModel):
     # Optional coordination role overrides for the coord detectors on the
     # forked trace.
     coordination_roles: dict[str, str] = Field(default_factory=dict)
+    # drift.yml contents the parent run was checked against: its `rules:`
+    # run on every fork branch, so a fix is also checked against them.
+    rules_yaml: str = ""
 
 
 class CustomGraphRequest(BaseModel):
@@ -1793,6 +1796,7 @@ def create_app() -> FastAPI:
             ),
         )
 
+        fork_spec = _parse_rules_yaml(req.rules_yaml)
         try:
             fork = await drift_test_fork_async(
                 graph=graph,
@@ -1802,6 +1806,7 @@ def create_app() -> FastAPI:
                 also_apply_at_initial=req.also_apply_at_initial,
                 coordination_roles=req.coordination_roles or None,
                 max_steps=req.max_steps,
+                rules=list(fork_spec.rules) if fork_spec is not None else None,
             )
         except ValueError as e:
             raise HTTPException(400, str(e))
