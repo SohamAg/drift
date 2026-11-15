@@ -90,8 +90,9 @@ def to_junit(shaped: dict[str, Any], report: GateReport, *, suite_name: str | No
         out = [f"outcome: {_outcome(p)}"]
         if p.get("event_summary"):
             out.append(f"chaos: {p['event_summary']}")
-        if p.get("fault_layer") == "tool":
-            out.append("layer: tool" + ("" if p.get("fault_fired", True) else " (fault did not fire)"))
+        layer = p.get("fault_layer") or "state"
+        if layer != "state":
+            out.append(f"layer: {layer}" + ("" if p.get("fault_fired") is not False else " (fault did not fire)"))
         if p.get("chaos_timing") == "mid_run":
             out.append(f"timing: mid-run at step {p.get('fork_step')}")
         if (p.get("n_rollouts") or 1) > 1:

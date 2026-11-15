@@ -200,3 +200,28 @@ def test_fault_with_nowhere_to_land_is_reported_not_run():
     (p,) = res.perturbations
     assert p.fault_fired is False and not p.crashed and not p.diverged
     assert "never had a pending call" in p.event_summary
+
+
+# ---- surfaces --------------------------------------------------------------------------
+
+def test_server_and_cli_expose_model_and_flow_chaos(capsys):
+    from drift.cli import main
+
+    code = main(["run", "examples.ci.demo_app", "--flow-chaos", "--intensity", "exhaustive",
+                 "--max-perturbations", "20", "--fail-on", "crash", "-q"])
+    out = capsys.readouterr().out
+    assert code == 1 and "AutoChaos.skip_node[triage]" in out
+
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from drift.server import create_app
+
+    client = TestClient(create_app())
+    # the bundled ticket_triage demo is a hand-rolled stub (no checkpoints):
+    # use the compiled CI demo through the custom-graph endpoint
+    r = client.post("/api/custom-graph-run", json={"module": "examples.ci.demo_app", "intensity": "exhaustive",
+                                                   "judge": "off", "flow_chaos": True, "max_perturbations": 100})
+    assert r.status_code == 200, r.text
+    layers = {p["fault_layer"] for p in r.json()["perturbations"]}
+    assert "flow" in layers

@@ -203,6 +203,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             rules=spec,
             tool_chaos=not args.no_tool_chaos,
             chaos_timing=args.chaos_timing,
+            model_chaos=args.model_chaos,
+            flow_chaos=args.flow_chaos,
         )
     except (TypeError, ValueError) as e:
         raise SystemExit(f"drift_test: {e}")
@@ -305,9 +307,10 @@ def _print_run(shaped: dict, took: float) -> None:
             extra = f"  [{p.get('outcome_label')}]"
             if p.get("is_intermittent"):
                 extra += " intermittent"
-        if p.get("fault_layer") == "tool":
-            extra += "  (tool fault" + ("" if p.get("fault_fired") else " — did not fire") + ")"
-        if p.get("chaos_timing") == "mid_run":
+        layer = p.get("fault_layer") or "state"
+        if layer != "state":
+            extra += f"  ({layer} fault" + ("" if p.get("fault_fired") else " — did not fire") + ")"
+        if p.get("chaos_timing") == "mid_run" and p.get("fault_fired") is not False:
             extra += f"  (mid-run @ step {p.get('fork_step')})"
         elif p.get("timing_note"):
             extra += "  (initial — " + str(p["timing_note"]).replace("fell back to initial-state timing: ", "") + ")"
@@ -542,6 +545,10 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--no-guidelines", action="store_true", help="ignore a default drift.yml")
     run_p.add_argument("--no-tool-chaos", action="store_true",
                        help="skip tool-layer patterns (runtime faults on the graph's ToolNode tools)")
+    run_p.add_argument("--model-chaos", action="store_true",
+                       help="add model-layer faults: corrupt / duplicate / drop the model's tool calls")
+    run_p.add_argument("--flow-chaos", action="store_true",
+                       help="add control-flow faults: a node silently does not run (skip_node)")
     run_p.add_argument("--timing", dest="chaos_timing", choices=("initial", "mid_run"), default="initial",
                        help="where state patterns land: perturb the initial state (default) or fork the "
                             "baseline at the scheduled step and apply the pattern mid-run")

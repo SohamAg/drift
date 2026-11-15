@@ -164,6 +164,10 @@ class AdapterDemoRequest(BaseModel):
     tool_chaos: bool = True
     # "initial" | "mid_run" — where state patterns land (drift_test docs).
     chaos_timing: str = "initial"
+    # Checkpoint layers (drift.chaos.checkpoint): corrupt the model's tool
+    # calls / silently skip a node. Opt-in, like drift_test.
+    model_chaos: bool = False
+    flow_chaos: bool = False
 
     # Agent/node name -> role label (e.g. "verifier", "executor"). Powers
     # role-aware library detectors (role_drift); falls back to name-pattern
@@ -277,6 +281,10 @@ class CustomGraphRequest(BaseModel):
     tool_chaos: bool = True
     # "initial" | "mid_run" — where state patterns land (drift_test docs).
     chaos_timing: str = "initial"
+    # Checkpoint layers (drift.chaos.checkpoint): corrupt the model's tool
+    # calls / silently skip a node. Opt-in, like drift_test.
+    model_chaos: bool = False
+    flow_chaos: bool = False
 
     coordination_roles: dict[str, str] = Field(default_factory=dict)
     required_followups: dict[str, str] = Field(default_factory=dict)
@@ -323,6 +331,8 @@ class SuiteRunRequest(BaseModel):
     rules_yaml: str = ""
     tool_chaos: bool = True
     chaos_timing: str = "initial"
+    model_chaos: bool = False
+    flow_chaos: bool = False
 
     # Divergence cascade + rollouts, shared across targets like everything else.
     divergence_mode: str = "exact"
@@ -1515,6 +1525,8 @@ def create_app() -> FastAPI:
                 rules=spec,
                 tool_chaos=req.tool_chaos,
                 chaos_timing=req.chaos_timing,
+                model_chaos=req.model_chaos,
+                flow_chaos=req.flow_chaos,
                 divergence_mode=req.divergence_mode,
                 baseline_rollouts=req.baseline_rollouts,
                 perturbation_rollouts=req.perturbation_rollouts,
@@ -1571,6 +1583,8 @@ def create_app() -> FastAPI:
                 rules=spec,
                 tool_chaos=req.tool_chaos,
                 chaos_timing=req.chaos_timing,
+                model_chaos=req.model_chaos,
+                flow_chaos=req.flow_chaos,
                 divergence_mode=req.divergence_mode,
                 baseline_rollouts=req.baseline_rollouts,
                 perturbation_rollouts=req.perturbation_rollouts,
@@ -1659,6 +1673,8 @@ def create_app() -> FastAPI:
                     rules=suite_spec,
                     tool_chaos=req.tool_chaos,
                     chaos_timing=req.chaos_timing,
+                    model_chaos=req.model_chaos,
+                    flow_chaos=req.flow_chaos,
                 )
             except (TypeError, ValueError) as e:
                 results.append({
