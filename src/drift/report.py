@@ -446,6 +446,18 @@ def _render_findings(findings: list[dict], kind: str) -> str:
     return "\n".join(rows)
 
 
+def _timing_sentence(run: dict) -> str:
+    timings = {str(p.get("chaos_timing") or "initial") for q in run["questions"] for p in q["perturbations"]}
+    if timings == {"mid_run"}:
+        return ("State perturbations in this run were applied mid-run: to a checkpoint between "
+                "agent steps of the baseline, which then resumed.")
+    if "mid_run" in timings:
+        return ("State perturbations in this run were applied partly to the initial state and "
+                "partly mid-run, to a checkpoint between agent steps.")
+    return ("State perturbations in this run were applied to the initial state the graph was "
+            "invoked with (mid-run timing, at a checkpoint between agent steps, is a run option).")
+
+
 def _render_gate(gate: Any) -> str:
     """The pass/fail verdict `drift gate` would return for this run."""
     if gate is None:
@@ -481,6 +493,67 @@ def _render_gate(gate: Any) -> str:
     {notes}
   </div>
   {body}
+</section>
+"""
+
+
+_RULE_KEYS = ("forbid_tool", "require_tool", "tool_order", "max_tool_calls", "max_steps",
+              "final_answer", "no_message_match", "state", "python")
+
+
+def _render_guideline_rules(run: dict) -> str:
+    """The team's own drift.yml rules that this run was checked against, each
+    with how many runs violated it — including rules that never fired, which
+    is the evidence that they were checked."""
+    rules = list((run.get("raw") or {}).get("guideline_rules") or [])
+    if not rules:
+        return ""
+    # Count violations per rule id over baseline + perturbations, and which
+    # runs they were on. guideline:<id>:error marks an unevaluable rule.
+    hits: dict[str, list[str]] = {}
+    errors: dict[str, str] = {}
+    for f in run.get("coord_findings") or []:
+        t = str(f.get("failure_type") or "")
+        if not t.startswith("guideline:"):
+            continue
+        rid = t[len("guideline:"):]
+        if rid.endswith(":error"):
+            errors[rid[: -len(":error")]] = str(f.get("summary") or "")
+            continue
+        hits.setdefault(rid, []).append(str(f.get("where") or ""))
+    n_runs = 1 + int(run["summary"].get("n_perturbations") or 0)
+    rows = []
+    for r in rules:
+        rid = str(r.get("id") or "?")
+        kind = next((k for k in _RULE_KEYS if k in r), "?")
+        spec = r.get(kind)
+        spec_s = json.dumps(spec, ensure_ascii=False) if not isinstance(spec, str) else spec
+        meta = " · ".join(x for x in (str(r.get("severity") or "high"),
+                                      f"agent {r['agent']}" if r.get("agent") else "") if x)
+        if rid in errors:
+            status = '<span class="chip chip-warning">could not evaluate</span>'
+            detail = _e(errors[rid])
+        elif hits.get(rid):
+            where = sorted(set(hits[rid]))
+            status = f'<span class="chip chip-critical">violated on {len(where)} of {n_runs} run(s)</span>'
+            detail = _e(", ".join(where[:6]) + (f" and {len(where) - 6} more" if len(where) > 6 else ""))
+        else:
+            status = f'<span class="chip chip-quiet">held on all {n_runs} run(s)</span>'
+            detail = ""
+        why = f"<p>{_e(r['why'])}</p>" if r.get("why") else ""
+        rows.append(
+            f"<tr><td><code>{_e(rid)}</code><div class=\"where\" style=\"margin:4px 0 0\">{_e(meta)}</div></td>"
+            f"<td><code>{_e(kind)}</code>: <code>{_e(spec_s)}</code>{why}</td>"
+            f"<td>{status}<div class=\"where\" style=\"margin:4px 0 0\">{detail}</div></td></tr>"
+        )
+    return f"""
+<section>
+  <div class="eyebrow">Guideline rules</div>
+  <p style="color:var(--muted); font-size:13px; margin-bottom:10px">
+    Deterministic rules from the team's <code>drift.yml</code>, evaluated on the unperturbed
+    baseline and on every perturbed run. A rule that held is listed too: it was checked.</p>
+  <table class="matrix"><thead><tr><th>Rule</th><th>Checks</th><th>Result</th></tr></thead>
+  <tbody>{"".join(rows)}</tbody></table>
 </section>
 """
 
@@ -669,14 +742,17 @@ def render_report(
   <div class="eyebrow">Scenarios &amp; chaos matrix</div>
   {_render_scenarios(run["questions"])}
 </section>
+{_render_guideline_rules(run)}
 {fork_html}
 <section class="method">
   <div class="eyebrow">Methodology</div>
   <p><strong>Schema-walked chaos.</strong> Drift introspects the target graph's
   state schema at run start and derives type-appropriate perturbations
   (list clears, entry duplication, null injection, boundary values) — no
-  hand-written fault list. Each perturbation is applied mid-run, between
-  agent steps, against the shared state the agents coordinate through.</p>
+  hand-written fault list. {_e(_timing_sentence(run))} Tool-layer faults
+  (errors, timeouts, rate limits, empty, truncated or stale results,
+  injected instructions) are raised inside the graph's own tool node at
+  run time.</p>
   <p><strong>Tiered divergence detection.</strong> Perturbed runs are compared
   to baseline in escalating tiers: structural diff, exact match, semantic
   noise band, and finally an LLM judge — so expensive judgment is spent only

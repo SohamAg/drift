@@ -261,3 +261,50 @@ def test_cli_report_fail_on(tmp_path: Path, capsys) -> None:
     assert ">FAIL<" in out.read_text(encoding="utf-8")
     with pytest.raises(SystemExit, match="unknown gate rule"):
         main(["report", str(p), "--fail-on", "nope"])
+
+
+# ---- guideline rules section + methodology timing ------------------------------------------
+
+def _with_rules():
+    d = json.loads(json.dumps(SHAPED_CRASH))
+    d["guideline_rules"] = [
+        {"id": "no-email", "forbid_tool": "send_*", "why": "only the coordinator emails"},
+        {"id": "bounded", "max_steps": 20, "severity": "medium"},
+        {"id": "broken", "state": "missing_field > 0"},
+    ]
+    d["perturbations"][1]["coordination_findings"] = [
+        {"failure_type": "guideline:no-email", "summary": "[high] send_email called"},
+    ]
+    d["baseline"]["coordination_findings"] = [
+        {"failure_type": "guideline:broken:error", "summary": "unknown name missing_field"},
+    ]
+    return d
+
+
+def test_guideline_section_lists_violated_held_and_unevaluable_rules(tmp_path: Path) -> None:
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(_with_rules()), encoding="utf-8")
+    text = write_report(p).read_text(encoding="utf-8")
+    assert 'class="eyebrow">Guideline rules<' in text
+    assert "violated on 1 of 3 run(s)" in text and "AutoChaos.flip_bool[escalated]" in text
+    assert "held on all 3 run(s)" in text          # bounded: checked, never fired
+    assert "could not evaluate" in text and "unknown name missing_field" in text
+    assert "only the coordinator emails" in text and "send_*" in text
+
+
+def test_no_guideline_section_without_rules(tmp_path: Path) -> None:
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(SHAPED_CRASH), encoding="utf-8")
+    assert "Guideline rules<" not in write_report(p).read_text(encoding="utf-8")
+
+
+def test_methodology_states_the_timing_actually_used(tmp_path: Path) -> None:
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(SHAPED_CRASH), encoding="utf-8")
+    assert "applied to the initial state" in write_report(p).read_text(encoding="utf-8")
+    d = json.loads(json.dumps(SHAPED_CRASH))
+    for x in d["perturbations"]:
+        x["chaos_timing"] = "mid_run"
+    p.write_text(json.dumps(d), encoding="utf-8")
+    text = write_report(p).read_text(encoding="utf-8")
+    assert "applied mid-run" in text and "applied to the initial state" not in text
