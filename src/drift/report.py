@@ -205,6 +205,9 @@ def load_run(path: str | Path) -> dict:
     return {
         "config": config,
         "elapsed_seconds": elapsed,
+        # The file as loaded — drift.gate evaluates over this shape, and the
+        # guideline-rules section reads its `guideline_rules`.
+        "raw": data,
         "questions": questions,
         "summary": {
             "n_scenarios": len(questions),
@@ -443,6 +446,45 @@ def _render_findings(findings: list[dict], kind: str) -> str:
     return "\n".join(rows)
 
 
+def _render_gate(gate: Any) -> str:
+    """The pass/fail verdict `drift gate` would return for this run."""
+    if gate is None:
+        return ""
+    if not gate.rules:
+        return ""
+    ok = gate.passed
+    color = "var(--success)" if ok else "var(--critical)"
+    soft = "var(--success-soft)" if ok else "var(--critical-soft)"
+    verdict = "PASS" if ok else "FAIL"
+    rules = " ".join(f'<span class="chip chip-quiet">{_e(r)}</span>' for r in gate.rules)
+    notes = "".join(f'<p style="color:var(--muted)">Note: {_e(n)}</p>' for n in getattr(gate, "notes", []))
+    if ok:
+        body = (f"<p>Every rule passed over {gate.n_perturbations} perturbation(s). "
+                "Rules are evaluated by the same code as <code>drift gate</code>.</p>")
+    else:
+        items = []
+        for v in gate.violations:
+            who = ""
+            if v.perturbations:
+                shown = ", ".join(_e(p) for p in v.perturbations[:6])
+                more = f" and {len(v.perturbations) - 6} more" if len(v.perturbations) > 6 else ""
+                who = f'<div class="where" style="margin:6px 0 0">{shown}{more}</div>'
+            items.append(f'<div class="finding"><span class="tag">{_e(v.rule)}</span>'
+                         f"<p>{_e(v.summary)}</p>{who}</div>")
+        body = "\n".join(items)
+    return f"""
+<section>
+  <div class="eyebrow">Gate</div>
+  <div class="finding" style="border-left-color:{color}">
+    <span class="tag" style="color:{color};background:{soft}">{verdict}</span>
+    <p>Rules: {rules}</p>
+    {notes}
+  </div>
+  {body}
+</section>
+"""
+
+
 def _render_scenarios(questions: list[dict]) -> str:
     out = []
     for i, q in enumerate(questions, 1):
@@ -541,7 +583,10 @@ def render_report(
     fork: dict | None = None,
     title: str | None = None,
     target_name: str | None = None,
+    gate: Any = None,
 ) -> str:
+    """`gate` is a drift.gate.GateReport for this run (see write_report's
+    fail_on); its verdict renders above the findings."""
     cfg = run["config"]
     s = run["summary"]
     generated = time.strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -614,6 +659,7 @@ def render_report(
   </p>
 </section>
 
+{_render_gate(gate)}
 <section>
   <div class="eyebrow">Findings</div>
   {_render_findings(findings_all, "coordination")}
@@ -661,10 +707,25 @@ def write_report(
     out_path: str | Path | None = None,
     title: str | None = None,
     target_name: str | None = None,
+    fail_on: list[str] | None = None,
+    previous: dict | None = None,
 ) -> Path:
+    """`fail_on` = drift gate rules (raises ValueError on an unknown one);
+    `previous` = an earlier shaped result for new_finding / new_crash /
+    regression. The gate is only evaluated for single-run (shaped) files."""
     run = load_run(results_path)
     fork = load_fork_proof(fork_path) if fork_path else None
-    html_text = render_report(run, fork=fork, title=title, target_name=target_name)
+    gate_report = None
+    if fail_on:
+        from drift.gate import evaluate, parse_rules
+
+        rules = parse_rules(fail_on)
+        raw = run.get("raw") or {}
+        if "per_question" in raw:
+            raise ValueError("gate rules apply to a single drift run (drift run --json / the web UI), "
+                             "not a multi-scenario runner file")
+        gate_report = evaluate(raw, rules, previous=previous)
+    html_text = render_report(run, fork=fork, title=title, target_name=target_name, gate=gate_report)
     if out_path is None:
         out_path = Path(results_path).with_suffix(".report.html")
     out_path = Path(out_path)

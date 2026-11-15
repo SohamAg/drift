@@ -206,3 +206,58 @@ def test_web_and_cli_shaped_result_renders_event_names_and_rollouts(tmp_path: Pa
     assert run["config"]["perturbation_rollouts"] == 2
     # graph invocations, not rows: baseline + 2 rollouts per perturbation
     assert run["summary"]["n_runs"] == shaped["n_graph_runs"] == 1 + 2 * len(shaped["perturbations"])
+
+
+# ---- gate section -------------------------------------------------------------------------
+
+SHAPED_CRASH = {
+    "graph_name": "app.build", "intensity": "moderate", "seed": 7,
+    "baseline": {"crashed": False, "coordination_findings": [], "judge_findings": [], "trace": []},
+    "perturbations": [
+        {"event_name": "AutoChaos.corrupt_string[priority]", "crashed": True, "diverged": False,
+         "error_type": "KeyError", "error": "'x'", "coordination_findings": [], "judge_findings": [],
+         "trace": []},
+        {"event_name": "AutoChaos.flip_bool[escalated]", "crashed": False, "diverged": False,
+         "coordination_findings": [], "judge_findings": [], "trace": []},
+    ],
+}
+
+
+def test_report_shows_gate_fail_with_violations(tmp_path: Path) -> None:
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(SHAPED_CRASH), encoding="utf-8")
+    out = write_report(p, fail_on=["crash,diverge"])
+    text = out.read_text(encoding="utf-8")
+    assert 'class="eyebrow">Gate<' in text and ">FAIL<" in text
+    assert "1/2 perturbation(s) crashed" in text
+    assert "AutoChaos.corrupt_string[priority]" in text
+
+
+def test_report_gate_pass_and_note(tmp_path: Path) -> None:
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(SHAPED_CRASH), encoding="utf-8")
+    text = write_report(p, fail_on=["diverge", "new_crash"]).read_text(encoding="utf-8")
+    assert ">PASS<" in text and "no previous result" in text
+
+
+def test_report_without_rules_has_no_gate_section(tmp_path: Path) -> None:
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(SHAPED_CRASH), encoding="utf-8")
+    assert 'class="eyebrow">Gate<' not in write_report(p).read_text(encoding="utf-8")
+
+
+def test_report_gate_refuses_multi_scenario_files(multi_path: Path) -> None:
+    with pytest.raises(ValueError, match="single drift run"):
+        write_report(multi_path, fail_on=["crash"])
+
+
+def test_cli_report_fail_on(tmp_path: Path, capsys) -> None:
+    from drift.cli import main
+
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(SHAPED_CRASH), encoding="utf-8")
+    out = tmp_path / "r.html"
+    assert main(["report", str(p), "--out", str(out), "--fail-on", "crash"]) == 0  # a report, not a gate
+    assert ">FAIL<" in out.read_text(encoding="utf-8")
+    with pytest.raises(SystemExit, match="unknown gate rule"):
+        main(["report", str(p), "--fail-on", "nope"])

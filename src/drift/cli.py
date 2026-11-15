@@ -426,13 +426,18 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_report(args: argparse.Namespace) -> int:
     from drift.report import write_report
 
-    out = write_report(
-        args.results,
-        fork_path=args.fork,
-        out_path=args.out,
-        title=args.title,
-        target_name=args.target,
-    )
+    try:
+        out = write_report(
+            args.results,
+            fork_path=args.fork,
+            out_path=args.out,
+            title=args.title,
+            target_name=args.target,
+            fail_on=args.fail_on,
+            previous=_load_against(args),
+        )
+    except ValueError as e:
+        raise SystemExit(f"report: {e}")
     print(f"evidence report written to {out}")
     return 0
 
@@ -604,6 +609,10 @@ def main(argv: list[str] | None = None) -> int:
                        help="output HTML path (default: <results>.report.html)")
     rep_p.add_argument("--title", default=None, help="report title")
     rep_p.add_argument("--target", default=None, help="target system name shown in the header")
+    rep_p.add_argument("--fail-on", action="append", default=None,
+                       help="drift gate rules — the report shows the PASS/FAIL verdict and each violation")
+    rep_p.add_argument("--against", default=None, metavar="PREVIOUS.json",
+                       help="earlier result for the new_finding / new_crash / regression rules")
 
     hist_p = sub.add_parser(
         "history",
