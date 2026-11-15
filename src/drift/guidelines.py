@@ -1,6 +1,6 @@
 """User guidelines — drift's rule language for "what must never happen here".
 
-The detector library ships nineteen generic coordination failures. The
+The detector library ships twenty-one generic coordination failures. The
 things a team actually cares about are specific to their graph: *the
 researcher must never call `send_email`*, *`issue_refund` only after
 `approve_refund`*, *the final answer must cite a ticket number*,

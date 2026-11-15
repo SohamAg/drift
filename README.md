@@ -56,8 +56,19 @@ three times (`crashed 1/3`), and `drift gate drift-results.json --fail-on …`
 to decide from the artifact on a box without the graph or the API key.
 Exit code 1 on a violated rule. Rules: `crash`, `recursion_limit`,
 `diverge`, `intermittent`, `finding`, `finding:<type>`, `baseline_finding`,
-`guideline`, `judge`, `max_crash_rate=`, `max_diverge_rate=`. Full guide and
-a GitHub Actions workflow in [`docs/ci.md`](docs/ci.md).
+`guideline`, `judge`, `max_crash_rate=`, `max_diverge_rate=`, and — with
+`--against main-drift.json` — `new_finding`, `new_crash`, `regression`, so a
+PR fails on what it made worse, not on what main already had. `--junit` and
+`--summary` write JUnit XML and Markdown; inside GitHub Actions the summary
+lands on the job page automatically.
+
+```yaml
+# .github/workflows/drift.yml  —  or: drift init my_app.graph:build
+- uses: SohamAg/drift@main
+  with: { graph: my_app.graph:build, fail-on: "crash,recursion_limit,guideline" }
+```
+
+Full guide in [`docs/ci.md`](docs/ci.md).
 
 ### Your own rules — `drift.yml`
 
@@ -152,6 +163,17 @@ applicable pattern in the schema exactly once — meant for pre-deploy
 gates where you want full schema coverage at the cost of one graph run
 per fuzzable pattern.
 
+**Model-layer and control-flow patterns** (opt-in: `--model-chaos`,
+`--flow-chaos`) reach what neither the input nor a tool result can: the
+model's own tool call is rewritten at the baseline checkpoint where it is
+pending — arguments dropped, a non-existent tool name, the call
+duplicated, the call dropped — and the graph resumes so the ToolNode runs
+the corrupted call for real; or a node is recorded as having run with no
+output (`skip_node[N]`) and execution continues along its edges. Live on a
+langgraph-supervisor system, skipping the research expert showed the
+supervisor never noticed the empty handoff and the math expert supplied
+the "researched" numbers itself. [docs/checkpoint_chaos.md](docs/checkpoint_chaos.md)
+
 ### 2. Tiered divergence cascade
 LLM outputs are non-deterministic — naive `baseline ≠ perturbed` produces
 all false positives. Drift filters through 4 stages:
@@ -179,7 +201,7 @@ UI presets use 2 and 3.
 
 ### 3. Coordination-failure detector library
 Curated, source-cited detectors for documented multi-agent failure modes.
-Currently shipped:
+Currently shipped (21):
 
 | Detector | Source |
 |---|---|
@@ -202,6 +224,8 @@ Currently shipped:
 | `retry_amplification`² | AgentChaos cost amplification (LLM calls/task up to 4.24× under faults, arXiv:2608.06790) + MAST 1.3 |
 | `novel_tool_call`² | AgentDojo (injection success = unauthorised tool call) + ToolEmu + OWASP LLM06; side-effect tools flagged |
 | `tainted_side_effect_call`² | CaMeL taint tracking (arXiv:2503.18813) + AgentDojo exfiltration; tool-result text lifted verbatim into a side-effect tool's arguments, no canary needed |
+| `duplicate_tool_call`² | One turn requested the same call twice and both executed; side-effect tools flagged (parallel function calling, no de-dup in ToolNode) |
+| `empty_handoff`² | MAST 2.4 / 3.2 — a `transfer_to_X` succeeded but X never spoke before control moved on |
 
 ¹ requires a small config hint (`required_followups=` / `policy_field=`
 on `drift_test`, or the matching fields in the Test/Import tabs) —
@@ -339,7 +363,7 @@ Eleven tabs:
   CSV export. Click a finding to open its source run; click a chart bar to
   jump straight to that failure type's explainer on the Detectors tab.
 - **Detectors** — the full detection surface, in one reference view: all
-  12 deterministic library detectors (name, MAST citation, source, which
+  deterministic library detectors (name, MAST citation, source, which
   ones need a config hint to fire) plus the LLM judge's 6 failure
   families. Generated live from the same metadata the detectors and judge
   actually ship with, so it can't drift out of sync with the code.
@@ -473,7 +497,7 @@ e:\drift\
 │   ├── chaos/             — schema-walked auto-chaos: patterns, message-aware patterns, planner,
 │   │                        tools.py (runtime tool faults via ToolNode wrap_tool_call)
 │   ├── failures/
-│   │   ├── library/       — coordination-failure detector library (19 detectors)
+│   │   ├── library/       — coordination-failure detector library (21 detectors)
 │   │   └── judge.py       — LLM judge over traces
 │   ├── gate.py            — pass/fail rules for `drift run --fail-on` / `drift gate`
 │   ├── guidelines.py      — drift.yml rule language (+ @drift.guideline) — docs/guidelines.md
@@ -527,12 +551,13 @@ top-vs-bottom compare).
   The noise floor measurement helps, but the threshold itself is one
   number applied across all fields — a per-field comparator override
   would be more correct.
-- **19 coordination detectors is a starting kit, not a complete library.**
-  Twelve read node-level state writes; seven read the chat messages (tool
+- **21 coordination detectors is a starting kit, not a complete library.**
+  Twelve read node-level state writes; nine read the chat messages (tool
   calls, tool results, final answers, work and tools used vs the baseline,
-  data flowing from tool results into privileged tool arguments). Domain-specific failures need the
-  user-guideline mechanism — which is currently a free-text textarea, not a
-  structured DSL.
+  data flowing from tool results into privileged tool arguments, duplicate
+  executions, handoffs whose target never spoke). Domain-specific failures
+  belong in the team's own `drift.yml` rules (nine deterministic rule kinds
+  plus `@drift.guideline` Python rules — [docs/guidelines.md](docs/guidelines.md)).
 - **Drift now streams real LangGraph graphs with `subgraphs=True`**, so
   sub-agents that run as subgraphs (every `create_react_agent` under a
   supervisor) show up as `math_expert/agent`, `math_expert/tools`, … steps,
