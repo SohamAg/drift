@@ -1,0 +1,152 @@
+name: "drift — chaos-test a LangGraph app"
+description: >
+  Run drift's chaos suite against a LangGraph graph, fail the job on the
+  rules you choose, publish a JUnit report and a job summary, and upload
+  the result JSON.
+author: "Sutra Labs"
+branding:
+  icon: "zap"
+  color: "orange"
+
+inputs:
+  graph:
+    description: "module[:build_fn] of your graph (module must also expose initial_state()). Leave empty when using `target`."
+    required: false
+    default: ""
+  target:
+    description: "Run a registered third-party target instead of your own graph (drift checkout only)."
+    required: false
+    default: ""
+  preset:
+    description: "quick | balanced | thorough | exhaustive. quick needs no API key."
+    required: false
+    default: "quick"
+  fail-on:
+    description: "Comma-separated gate rules, e.g. crash,recursion_limit,finding:injected_instruction_followed"
+    required: false
+    default: "crash,recursion_limit"
+  against:
+    description: "Path to an earlier drift result JSON for the new_finding / new_crash / regression rules. A missing file is skipped with a note."
+    required: false
+    default: ""
+  timing:
+    description: "initial | mid_run — where state chaos lands."
+    required: false
+    default: "initial"
+  seed:
+    description: "Chaos seed. Keep it fixed so --against can match perturbations by name."
+    required: false
+    default: "7"
+  args:
+    description: "Extra arguments passed to `drift run` verbatim (e.g. --rollouts 3 --max-perturbations 6)."
+    required: false
+    default: ""
+  results-path:
+    description: "Where to write the result JSON."
+    required: false
+    default: "drift-results.json"
+  junit-path:
+    description: "Where to write the JUnit XML."
+    required: false
+    default: "drift-junit.xml"
+  python-version:
+    description: "Python to set up. Empty = use whatever is on the runner."
+    required: false
+    default: "3.12"
+  install:
+    description: "pip requirement for drift itself. Default installs this action's own checkout."
+    required: false
+    default: ""
+  extras:
+    description: "drift extras to install"
+    required: false
+    default: "langgraph,openai"
+  upload-artifact:
+    description: "Upload the result JSON and JUnit XML as a workflow artifact."
+    required: false
+    default: "true"
+
+outputs:
+  passed:
+    description: "'true' when every gate rule passed"
+    value: ${{ steps.run.outputs.passed }}
+  results-path:
+    description: "Path of the result JSON"
+    value: ${{ inputs.results-path }}
+  junit-path:
+    description: "Path of the JUnit XML"
+    value: ${{ inputs.junit-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - if: ${{ inputs.python-version != '' }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install drift
+      shell: bash
+      env:
+        DRIFT_INSTALL: ${{ inputs.install }}
+        DRIFT_EXTRAS: ${{ inputs.extras }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        if [ -n "$DRIFT_INSTALL" ]; then
+          python -m pip install "$DRIFT_INSTALL"
+        elif [ -n "$DRIFT_EXTRAS" ]; then
+          python -m pip install "${ACTION_PATH}[${DRIFT_EXTRAS}]"
+        else
+          python -m pip install "${ACTION_PATH}"
+        fi
+
+    - name: Run drift
+      id: run
+      shell: bash
+      env:
+        IN_GRAPH: ${{ inputs.graph }}
+        IN_TARGET: ${{ inputs.target }}
+        IN_PRESET: ${{ inputs.preset }}
+        IN_FAIL_ON: ${{ inputs.fail-on }}
+        IN_AGAINST: ${{ inputs.against }}
+        IN_TIMING: ${{ inputs.timing }}
+        IN_SEED: ${{ inputs.seed }}
+        IN_ARGS: ${{ inputs.args }}
+        IN_JSON: ${{ inputs.results-path }}
+        IN_JUNIT: ${{ inputs.junit-path }}
+      run: |
+        set +e
+        cmd=(drift run)
+        if [ -n "$IN_TARGET" ]; then cmd+=(--target "$IN_TARGET"); else cmd+=("$IN_GRAPH"); fi
+        cmd+=(--preset "$IN_PRESET" --timing "$IN_TIMING" --seed "$IN_SEED"
+              --json "$IN_JSON" --junit "$IN_JUNIT")
+        [ -n "$IN_FAIL_ON" ] && cmd+=(--fail-on "$IN_FAIL_ON")
+        [ -n "$IN_AGAINST" ] && cmd+=(--against "$IN_AGAINST")
+        # shellcheck disable=SC2206  # word-splitting of free-form args is intended
+        [ -n "$IN_ARGS" ] && cmd+=($IN_ARGS)
+        echo "::group::${cmd[*]}"
+        "${cmd[@]}"
+        code=$?
+        echo "::endgroup::"
+        if [ "$code" = "0" ]; then echo "passed=true" >> "$GITHUB_OUTPUT"; else echo "passed=false" >> "$GITHUB_OUTPUT"; fi
+        echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+    - if: ${{ always() && inputs.upload-artifact == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: drift-results
+        path: |
+          ${{ inputs.results-path }}
+          ${{ inputs.junit-path }}
+        if-no-files-found: warn
+
+    - name: Gate verdict
+      if: ${{ always() }}
+      shell: bash
+      env:
+        CODE: ${{ steps.run.outputs.exit_code }}
+      run: |
+        if [ "$CODE" != "0" ]; then
+          echo "::error title=drift gate::drift run exited $CODE — see the job summary and the drift-results artifact"
+          exit "$CODE"
+        fi

@@ -1,0 +1,54 @@
+name: action self-test
+
+# Exercises the composite action at the repo root (action.yml) the way a
+# user's repo would: `uses: SohamAg/drift@main` there, `uses: ./` here.
+# No API key: examples/ci/demo_app.py is deterministic and the quick preset
+# runs no judge.
+
+on:
+  push:
+    branches: [main]
+    paths: ["action.yml", "src/drift/cli.py", "src/drift/gate.py", "src/drift/ci_output.py",
+            "examples/ci/**", ".github/workflows/action-selftest.yml"]
+  pull_request:
+    paths: ["action.yml", "src/drift/cli.py", "src/drift/gate.py", "src/drift/ci_output.py",
+            "examples/ci/**", ".github/workflows/action-selftest.yml"]
+  workflow_dispatch:
+
+jobs:
+  passes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: drift
+        uses: ./
+        with:
+          graph: examples.ci.demo_app
+          fail-on: finding:injected_instruction_followed
+          extras: langgraph
+      - name: Expect a pass and both reports on disk
+        run: |
+          test "${{ steps.drift.outputs.passed }}" = "true"
+          python -c "import json; d=json.load(open('drift-results.json')); assert d['perturbations'], d.keys()"
+          python -c "import xml.etree.ElementTree as E; s=E.parse('drift-junit.xml').getroot().find('testsuite'); assert s.get('failures')=='0', s.attrib"
+
+  fails-on-a-real-crash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: drift
+        continue-on-error: true
+        uses: ./
+        with:
+          graph: examples.ci.demo_app
+          fail-on: crash
+          args: --intensity exhaustive
+          extras: langgraph
+          results-path: out/drift.json
+          upload-artifact: "false"
+      - name: Expect the gate to have failed, with the crash in the JUnit report
+        run: |
+          test "${{ steps.drift.outcome }}" = "failure"
+          test "${{ steps.drift.outputs.passed }}" = "false"
+          grep -q 'type="drift.gate"' drift-junit.xml
+          grep -q 'priority' drift-junit.xml
