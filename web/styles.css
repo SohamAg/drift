@@ -670,6 +670,7 @@ button { font: inherit; cursor: pointer; }
 .gate-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .gate-title { font-weight: 600; font-size: 12px; letter-spacing: .02em; text-transform: uppercase; color: var(--fg-muted); }
 .gate-rules { flex: 1 1 260px; min-width: 200px; font-family: var(--mono); font-size: 12px; padding: 4px 8px; }
+.gate-against { flex: 0 1 240px; max-width: 320px; font-size: 12px; padding: 4px 6px; }
 .gate-details { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
 .gate-violation { font-size: 12px; padding: 3px 8px; border-left: 3px solid var(--critical); background: var(--critical-soft); border-radius: 3px; }
 .gate-cli { margin-top: 8px; font-size: 11px; word-break: break-all; }

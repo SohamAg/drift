@@ -1104,9 +1104,28 @@
     const box = el('div', { class: 'gate-box' });
     const verdict = el('span', { class: 'pill', text: 'evaluating…' });
     const input = el('input', { type: 'text', class: 'gate-rules', value: gateRules(), spellcheck: 'false',
-      'aria-label': 'gate rules', title: 'Comma-separated: crash, recursion_limit, diverge, intermittent, finding, finding:<type>, baseline_finding, guideline, judge, max_crash_rate=0.2, max_diverge_rate=0.5' });
+      'aria-label': 'gate rules', title: 'Comma-separated: crash, recursion_limit, diverge, intermittent, finding, finding:<type>, baseline_finding, guideline, judge, max_crash_rate=0.2, max_diverge_rate=0.5 — and, against a saved run, new_finding, new_crash, regression' });
     const details = el('div', { class: 'gate-details' });
     const cli = el('div', { class: 'gate-cli' });
+    // new_finding / new_crash / regression compare against an earlier run:
+    // pick one from Results (filled lazily; the server reads the file).
+    const against = el('select', { class: 'gate-against', 'aria-label': 'compare against a saved run',
+      title: 'Earlier result for the new_finding / new_crash / regression rules (drift gate --against)' },
+      [el('option', { value: '', text: 'compare against: none' })]);
+    let previous = null;
+    fetchResultsIndex().then(groups => {
+      const all = Object.values(groups || {}).flat()
+        .sort((a, b) => (b.modified_ts || 0) - (a.modified_ts || 0)).slice(0, 60);
+      all.forEach(e => against.appendChild(el('option', { value: e.path, text: e.path })));
+    }).catch(() => {});
+    against.addEventListener('change', async () => {
+      previous = null;
+      if (against.value) {
+        try { previous = await api('/api/results/' + against.value.split('/').map(encodeURIComponent).join('/')); }
+        catch (e) { toast('Could not load ' + against.value + ': ' + e.message, 'error'); against.value = ''; }
+      }
+      evaluate();
+    });
 
     async function evaluate() {
       const rules = input.value;
@@ -1114,7 +1133,9 @@
       verdict.className = 'pill'; verdict.textContent = 'evaluating…';
       details.innerHTML = '';
       try {
-        const r = await api('/api/gate', { method: 'POST', body: { result: data, rules: rules.split(',').map(x => x.trim()).filter(Boolean) } });
+        const body = { result: data, rules: rules.split(',').map(x => x.trim()).filter(Boolean) };
+        if (previous && previous.perturbations) body.previous = previous;
+        const r = await api('/api/gate', { method: 'POST', body });
         if (!r.rules.length) {
           verdict.className = 'pill'; verdict.textContent = 'no rules';
         } else if (r.passed) {
@@ -1129,12 +1150,14 @@
             ]));
           });
         }
+        (r.notes || []).forEach(n => details.appendChild(el('div', { class: 'gate-violation muted', text: 'note: ' + n })));
       } catch (e) {
         verdict.className = 'pill warning'; verdict.textContent = 'rule error';
         details.appendChild(el('div', { class: 'gate-violation', text: e.message }));
       }
       cli.innerHTML = '';
-      const cmd = cliEquivalent(data, input.value);
+      let cmd = cliEquivalent(data, input.value);
+      if (cmd && against.value) cmd += ` --against results/${against.value}`;
       if (cmd) {
         cli.appendChild(el('span', { class: 'muted', text: 'Same run from the CLI / CI: ' }));
         cli.appendChild(el('code', { class: 'mono', text: cmd }));
@@ -1152,6 +1175,7 @@
       verdict,
       el('span', { class: 'muted', style: 'font-size: 11px;', text: 'would CI pass this run? rules:' }),
       input,
+      against,
     ]));
     box.appendChild(details);
     box.appendChild(cli);
