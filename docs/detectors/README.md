@@ -6,7 +6,7 @@ runs on every `drift_test` call — deterministic, no LLM, no configuration
 unless marked. This index is generated from the library itself
 (`python scripts/gen_detector_index.py`); a test fails if it goes stale.
 
-**20 detectors.** Reads: *state* = node-level state writes;
+**21 detectors.** Reads: *state* = node-level state writes;
 *messages* = the chat messages nodes write (tool calls, tool results, final
 answers); *baseline* = also needs the unperturbed run's trace (the adapter
 supplies it for every perturbation).
@@ -33,6 +33,7 @@ supplies it for every perturbation).
 | [`novel_tool_call`](novel_tool_call.md) | messages + baseline | 1.2, 2.3 | Under a perturbation the graph called a tool the baseline never used; side-effect tools (send / write / delete / pay / execute) are flagged — the action already happened. |
 | [`tainted_side_effect_call`](tainted_side_effect_call.md) | messages | 1.1, 2.3 | A side-effect tool (send / write / delete / pay / execute) was called with an argument lifted verbatim from an earlier tool result that the user never wrote — data chose the action. |
 | [`duplicate_tool_call`](duplicate_tool_call.md) | messages | 1.3 | One model turn requested the same tool call (same name, same arguments) twice and both executed — a double side effect for any non-idempotent tool. |
+| [`empty_handoff`](empty_handoff.md) | messages | 2.4, 3.2 | A handoff to an agent succeeded but that agent never produced a message before control moved on — the caller continued as if it had answered. |
 
 ## Security-relevant subset
 

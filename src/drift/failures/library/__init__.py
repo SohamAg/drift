@@ -30,6 +30,7 @@ from drift.failures.library import (
     context_loss_on_handoff,
     contradictory_decisions,
     duplicate_tool_call,
+    empty_handoff,
     hallucinated_reference,
     infinite_handoff,
     injected_instruction_followed,
@@ -81,6 +82,7 @@ ALL_DETECTORS = [
     novel_tool_call,
     tainted_side_effect_call,
     duplicate_tool_call,
+    empty_handoff,
 ]
 
 

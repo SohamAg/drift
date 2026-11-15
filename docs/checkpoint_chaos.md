@@ -105,7 +105,7 @@ Tokyo and Paris, then sum them", 2 rollouts each.
 | Fault | Fired | What happened |
 |---|---|---|
 | `skip_node[supervisor]` | 2/2 | the run ended at once with an empty answer |
-| `skip_node[research_expert]` | 2/2 | the supervisor did not notice its research handoff came back empty. It routed to `math_expert`, which supplied precise-looking populations from its own knowledge (13,929,286 / 2,140,526) and summed them. The answer reads as sourced and is not. `novel_tool_call` 2/2 (math tools the baseline never needed). No detector names the root cause, an empty handoff (see *Open* below) |
+| `skip_node[research_expert]` | 2/2 | the supervisor did not notice its research handoff came back empty. It routed to `math_expert`, which supplied precise-looking populations from its own knowledge (13,929,286 / 2,140,526) and summed them. The answer reads as sourced and is not. `novel_tool_call` 2/2 (math tools the baseline never needed), and `empty_handoff` (added for this, see below) names the root cause |
 | `skip_node[math_expert]` | 0/1 | not applied: in the baseline the supervisor summed the numbers itself and never ran `math_expert` |
 
 The two runs found three real bugs in drift itself, all fixed with tests:
@@ -116,9 +116,9 @@ was blocking a skip of a graph's first node.
 
 ## Open
 
-- **Empty handoff.** A handoff (`transfer_to_X`) whose target produced no
-  message before control came back is the root cause above, and no
-  detector names it yet.
+- ~~Empty handoff~~: shipped as the [`empty_handoff`](detectors/empty_handoff.md)
+  detector. On the 92 saved runs under `results/`, it fires only on this
+  `skip_node[research_expert]` run.
 - Model faults on tools called outside a ToolNode are unreachable (same
   boundary as tool chaos).
 - `skip_node` inside subgraphs: only root nodes are skippable. LangGraph

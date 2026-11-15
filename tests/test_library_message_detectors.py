@@ -579,3 +579,50 @@ def test_conversation_keeps_every_result_of_a_parallel_tool_super_step():
     ]
     msgs = conversation(_ctx(trace))
     assert [m.tool_call_id for m in msgs if m.role == "tool"] == ["c1", "c2"]
+
+
+# ---- empty_handoff ----------------------------------------------------------------------
+
+from drift.failures.library import empty_handoff  # noqa: E402
+
+
+def _handoff_trace(next_speaker, result_status=None):
+    sup_call = _ai(calls=[("transfer_to_research_expert", {}, "h1")], name="supervisor")
+    nxt = _ai("Tokyo has 14M people.", name=next_speaker)
+    return _trace([
+        ("supervisor", [sup_call, _tool("Successfully transferred to research_expert" if not result_status
+                                        else "Error: no such agent", "h1", status=result_status)]),
+        (next_speaker, [nxt]),
+        ("supervisor", [_ai("Done.", name="supervisor")]),
+    ])
+
+
+def test_empty_handoff_fires_when_the_target_never_speaks():
+    (f,) = empty_handoff.detect(_ctx(_handoff_trace("math_expert")))
+    assert f.failure_type == "empty_handoff"
+    assert "'research_expert' produced no message" in f.summary and "'math_expert'" in f.summary
+
+
+def test_empty_handoff_silent_when_the_target_answers_or_the_handoff_failed():
+    assert empty_handoff.detect(_ctx(_handoff_trace("research_expert"))) == []
+    assert empty_handoff.detect(_ctx(_handoff_trace("math_expert", result_status="error"))) == []
+
+
+def test_empty_handoff_matches_the_target_by_node_when_messages_are_unnamed():
+    trace = _trace([
+        ("supervisor", [_ai(calls=[("transfer_to_research_expert", {}, "h1")]),
+                        _tool("Successfully transferred", "h1")]),
+        ("research_expert/agent", [_ai("Tokyo: 14M.")]),
+        ("supervisor", [_ai("Done.")]),
+    ])
+    assert empty_handoff.detect(_ctx(trace)) == []
+
+
+def test_empty_handoff_ignores_transfer_back_and_trailing_handoffs():
+    trace = _trace([
+        ("research_expert", [_ai(calls=[("transfer_back_to_supervisor", {}, "b1")], name="research_expert"),
+                             _tool("Successfully transferred back", "b1")]),
+        ("supervisor", [_ai(calls=[("transfer_to_math_expert", {}, "h2")], name="supervisor"),
+                        _tool("Successfully transferred", "h2")]),
+    ])
+    assert empty_handoff.detect(_ctx(trace)) == []
