@@ -4,7 +4,65 @@ Dated, one entry per shipped change. Newest first. Each entry says what
 changed and, where a live run informed it, what the run showed — numbers
 are rates over N rollouts, not verdicts.
 
-## Unreleased — 2026-11-11
+## 0.4.0 — 2026-11-15
+
+### Added
+- **Model-layer chaos** (`--model-chaos`, `drift_test(model_chaos=True)`,
+  drift.yml `{tool: X, fault: model_*}`): `model_bad_tool_args`,
+  `model_unknown_tool`, `model_duplicate_tool_call`, `model_dropped_tool_call`.
+  The pending AI tool call is rewritten at the baseline checkpoint (same
+  message id, written as the node that produced it) and the run resumes, so
+  the ToolNode executes the corrupted call. [docs/checkpoint_chaos.md](docs/checkpoint_chaos.md)
+- **Control-flow chaos** (`--flow-chaos`, `{skip_node: N}`): N is recorded as
+  having run with no output where the baseline ran it next. ToolNodes are
+  never skipped (an orphaned tool call is a sequence no real run produces).
+  A fault the baseline gives no place to land is reported `fault_fired=False`
+  with the reason, not run and not counted as coping.
+- **Detectors (19 → 21):** `duplicate_tool_call` (one turn requested the same
+  call twice and both executed; side-effect tools flagged) and `empty_handoff`
+  (a handoff succeeded but its target never spoke before control moved on).
+- **CI:** composite GitHub Action at the repo root (`uses: SohamAg/drift@main`,
+  self-tested in this repo's CI against a pass and a real crash);
+  `drift init [graph]` scaffolds drift.yml (tailored to the graph's tools and
+  state fields) and the workflow; `--junit` (JUnit XML that agrees with the
+  exit code); `--summary` Markdown, appended to `$GITHUB_STEP_SUMMARY`
+  automatically; `--against PREVIOUS.json` with `new_finding`, `new_crash`,
+  `regression` rules (skipped with a note when there is no previous result).
+- **Report:** `drift report --fail-on [--against]` renders the gate verdict;
+  a guideline-rules section lists every drift.yml rule with violated-on-k-of-N
+  / held-on-all / could-not-evaluate.
+- **Forks run guideline rules**, inherited from the parent run by default
+  (`drift_test_fork(rules=...)`, `rules_yaml` on `/api/adapter-fork`).
+- **Web UI:** Tool / Model / Control-flow checkboxes on Test, Import and Suite;
+  chaos timing on Suite; model / control-flow pills; Test-tab forks carry the
+  run's drift.yml.
+
+### Fixed
+- `conversation()` dropped all but one result of a parallel tool super-step
+  (two Send tasks share one `state_after`), hiding tool results from every
+  message-aware detector on graphs that make parallel calls.
+- `silent_tool_failure` reported a recovery as a silent failure when the model
+  fixed a wrong tool name: calling a tool the ToolNode suggested ("try one of
+  [...]") now counts as the retry.
+- Runtime regressions need +0.5 s as well as +50%: millisecond jitter made
+  `test_second_tracked_run_compares_against_first` fail ~1 run in 3 and would
+  have failed the new `regression` gate rule at random.
+- Report methodology claimed every perturbation is applied mid-run; it now
+  states the timing the file actually used.
+- `gate.evaluate` carried two dead copies of the `guideline` rule branch.
+
+### Live (gpt-4o-mini, `examples/adapters/run_drift_on_model_flow_faults.py`)
+- react agent + mocked web_search, 3 rollouts: bad args and unknown tool —
+  recovered 3/3 (no finding after the fix above); duplicate call — tool ran
+  twice 3/3, `duplicate_tool_call` 3/3; dropped call — empty answer 3/3.
+- 2-agent langgraph-supervisor, 2 rollouts: `skip_node[research_expert]` —
+  the supervisor never noticed the empty research handoff and math_expert
+  supplied populations from its own knowledge, `novel_tool_call` 2/2,
+  `empty_handoff` names the cause (fires on 1 of the 92 saved runs under
+  results/ — this one); `skip_node[supervisor]` — empty answer 2/2;
+  `skip_node[math_expert]` — not applied (never ran in the baseline).
+
+## 2026-11-11 (released in 0.4.0)
 
 ### Added
 - **Mid-run chaos timing** — `drift_test(chaos_timing="mid_run")`, `drift run
