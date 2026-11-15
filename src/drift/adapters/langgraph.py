@@ -71,6 +71,12 @@ from difflib import SequenceMatcher
 
 from drift.agents.base import Action
 from drift.chaos.engine import _normalize_intensity, plan_auto_chaos
+from drift.chaos.checkpoint import (
+    CheckpointChaosEvent,
+    discover_flow_patterns,
+    discover_model_patterns,
+    is_checkpoint_event,
+)
 from drift.chaos.fuzzer import discover_field_patterns
 from drift.chaos.tools import (
     DEFAULT_AUTO_FAULTS,
@@ -1732,9 +1738,12 @@ def _build_declared_chaos(entries: list[dict], catalog: list) -> list:
         - {field: approved, pattern: flip_bool}
         - {pattern: inject_tool_result_instruction}        # messages field implied
         - {pattern: drop_last_user_message, step: 3}       # mid-run timing: fork after baseline step 3
+        - {tool: web_search, fault: model_bad_tool_args}   # model layer: corrupt the model's call
+        - {skip_node: reviewer}                            # control flow: the node silently doesn't run
     """
     if not entries:
         return []
+    from drift.chaos.checkpoint import MODEL_FAULTS
     from drift.chaos.tools import TOOL_FAULTS, ToolChaosEvent
 
     by_name = {sp.pattern_name: sp for sp in catalog}
@@ -1744,11 +1753,28 @@ def _build_declared_chaos(entries: list[dict], catalog: list) -> list:
         step = e.pop("step", None)
         if step is not None and (not isinstance(step, int) or isinstance(step, bool) or step < 1):
             raise ValueError(f"chaos #{i}: step must be an int >= 1 (a baseline root step to fork after)")
-        if "tool" in e:
+        if "skip_node" in e:
+            node = str(e.pop("skip_node"))
+            if f"skip_node[{node}]" not in by_name:
+                have = sorted(sp.field for sp in catalog if sp.pattern_type == "skip_node")
+                raise ValueError(f"chaos #{i}: {node!r} is not a skippable node of this graph "
+                                 f"(nodes: {', '.join(have) or 'none'}; ToolNodes cannot be skipped)")
+            events.append(CheckpointChaosEvent(node, fault="skip_node", seed=i))
+        elif "tool" in e and str(e.get("fault", "")) in MODEL_FAULTS:
+            tool, fault = str(e.pop("tool")), str(e.pop("fault"))
+            if f"{fault}[{tool}]" not in by_name:
+                have = sorted({sp.field for sp in catalog if sp.pattern_type in MODEL_FAULTS})
+                raise ValueError(
+                    f"chaos #{i}: tool {tool!r} is not reachable through a ToolNode of this graph "
+                    f"(tools found: {', '.join(have) or 'none'})"
+                )
+            events.append(CheckpointChaosEvent(tool, fault=fault, seed=i))
+        elif "tool" in e:
             tool, fault = str(e.pop("tool")), str(e.pop("fault", "tool_error"))
             on_call = e.pop("on_call", 1)
             if fault not in TOOL_FAULTS:
-                raise ValueError(f"chaos #{i}: unknown tool fault {fault!r}; one of {', '.join(TOOL_FAULTS)}")
+                raise ValueError(f"chaos #{i}: unknown tool fault {fault!r}; one of "
+                                 f"{', '.join([*TOOL_FAULTS, *MODEL_FAULTS])}")
             if f"{fault}[{tool}]" not in by_name:
                 have = sorted({sp.field for sp in catalog if sp.pattern_type in TOOL_FAULTS})
                 raise ValueError(
@@ -1770,7 +1796,7 @@ def _build_declared_chaos(entries: list[dict], catalog: list) -> list:
                 )
             events.append(by_name[name].build())
         else:
-            raise ValueError(f"chaos #{i}: needs `tool:` + `fault:` or `pattern:` (+ `field:`)")
+            raise ValueError(f"chaos #{i}: needs `tool:` + `fault:`, `skip_node:`, or `pattern:` (+ `field:`)")
         if e:
             raise ValueError(f"chaos #{i}: unknown key(s) {', '.join(sorted(e))}")
         if step is not None:
@@ -1801,6 +1827,8 @@ async def drift_test_async(
     rules: Any = None,
     tool_chaos: bool = True,
     chaos_timing: str = CHAOS_TIMING_INITIAL,
+    model_chaos: bool = False,
+    flow_chaos: bool = False,
 ) -> AdapterResult:
     """Async variant of drift_test. Use from inside an existing event loop.
 
@@ -1824,7 +1852,12 @@ async def drift_test_async(
     if chaos_timing not in CHAOS_TIMINGS:
         raise ValueError(f"chaos_timing must be one of {', '.join(CHAOS_TIMINGS)}; got {chaos_timing!r}")
     _validate_graph(graph)
-    if chaos_timing == CHAOS_TIMING_MID_RUN:
+    # Mid-run timing and the checkpoint layers (model / flow) fork the
+    # baseline's checkpoints; a declared checkpoint fault needs them too.
+    _, _, _declared_peek = _normalize_rules(rules)
+    _declares_ckpt = any(isinstance(d, dict) and ("skip_node" in d or str(d.get("fault", "")).startswith("model_"))
+                         for d in _declared_peek)
+    if chaos_timing == CHAOS_TIMING_MID_RUN or model_chaos or flow_chaos or _declares_ckpt:
         ensure_checkpointer(graph)
 
     state_cls = _build_state_model(initial_state)
@@ -1868,14 +1901,21 @@ async def drift_test_async(
         tool_specs_all if level == "exhaustive"
         else [sp for sp in tool_specs_all if sp.pattern_type in DEFAULT_AUTO_FAULTS]
     )
-    all_specs = [*all_specs, *tool_specs_all]
+    # Checkpoint layers: the model's tool calls (one spec per tool × fault)
+    # and control flow (skip_node per non-ToolNode root node). Opt-in for
+    # the sampled plan; always available to drift.yml `chaos:` by name.
+    model_specs_all = discover_model_patterns(graph, seed=seed)
+    flow_specs_all = discover_flow_patterns(graph, seed=seed)
+    ckpt_specs = [*(model_specs_all if model_chaos else []), *(flow_specs_all if flow_chaos else [])]
+    declared_catalog = [*all_specs, *tool_specs_all, *model_specs_all, *flow_specs_all]
+    all_specs = [*all_specs, *tool_specs_all, *ckpt_specs]
     scheduled = plan_auto_chaos(
         state=seed_state,  # type: ignore[arg-type]
         steps=_PLANNER_HORIZON,
         intensity=level,
         seed=seed,
         exclude=auto_chaos_exclude,
-        extra_catalog=tool_specs_auto,
+        extra_catalog=[*tool_specs_auto, *ckpt_specs],
     )
 
     # In exhaustive mode the user opted into "every applicable pattern" —
@@ -1894,7 +1934,7 @@ async def drift_test_async(
 
     # Chaos the user asked for by name (drift.yml `chaos:`) always runs,
     # first, on top of the plan and outside the ceiling — it is explicit.
-    declared = _build_declared_chaos(declared_chaos, all_specs)
+    declared = _build_declared_chaos(declared_chaos, declared_catalog)
     if declared:
         names = {ev.name for ev in declared}
         mid = _PLANNER_HORIZON // 2   # mid-run timing forks a declared event mid-baseline unless `step:` says where
@@ -1957,17 +1997,28 @@ async def drift_test_async(
     root_snaps: dict[int, Any] = {}
     n_root_steps = sum(1 for rec in btrace if not rec.get("namespace"))
     midrun_blocker = ""
-    if chaos_timing == CHAOS_TIMING_MID_RUN:
+    root_nodes = [str(rec.get("node")) for rec in btrace if not rec.get("namespace")]
+    needs_checkpoints = chaos_timing == CHAOS_TIMING_MID_RUN or any(is_checkpoint_event(ev) for _t, ev in scheduled)
+    # Two blockers: `ckpt_blocker` stops everything that forks the baseline
+    # (no run, no saver); `midrun_blocker` adds what state patterns at
+    # mid-run timing need — a step to fork AFTER and a step left to resume.
+    # Checkpoint-layer faults locate their own checkpoint (a skip can land
+    # on the step-0 checkpoint), so only the first applies to them.
+    ckpt_blocker = ""
+    if needs_checkpoints:
         if betype:
-            midrun_blocker = "the baseline crashed, so there is no run to fork"
+            ckpt_blocker = "the baseline crashed, so there is no run to fork"
         elif not baseline.thread_id or not callable(getattr(graph, "update_state", None)):
-            midrun_blocker = "the graph has no checkpointer / update_state (not a compiled LangGraph?)"
-        elif n_root_steps < 2:
-            midrun_blocker = f"the baseline has {n_root_steps} root step(s); forking needs at least 2"
+            ckpt_blocker = "the graph has no checkpointer / update_state (not a compiled LangGraph?)"
         else:
             root_snaps = _capture_root_checkpoints(graph, baseline.thread_id)
-            if not any(1 <= r <= n_root_steps - 1 for r in root_snaps):
-                midrun_blocker = "no root checkpoints were recorded on the baseline thread"
+            if not root_snaps:
+                ckpt_blocker = "no root checkpoints were recorded on the baseline thread"
+        midrun_blocker = ckpt_blocker
+        if not midrun_blocker and n_root_steps < 2:
+            midrun_blocker = f"the baseline has {n_root_steps} root step(s); forking needs at least 2"
+        elif not midrun_blocker and not any(1 <= r <= n_root_steps - 1 for r in root_snaps):
+            midrun_blocker = "no root checkpoints were recorded on the baseline thread"
 
     judge_calls_used = 0
     perturbations: list[PerturbationResult] = []
@@ -2022,6 +2073,9 @@ async def drift_test_async(
                 final, ptrace, etype, err, took = await _run_one(graph, deepcopy(post_state), pert_cfg)
         tool_note = event.outcome_note() if is_tool_event(event) else ""
         fault_fired = event.fired if is_tool_event(event) else None
+        if is_checkpoint_event(event):
+            fault_fired = True
+            tool_note = f" — {fork['detail']}"
         if timing == CHAOS_TIMING_MID_RUN:
             tool_note += f" — applied mid-run, after baseline step {fork_step}"
             # A resumed run's steps continue the baseline's numbering, so
@@ -2085,7 +2139,7 @@ async def drift_test_async(
             perturbed_field=getattr(event, "field", ""),
             pattern_type=getattr(event, "pattern", "auto_chaos"),
             fault_class=getattr(event, "fault_class", ""),
-            fault_layer=FAULT_LAYER_TOOL if is_tool_event(event) else FAULT_LAYER_STATE,
+            fault_layer=_layer_of(event),
             fault_fired=fault_fired,
             perturbed_initial_state=post_state,
             final_state=final,
@@ -2111,7 +2165,17 @@ async def drift_test_async(
     for pert_index, (_t, event) in enumerate(scheduled):
         fork: dict | None = None
         timing_note = ""
-        if chaos_timing == CHAOS_TIMING_MID_RUN and not is_tool_event(event):
+        if is_checkpoint_event(event):
+            located = ckpt_blocker or event.locate(root_snaps, root_nodes)
+            if isinstance(located, str):
+                perturbations.append(_not_fired(event, located, baseline))
+                continue
+            before = {k: deepcopy(v) for k, v in dict(located.snap.values or {}).items() if k != "timestep"}
+            record = event.apply(_materialize_world(state_cls, before))
+            fork = {"snap": located.snap, "rank": located.rank, "edits": located.values,
+                    "as_node": located.as_node, "force": True, "detail": located.detail}
+            post_state = _normalize_messages(before)
+        elif chaos_timing == CHAOS_TIMING_MID_RUN and not is_tool_event(event):
             if midrun_blocker:
                 timing_note = f"fell back to initial-state timing: {midrun_blocker}"
             else:
@@ -2202,6 +2266,8 @@ def drift_test(
     rules: Any = None,
     tool_chaos: bool = True,
     chaos_timing: str = CHAOS_TIMING_INITIAL,
+    model_chaos: bool = False,
+    flow_chaos: bool = False,
 ) -> AdapterResult:
     """Run drift's auto-chaos against a compiled graph and report results.
 
@@ -2365,6 +2431,8 @@ def drift_test(
             rules=rules,
             tool_chaos=tool_chaos,
             chaos_timing=chaos_timing,
+            model_chaos=model_chaos,
+            flow_chaos=flow_chaos,
         )
     )
 
@@ -2582,6 +2650,34 @@ async def _run_one_fork_branch(
         )
 
 
+def _layer_of(event: Any) -> str:
+    if is_tool_event(event):
+        return FAULT_LAYER_TOOL
+    if is_checkpoint_event(event):
+        return event.layer
+    return FAULT_LAYER_STATE
+
+
+def _not_fired(event: Any, reason: str, baseline: "BaselineResult") -> "PerturbationResult":
+    """A checkpoint-layer fault the baseline gave no place to land. Nothing
+    was run; the result says so rather than counting a skipped fault as a
+    graph that coped."""
+    return PerturbationResult(
+        event_name=event.name,
+        event_summary=f"{event.layer}-layer fault {event.fault} on {event.target!r} — not applied: {reason}",
+        perturbed_field=event.field,
+        pattern_type=event.pattern,
+        fault_class=event.fault_class,
+        fault_layer=event.layer,
+        fault_fired=False,
+        perturbed_initial_state=baseline.initial_state,
+        final_state=baseline.final_state,
+        crashed=False, error="", error_type="",
+        thread_id=baseline.thread_id,
+        chaos_timing=CHAOS_TIMING_MID_RUN,
+    )
+
+
 def _root_rank(trace: list[dict], fork_step: int) -> int | None:
     """How many ROOT-namespace super-steps the trace has up to and including
     `fork_step` (1-based). None if the record at `fork_step` is itself a
@@ -2780,6 +2876,10 @@ def _write_fork_edits(graph: Any, fork: dict) -> dict:
     sees the poisoned result. Falls back to inference if the name is not a
     node the graph accepts."""
     snap, edits, as_node = fork["snap"], fork["edits"], fork.get("as_node")
+    if fork.get("force"):
+        # Checkpoint-layer faults must be written as exactly this node — a
+        # skipped node is recorded as having run with no output (edits None).
+        return graph.update_state(snap.config, edits, as_node=as_node or None)
     if not edits:
         return snap.config
     if as_node:
