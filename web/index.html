@@ -210,6 +210,16 @@
               </div>
             </div>
 
+            <div class="row">
+              <div class="field">
+                <label>Chaos layers <span class="muted">(beyond state patterns)</span></label>
+                <label class="checkbox-row" for="adapter-tool-chaos"><input type="checkbox" id="adapter-tool-chaos" checked /> Tool <span class="muted">— runtime faults on ToolNode tools</span></label>
+                <label class="checkbox-row" for="adapter-model-chaos"><input type="checkbox" id="adapter-model-chaos" /> Model <span class="muted">— corrupt / duplicate / drop the model&#39;s tool calls</span></label>
+                <label class="checkbox-row" for="adapter-flow-chaos"><input type="checkbox" id="adapter-flow-chaos" /> Control flow <span class="muted">— a node silently does not run</span></label>
+                <div class="help">Model and control-flow faults are written onto the baseline&#39;s own checkpoints and resumed, so they need a compiled LangGraph graph (the bundled ticket_triage demo is a stub and gets none). A fault the baseline gives no place to land is reported as not applied. <a href="https://github.com/SohamAg/drift/blob/main/docs/checkpoint_chaos.md" target="_blank" rel="noopener">How it works</a></div>
+              </div>
+            </div>
+
             <div class="row two-col">
               <div class="field">
                 <label for="adapter-similarity-threshold">Tier 2 similarity threshold</label>
@@ -515,8 +525,13 @@
               <option value="mid_run">mid-run (fork the baseline checkpoint, resume)</option>
             </select>
           </div>
+
           <div class="field">
-            <label><input type="checkbox" id="import-tool-chaos" checked /> Tool-layer chaos <span class="muted">(runtime faults on ToolNode tools)</span></label>
+            <label>Chaos layers <span class="muted">(beyond state patterns)</span></label>
+            <label class="checkbox-row" for="import-tool-chaos"><input type="checkbox" id="import-tool-chaos" checked /> Tool <span class="muted">— runtime faults on ToolNode tools</span></label>
+            <label class="checkbox-row" for="import-model-chaos"><input type="checkbox" id="import-model-chaos" /> Model <span class="muted">— corrupt / duplicate / drop the model&#39;s tool calls</span></label>
+            <label class="checkbox-row" for="import-flow-chaos"><input type="checkbox" id="import-flow-chaos" /> Control flow <span class="muted">— a node silently does not run</span></label>
+            <div class="help">Model and control-flow faults are written onto the baseline&#39;s own checkpoints and resumed, so they need a compiled LangGraph graph (the bundled ticket_triage demo is a stub and gets none). A fault the baseline gives no place to land is reported as not applied. <a href="https://github.com/SohamAg/drift/blob/main/docs/checkpoint_chaos.md" target="_blank" rel="noopener">How it works</a></div>
           </div>
         </div>
 
@@ -714,6 +729,21 @@
               <option value="openai">OpenAI (real)</option>
               <option value="mock">Mock (no API)</option>
             </select>
+          </div>
+        </div>
+        <div class="row two-col">
+          <div class="field">
+            <label for="suite-chaos-timing">Chaos timing</label>
+            <select id="suite-chaos-timing">
+              <option value="initial" selected>initial state (rerun from the top)</option>
+              <option value="mid_run">mid-run (fork the baseline checkpoint, resume)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Chaos layers <span class="muted">(beyond state patterns)</span></label>
+            <label class="checkbox-row" for="suite-tool-chaos"><input type="checkbox" id="suite-tool-chaos" checked /> Tool <span class="muted">— runtime faults on ToolNode tools</span></label>
+            <label class="checkbox-row" for="suite-model-chaos"><input type="checkbox" id="suite-model-chaos" /> Model <span class="muted">— corrupt / duplicate / drop the model&#39;s tool calls</span></label>
+            <label class="checkbox-row" for="suite-flow-chaos"><input type="checkbox" id="suite-flow-chaos" /> Control flow <span class="muted">— a node silently does not run</span></label>
           </div>
         </div>
         <div class="field">

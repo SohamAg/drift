@@ -526,6 +526,9 @@
     const baseline_rollouts = parseInt($('#adapter-baseline-rollouts').value, 10) || 1;
     const perturbation_rollouts = parseInt($('#adapter-perturbation-rollouts').value, 10) || 1;
     const chaos_timing = $('#adapter-chaos-timing').value || 'initial';
+    const tool_chaos = $('#adapter-tool-chaos').checked;
+    const model_chaos = $('#adapter-model-chaos').checked;
+    const flow_chaos = $('#adapter-flow-chaos').checked;
     const max_judge_calls = parseInt($('#adapter-max-judge-calls').value, 10);
     const similarity_threshold = parseFloat($('#adapter-similarity-threshold').value);
     const coordination_roles = parseRolesTextarea('#adapter-coordination-roles');
@@ -545,12 +548,13 @@
           auto_chaos_exclude, judge, judge_model, user_guidelines, rules_yaml,
           coordination_roles, required_followups, policy_field,
           divergence_mode, baseline_rollouts, perturbation_rollouts, chaos_timing,
+          tool_chaos, model_chaos, flow_chaos,
           max_judge_calls: Number.isFinite(max_judge_calls) ? max_judge_calls : 10,
           similarity_threshold: Number.isFinite(similarity_threshold) ? similarity_threshold : 0.85,
           track_history,
         },
       });
-      setActiveRun(data, { graph_name, state_overrides });
+      setActiveRun(data, { graph_name, state_overrides, rules_yaml, chaos_timing, tool_chaos, model_chaos, flow_chaos });
       renderAdapterResult(data, 'adapter');
       $('#adapter-result').classList.remove('hidden');
       $('#adapter-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1080,6 +1084,8 @@
     if (data.perturbation_rollouts > 1) parts.push(`--rollouts ${data.perturbation_rollouts}`);
     if (data.chaos_timing === 'mid_run') parts.push('--timing mid_run');
     if (ctx.tool_chaos === false) parts.push('--no-tool-chaos');
+    if (ctx.model_chaos) parts.push('--model-chaos');
+    if (ctx.flow_chaos) parts.push('--flow-chaos');
     parts.push(`--judge ${data.judge || 'off'}`);
     if (data.seed != null) parts.push(`--seed ${data.seed}`);
     if (ctx.rules_yaml && ctx.rules_yaml.trim()) parts.push('--guidelines drift.yml');
@@ -1227,7 +1233,7 @@
         ? el('span', { class: `pill fault-${p.fault_class}`, text: p.fault_class,
                        title: 'Fault class: crash = a dependency failed loudly; omission = input missing or cut short; value = input present but wrong.' })
         : null,
-      p.chaos_timing === 'mid_run'
+      p.chaos_timing === 'mid_run' && p.fault_fired !== false
         ? el('span', { class: 'pill layer-tool', text: `mid-run @ ${p.fork_step}`,
                        title: `Applied to the baseline checkpoint after step ${p.fork_step} and resumed from there; the trace below continues the baseline's step numbering.` })
         : (p.timing_note
@@ -1238,6 +1244,15 @@
                        title: p.fault_fired === false
                          ? 'Runtime fault on a tool call, but the graph never made that call on this run — the outcome says nothing about the fault.'
                          : 'Runtime fault on one tool call while the graph ran (drift.chaos.tools); the initial state was untouched.' })
+        : null,
+      (p.fault_layer === 'model' || p.fault_layer === 'flow')
+        ? el('span', { class: 'pill layer-tool',
+                       text: `${p.fault_layer === 'flow' ? 'control flow' : 'model'}${p.fault_fired === false ? ' · not applied' : ''}`,
+                       title: p.fault_fired === false
+                         ? 'The baseline gave this fault no place to land (the tool was never called / the node never ran next), so nothing was run. The summary says why.'
+                         : (p.fault_layer === 'flow'
+                           ? 'A node was recorded as having run with no output at the baseline checkpoint where it was next, and the graph resumed (drift.chaos.checkpoint).'
+                           : "The model's pending tool call was rewritten at the baseline checkpoint and the graph resumed, so the ToolNode ran the corrupted call (drift.chaos.checkpoint).") })
         : null,
       el('span', { class: 'muted', text: `(${p.duration_s}s)` }),
       ...findingBadges,
@@ -1896,6 +1911,8 @@
     const rules_yaml = $('#import-rules-yaml').value || '';
     const chaos_timing = $('#import-chaos-timing').value || 'initial';
     const tool_chaos = $('#import-tool-chaos').checked;
+    const model_chaos = $('#import-model-chaos').checked;
+    const flow_chaos = $('#import-flow-chaos').checked;
 
     const btn = $('#import-run');
     const status = $('#import-status');
@@ -1909,9 +1926,11 @@
           intensity, judge, max_perturbations,
           coordination_roles, required_followups, policy_field, track_history,
           divergence_mode, baseline_rollouts, perturbation_rollouts, rules_yaml, chaos_timing, tool_chaos,
+          model_chaos, flow_chaos,
         },
       });
-      setActiveRun(data, { module, build_fn, initial_state_fn, query, model, rules_yaml, chaos_timing, tool_chaos });
+      setActiveRun(data, { module, build_fn, initial_state_fn, query, model, rules_yaml, chaos_timing, tool_chaos,
+                           model_chaos, flow_chaos });
       renderAdapterResult(data, 'import');
       $('#import-result').classList.remove('hidden');
       $('#import-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2233,6 +2252,10 @@
     const divergence_mode = $('#suite-divergence-mode').value;
     const perturbation_rollouts = parseInt($('#suite-perturbation-rollouts').value, 10) || 1;
     const baseline_rollouts = divergence_mode === 'tiered' ? 3 : 1;
+    const chaos_timing = $('#suite-chaos-timing').value || 'initial';
+    const tool_chaos = $('#suite-tool-chaos').checked;
+    const model_chaos = $('#suite-model-chaos').checked;
+    const flow_chaos = $('#suite-flow-chaos').checked;
 
     const btn = $('#suite-run');
     const status = $('#suite-status');
@@ -2242,7 +2265,8 @@
       const data = await api('/api/suite-run', {
         method: 'POST',
         body: { target_names, intensity, seed, max_perturbations, judge, track_history,
-                divergence_mode, baseline_rollouts, perturbation_rollouts },
+                divergence_mode, baseline_rollouts, perturbation_rollouts,
+                chaos_timing, tool_chaos, model_chaos, flow_chaos },
       });
       const results = data.results || [];
       renderSuiteResults(results);
