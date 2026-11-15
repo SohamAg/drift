@@ -29,6 +29,7 @@ from drift.failures.base import FailureRecord
 from drift.failures.library import (
     context_loss_on_handoff,
     contradictory_decisions,
+    duplicate_tool_call,
     hallucinated_reference,
     infinite_handoff,
     injected_instruction_followed,
@@ -79,6 +80,7 @@ ALL_DETECTORS = [
     retry_amplification,
     novel_tool_call,
     tainted_side_effect_call,
+    duplicate_tool_call,
 ]
 
 

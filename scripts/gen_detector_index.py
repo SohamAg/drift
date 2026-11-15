@@ -9,7 +9,7 @@ NEEDS_CONFIG = {"premature_termination", "policy_inconsistency_across_steps"}
 MESSAGE_AWARE = {
     "tool_call_loop", "silent_tool_failure", "injected_instruction_followed",
     "injected_tool_call_followed", "retry_amplification", "novel_tool_call",
-    "tainted_side_effect_call",
+    "tainted_side_effect_call", "duplicate_tool_call",
 }
 NEEDS_BASELINE = {"retry_amplification", "novel_tool_call"}
 

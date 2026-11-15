@@ -525,6 +525,46 @@ def test_silent_tool_failure_still_fires_when_the_fallback_tool_is_not_one_sugge
     assert [f.failure_type for f in findings] == ["silent_tool_failure"]
 
 
+# ---- duplicate_tool_call ----------------------------------------------------------------
+
+from drift.failures.library import duplicate_tool_call  # noqa: E402
+
+
+def _dup_trace(second_args, second_status=None, name="send_email"):
+    return _trace([
+        ("agent", [_ai(calls=[(name, {"to": "a@x.com"}, "c1"), (name, second_args, "c2")])]),
+        ("tools", [_tool("sent", "c1"), _tool("sent" if not second_status else "boom", "c2", status=second_status)]),
+        ("agent", [_ai("Done.")]),
+    ])
+
+
+def test_duplicate_tool_call_fires_when_both_identical_calls_ran():
+    (f,) = duplicate_tool_call.detect(_ctx(_dup_trace({"to": "a@x.com"})))
+    assert f.failure_type == "duplicate_tool_call"
+    assert "SIDE-EFFECT tool 'send_email' 2×" in f.summary and "2 of those calls executed" in f.summary
+
+
+def test_duplicate_tool_call_ignores_different_args_and_failed_duplicates():
+    assert duplicate_tool_call.detect(_ctx(_dup_trace({"to": "b@x.com"}))) == []
+    assert duplicate_tool_call.detect(_ctx(_dup_trace({"to": "a@x.com"}, second_status="error"))) == []
+
+
+def test_duplicate_tool_call_ignores_routing_tools():
+    assert duplicate_tool_call.detect(_ctx(_dup_trace({"to": "a@x.com"}, name="transfer_to_math"))) == []
+
+
+def test_duplicate_tool_call_end_to_end_under_model_chaos():
+    pytest.importorskip("langgraph")
+    from tests.test_chaos_checkpoint import CALLS, _react, _react_state, _spec  # noqa: F401
+
+    from drift.adapters.langgraph import drift_test
+
+    res = drift_test(graph=_react(), initial_state=_react_state(), intensity="off",
+                     rules=_spec([{"tool": "web_search", "fault": "model_duplicate_tool_call"}]))
+    (p,) = res.perturbations
+    assert "duplicate_tool_call" in [f["failure_type"] for f in p.coordination_findings]
+    assert "duplicate_tool_call" not in [f["failure_type"] for f in res.baseline.coordination_findings]
+
 
 def test_conversation_keeps_every_result_of_a_parallel_tool_super_step():
     # Two Send tasks of one ToolNode super-step: two trace records, one shared
