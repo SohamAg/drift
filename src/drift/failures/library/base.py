@@ -448,18 +448,29 @@ def conversation(ctx: CoordinationDetectorContext) -> list[Msg]:
         msgs = messages_in_step(s)
         is_inner = "/" in s.agent
         after_count = len(_message_dicts_in(s.state_after)) if s.state_after else None
+        next_prev = after_count
         if not is_inner and after_count is not None and prev_count is not None:
             growth = after_count - prev_count
             if 0 <= growth < len(msgs):
                 msgs = msgs[len(msgs) - growth:] if growth else []
+            elif growth > len(msgs):
+                # Parallel tasks in one super-step (a ToolNode running two
+                # tool calls as separate Sends) are separate trace records
+                # that share the super-step's final state_after. Each record
+                # consumes only its own messages' worth of the growth;
+                # jumping prev_count to after_count would make the next
+                # sibling look like a zero-growth re-emit and drop its
+                # result (found: the second of two parallel tool results
+                # vanished from the conversation).
+                next_prev = prev_count + len(msgs)
             prefix = f"{s.agent}/"
             inner_fps: set[tuple] = set()
             for agent, fps in emitted_by_agent.items():
                 if agent.startswith(prefix):
                     inner_fps |= fps
             msgs = [m for m in msgs if _msg_fingerprint(m) not in inner_fps]
-        if not is_inner and after_count is not None:
-            prev_count = after_count
+        if not is_inner and next_prev is not None:
+            prev_count = next_prev
         for m in msgs:
             out.append(m)
             emitted_by_agent.setdefault(s.agent, set()).add(_msg_fingerprint(m))

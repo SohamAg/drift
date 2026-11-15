@@ -523,3 +523,19 @@ def test_silent_tool_failure_counts_a_corrected_tool_name_as_the_retry():
 def test_silent_tool_failure_still_fires_when_the_fallback_tool_is_not_one_suggested():
     findings = silent_tool_failure.detect(_ctx(_unknown_tool_trace("other_tool")))
     assert [f.failure_type for f in findings] == ["silent_tool_failure"]
+
+
+
+def test_conversation_keeps_every_result_of_a_parallel_tool_super_step():
+    # Two Send tasks of one ToolNode super-step: two trace records, one shared
+    # final state_after. Both results must be in the conversation.
+    ai = _ai(calls=[("search", {"q": "a"}, "c1"), ("search", {"q": "b"}, "c2")])
+    t1, t2 = _tool("ra", "c1"), _tool("rb", "c2")
+    after = {"messages": INIT["messages"] + [ai, t1, t2]}
+    trace = [
+        {"step": 1, "node": "agent", "update": {"messages": [ai]}, "state_after": {"messages": INIT["messages"] + [ai]}},
+        {"step": 2, "node": "tools", "update": {"messages": [t1]}, "state_after": after},
+        {"step": 3, "node": "tools", "update": {"messages": [t2]}, "state_after": after},
+    ]
+    msgs = conversation(_ctx(trace))
+    assert [m.tool_call_id for m in msgs if m.role == "tool"] == ["c1", "c2"]
