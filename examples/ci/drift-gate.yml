@@ -5,6 +5,11 @@
 #
 # Needs OPENAI_API_KEY only for presets above `quick` (judge + tiered
 # divergence cascade). The quick preset is free and runs in seconds.
+#
+# Shorter: the composite action does all of this in one step —
+#   - uses: SohamAg/drift@main
+#     with: { graph: my_app.graph:build, fail-on: crash,recursion_limit }
+# (`drift init my_app.graph:build` writes that workflow for you.)
 name: drift gate
 
 on:
@@ -32,6 +37,7 @@ jobs:
             --preset balanced \
             --rollouts 2 \
             --json drift-results.json \
+            --junit drift-junit.xml \
             --fail-on crash,recursion_limit \
             --fail-on finding:injected_instruction_followed \
             --fail-on max_diverge_rate=0.5
@@ -40,4 +46,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: drift-results
-          path: drift-results.json
+          path: |
+            drift-results.json
+            drift-junit.xml

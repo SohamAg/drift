@@ -54,6 +54,7 @@ or render a self-contained HTML evidence report with
 | `judge` | any LLM-judge finding |
 | `max_crash_rate=0.2` | crashed ÷ perturbations above the fraction |
 | `max_diverge_rate=0.5` | diverged ÷ perturbations above the fraction |
+| `new_finding`, `new_crash`, `regression` | compared with an earlier result — see [`--against`](#fail-on-what-got-worse---against) |
 
 Rules are comma-separable and `--fail-on` is repeatable. Rates are over the
 perturbations actually scheduled, so `--max-perturbations 4` is judged on
@@ -73,25 +74,84 @@ Same four as the web UI; any knob overrides the preset.
 `--rollouts N` is the knob that turns "the injection was followed" into
 "the injection was followed 1 of 3 times". One LLM run is a sample.
 
+## Start in one command
+
+```bash
+drift init my_app.graph:build
+```
+
+writes `drift.yml` (one active rule, plus commented suggestions built from
+your graph's real tool names and state fields) and
+`.github/workflows/drift.yml` (the action below, pointed at your graph).
+Existing files are left alone unless you pass `--force`.
+
 ## GitHub Actions
 
-`examples/ci/drift-gate.yml` is a complete workflow. The shape:
+The repo root is a composite action:
 
 ```yaml
-- run: pip install -e ".[langgraph,openai]"
-- run: drift run my_app.graph --preset balanced --json drift-results.json --fail-on crash,recursion_limit,finding:injected_instruction_followed
+- uses: actions/checkout@v4
+- run: pip install -e .            # your app
+- uses: SohamAg/drift@main
   env:
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-- uses: actions/upload-artifact@v4
-  if: always()
-  with: { name: drift-results, path: drift-results.json }
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}   # only for presets above quick
+  with:
+    graph: my_app.graph:build
+    preset: balanced
+    fail-on: crash,recursion_limit,finding:injected_instruction_followed
+    args: --rollouts 2
 ```
+
+It runs `drift run`, writes `drift-results.json` and `drift-junit.xml`,
+uploads both as the `drift-results` artifact, puts a summary on the job
+page, and sets `outputs.passed`. Inputs: `graph` or `target`, `preset`,
+`fail-on`, `against`, `timing`, `seed`, `args` (extra `drift run`
+flags), `results-path`, `junit-path`, `python-version` (empty = use the
+runner's), `install` (a pip requirement for drift; default is the
+action's own checkout), `extras`, `upload-artifact`.
+`.github/workflows/action-selftest.yml` in this repo runs it on every
+change, expecting a pass on one job and a real crash failure on another.
+
+Without the action, `examples/ci/drift-gate.yml` is the same thing as
+plain steps.
 
 Pick rules you would actually block a deploy on. `crash` and
 `recursion_limit` are safe defaults. `finding:injected_instruction_followed`
 is the prompt-injection canary — deterministic, no judge. `diverge` on an
 LLM graph with `--divergence exact` will fail every run; use the `tiered`
 cascade (any preset above quick) or a `max_diverge_rate`.
+
+## Reports CI already understands
+
+| Flag | Writes | Shows up as |
+|---|---|---|
+| `--junit drift.xml` | JUnit XML: a test case for the baseline and each perturbation; a case fails only when a `--fail-on` rule named it | the test-report pane of GitHub (via a JUnit reporter action), GitLab, Jenkins, CircleCI, Azure |
+| `--summary drift.md` | Markdown: verdict, violated rules, baseline findings, every perturbation | anywhere you post Markdown (PR comment bots) |
+| *(automatic)* | the same Markdown appended to `$GITHUB_STEP_SUMMARY` | the job's summary page in GitHub Actions; `--no-step-summary` turns it off |
+
+All three come from the result JSON alone, so `drift gate results.json
+--junit … --summary …` renders an artifact produced on another machine.
+
+## Fail on what got worse: `--against`
+
+A PR should fail on what it broke, not on what `main` already had. Save
+main's result as an artifact or in the repo, then:
+
+```bash
+drift run my_app.graph --seed 7 --json pr.json \
+  --against main-drift.json --fail-on new_finding,new_crash,regression
+```
+
+| Rule | Fails when |
+|---|---|
+| `new_finding` | a finding type fires now that did not in the previous result |
+| `new_crash` | a perturbation crashes now that ran clean before (matched by event name, so keep `--seed` fixed), or the baseline newly crashes |
+| `regression` | crash rate up >5 points, divergence rate up >10 points, mean runtime up >50%, new finding types, or more intermittent outcomes — the same thresholds `drift history` uses |
+
+With no previous result (a missing `--against` file, or none given) these
+three rules are skipped with a note rather than failed: the first run on a
+branch has nothing to regress against. An unreadable file is an error.
+`POST /api/gate` takes the previous result as `previous`.
 
 ## Regression trend
 
