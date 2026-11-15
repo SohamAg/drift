@@ -220,6 +220,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         out.write_text(json.dumps(shaped, indent=1, default=str), encoding="utf-8")
 
     report = evaluate(shaped, rules)
+    _write_ci_outputs(args, shaped, report)
     if not args.quiet:
         _print_run(shaped, took)
         for line in report.lines():
@@ -230,6 +231,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         for line in report.lines():
             print(line)
     return 0 if report.passed else 1
+
+
+def _write_ci_outputs(args: argparse.Namespace, shaped: dict, report) -> None:
+    """--junit: JUnit XML of the run + gate, for CI test-report panes."""
+    junit = getattr(args, "junit", None)
+    if junit:
+        from drift.ci_output import to_junit
+
+        out = Path(junit)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(to_junit(shaped, report), encoding="utf-8")
 
 
 def _print_run(shaped: dict, took: float) -> None:
@@ -322,6 +334,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
     if not isinstance(shaped, dict) or "perturbations" not in shaped:
         raise SystemExit(f"{path} is not a drift result (no 'perturbations' key) — pass `drift run --json` output")
     report = evaluate(shaped, rules)
+    _write_ci_outputs(args, shaped, report)
     for line in report.lines():
         print(line)
     return 0 if report.passed else 1
@@ -475,6 +488,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="gate rule(s), comma-separable and repeatable: crash, recursion_limit, diverge, "
                             "intermittent, finding, finding:<type>, baseline_finding, guideline, judge, "
                             "max_crash_rate=<0..1>, max_diverge_rate=<0..1>")
+    run_p.add_argument("--junit", default=None, metavar="PATH",
+                       help="write JUnit XML (one testcase per perturbation; gate violations are failures)")
     run_p.add_argument("--track-history", action="store_true",
                        help="append a regression snapshot (see `drift history`)")
     run_p.add_argument("--history-dir", default=None)
@@ -484,6 +499,8 @@ def main(argv: list[str] | None = None) -> int:
     gate_p.add_argument("results", help="path to a drift result JSON")
     gate_p.add_argument("--fail-on", action="append", required=True,
                         help="same rules as `drift run --fail-on`")
+
+    gate_p.add_argument("--junit", default=None, metavar="PATH", help="write JUnit XML of the gate verdict")
 
     tgt_p = sub.add_parser("targets", help="list the registry of real third-party MAS for --target")
     tgt_p.add_argument("--json", action="store_true", help="machine-readable output")

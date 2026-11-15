@@ -67,6 +67,10 @@ class Violation:
     summary: str
     # Which perturbations (event names) triggered it; empty for baseline-only rules.
     perturbations: list[str] = field(default_factory=list)
+    # True when the unperturbed baseline run contributed to the violation
+    # (baseline_crashed, baseline_finding, or a finding/guideline/judge rule
+    # that counted baseline findings). JUnit output attributes it there.
+    baseline: bool = False
 
 
 @dataclass
@@ -151,6 +155,7 @@ def evaluate(shaped: dict[str, Any], rules: list[str]) -> GateReport:
             "baseline_crashed",
             f"the unperturbed run itself crashed ({baseline.get('error_type') or 'error'}: "
             f"{str(baseline.get('error') or '')[:120]}) — no comparison is possible",
+            baseline=True,
         ))
 
     def names(pred) -> list[str]:
@@ -183,19 +188,20 @@ def evaluate(shaped: dict[str, Any], rules: list[str]) -> GateReport:
                 summary = f"{total} coordination finding(s)"
                 if base:
                     summary += f" ({len(base)} on the unperturbed baseline)"
-                violations.append(Violation(rule, summary, hit))
+                violations.append(Violation(rule, summary, hit, baseline=bool(base)))
         elif rule.startswith("finding:"):
             want = rule[len("finding:"):].strip()
             hit = names(lambda p: want in _finding_types(p.get("coordination_findings")))
             in_base = want in _finding_types(baseline.get("coordination_findings"))
             if hit or in_base:
                 where = f"{len(hit)}/{n} perturbation(s)" + (" and the baseline" if in_base else "")
-                violations.append(Violation(rule, f"{want} fired on {where}", hit))
+                violations.append(Violation(rule, f"{want} fired on {where}", hit, baseline=in_base))
         elif rule == "baseline_finding":
             base = _finding_types(baseline.get("coordination_findings"))
             if base:
                 violations.append(Violation(
                     rule, f"detector(s) fired on the unperturbed run: {', '.join(sorted(set(base)))}",
+                    baseline=True,
                 ))
         elif rule == "guideline":
             def _gl(findings: list[dict] | None) -> list[str]:
@@ -206,12 +212,14 @@ def evaluate(shaped: dict[str, Any], rules: list[str]) -> GateReport:
                 ids = sorted({t.split(":", 1)[1] for p in perts for t in _gl(p.get("coordination_findings"))}
                              | {t.split(":", 1)[1] for t in base})
                 where = f"{len(hit)}/{n} perturbation(s)" + (" and the baseline" if base else "")
-                violations.append(Violation(rule, f"guideline rule(s) {', '.join(ids)} violated on {where}", hit))
+                violations.append(Violation(rule, f"guideline rule(s) {', '.join(ids)} violated on {where}", hit,
+                                            baseline=bool(base)))
         elif rule == "judge":
             hit = names(lambda p: p.get("judge_findings"))
             base = baseline.get("judge_findings") or []
             if hit or base:
-                violations.append(Violation(rule, f"{shaped.get('n_judge_findings', len(hit) + len(base))} judge finding(s)", hit))
+                violations.append(Violation(rule, f"{shaped.get('n_judge_findings', len(hit) + len(base))} judge finding(s)", hit,
+                                            baseline=bool(base)))
         elif rule.startswith("max_crash_rate="):
             limit = float(rule.split("=", 1)[1])
             hit = names(lambda p: p.get("crashed"))

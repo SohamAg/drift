@@ -251,3 +251,14 @@ def test_gate_fails_when_the_baseline_itself_crashed():
     r = gate.evaluate(shaped, ["finding"])
     assert [v.rule for v in r.violations] == ["baseline_crashed"]
     assert "KeyError" in r.violations[0].summary
+
+
+def test_run_writes_junit_that_agrees_with_the_exit_code(graph_module: str, tmp_path: Path) -> None:
+    import xml.etree.ElementTree as ET
+
+    out = tmp_path / "drift.xml"
+    code = main(["run", graph_module, "--intensity", "exhaustive", "--fail-on", "crash", "--junit", str(out), "-q"])
+    suite = ET.fromstring(out.read_text(encoding="utf-8")).find("testsuite")
+    assert code == 1 and int(suite.get("failures")) >= 1
+    failing = [c.get("name") for c in suite.findall("testcase") if c.find("failure") is not None]
+    assert any("approved" in n for n in failing), failing
