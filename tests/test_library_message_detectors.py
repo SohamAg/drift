@@ -501,3 +501,25 @@ def test_silent_tool_failure_token_tiers_are_disjoint_and_complete():
     assert set(silent_tool_failure.ACK_TOKENS) == (
         set(silent_tool_failure.STRONG_ACK_TOKENS) | set(silent_tool_failure.WEAK_ACK_TOKENS)
     )
+
+
+def _unknown_tool_trace(retry_name):
+    return _trace([
+        ("agent", [_ai(calls=[("web_search_v2", {"q": "paris"}, "c1")])]),
+        ("tools", [_tool("Error: web_search_v2 is not a valid tool, try one of [web_search, calc].", "c1",
+                         status="error")]),
+        ("agent", [_ai(calls=[(retry_name, {"q": "paris"}, "c2")])]),
+        ("tools", [_tool("sunny, 21C", "c2")]),
+        ("agent", [_ai("It is sunny and 21C in Paris.")]),
+    ])
+
+
+def test_silent_tool_failure_counts_a_corrected_tool_name_as_the_retry():
+    # Live (gpt-4o-mini, model_unknown_tool): the model read the ToolNode's
+    # "try one of [...]" and called the real tool — a recovery, not a silent failure.
+    assert silent_tool_failure.detect(_ctx(_unknown_tool_trace("web_search"))) == []
+
+
+def test_silent_tool_failure_still_fires_when_the_fallback_tool_is_not_one_suggested():
+    findings = silent_tool_failure.detect(_ctx(_unknown_tool_trace("other_tool")))
+    assert [f.failure_type for f in findings] == ["silent_tool_failure"]

@@ -96,6 +96,17 @@ def _agent_root(label: str) -> str:
     return (label or "").split("/", 1)[0]
 
 
+_SUGGESTED_RE = re.compile(r"is not a valid tool,?\s*try one of \[([^\]]*)\]", re.IGNORECASE)
+
+
+def _suggested_tools(error_text: str) -> set[str]:
+    """Tool names LangGraph's ToolNode suggests after an unknown-tool call."""
+    m = _SUGGESTED_RE.search(error_text or "")
+    if not m:
+        return set()
+    return {t.strip().strip("'\"") for t in m.group(1).split(",") if t.strip()}
+
+
 def detect(ctx: CoordinationDetectorContext) -> list[FailureRecord]:
     msgs = conversation(ctx)
     if not msgs:
@@ -133,15 +144,23 @@ def detect(ctx: CoordinationDetectorContext) -> list[FailureRecord]:
         if final_answer is None:
             continue
 
+        # A call to a tool that does not exist is answered by the ToolNode
+        # with "X is not a valid tool, try one of [a, b]". Calling one of the
+        # suggested tools afterwards IS the retry — the model fixed its own
+        # tool name. (Live, gpt-4o-mini: renamed web_search call → error →
+        # correct web_search call → grounded answer; counting only same-name
+        # retries reported that recovery as a silent failure 3/3.)
+        retry_names = {tool} | _suggested_tools(m.text)
+
         acknowledged = False
         bystander_hedge: Msg | None = None  # weak ack from someone else
         for x in later:
-            if x.role == "ai" and any(str(tc.get("name") or "") == tool for tc in x.tool_calls):
+            if x.role == "ai" and any(str(tc.get("name") or "") in retry_names for tc in x.tool_calls):
                 acknowledged = True  # retried
                 break
             if x.role == "tool" and not x.is_error_result:
                 c = result_to_call.get(x.index)
-                if c is not None and any(str(tc.get("name") or "") == tool for tc in c.tool_calls):
+                if c is not None and any(str(tc.get("name") or "") in retry_names for tc in c.tool_calls):
                     acknowledged = True  # a later success for the same tool
                     break
             if x.role == "ai" and x.text.strip():

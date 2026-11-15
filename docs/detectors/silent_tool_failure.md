@@ -41,7 +41,12 @@ detector can answer the pre-deploy question directly: when a dependency
 fails, does your graph tell anyone?
 
 **Deliberately NOT flagged:**
-- The agent **retries** the tool, whether or not the retry succeeds.
+- The agent **retries** the tool, whether or not the retry succeeds. When
+  the failed call named a tool that does not exist, LangGraph's ToolNode
+  answers "X is not a valid tool, try one of [a, b]"; calling one of the
+  suggested tools afterwards counts as the retry — the model corrected
+  its own tool name. (Found live: gpt-4o-mini under `model_unknown_tool`
+  recovered 3/3 and was reported as a silent failure until this rule.)
 - A later **successful** result from the same tool lands.
 - The final answer **mentions** the failure in any recognisable way —
   even a hedge like "I couldn't verify this" counts as surfacing it.
