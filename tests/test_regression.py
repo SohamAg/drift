@@ -6,6 +6,8 @@ of attributes, and duck-typing keeps these tests from needing a real graph.
 """
 from __future__ import annotations
 
+import pytest
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -299,3 +301,14 @@ def test_snapshot_from_result_records_rollout_fields():
     assert snap.n_perturbations == len(res.perturbations)
     assert snap.perturbation_rollouts == 2 and snap.n_intermittent == 0
     assert snap.rate_denominator == len(res.perturbations)
+
+
+def test_compare_ignores_millisecond_runtime_jitter() -> None:
+    # +300% of 3 ms is scheduler noise, not a slower graph.
+    previous = snapshot_from_result(_Result(perturbations=[_Perturbation(duration_s=0.003)]), "g")
+    previous.timestamp = 1.0
+    current = snapshot_from_result(_Result(perturbations=[_Perturbation(duration_s=0.012)]), "g")
+    current.timestamp = 2.0
+    report = compare(current, [previous])
+    assert report.duration_delta_pct == pytest.approx(3.0)  # still reported as a number…
+    assert not report.is_regression           # …but not flagged

@@ -37,6 +37,12 @@ DEFAULT_HISTORY_DIR = Path("results") / "_history"
 CRASH_RATE_REGRESSION_THRESHOLD = 0.05
 DIVERGE_RATE_REGRESSION_THRESHOLD = 0.10
 DURATION_REGRESSION_THRESHOLD_PCT = 0.50
+# ...and the mean must also have grown by at least this many seconds. On a
+# deterministic graph a perturbation takes a few milliseconds, where
+# scheduler jitter alone is +200% between identical runs (seen: +237%,
+# +281%, +296% on ticket_triage, failing the "second run doesn't regress"
+# test ~1 run in 3). A relative threshold alone measures the OS, not the graph.
+DURATION_REGRESSION_MIN_DELTA_S = 0.5
 
 
 @dataclass
@@ -269,7 +275,9 @@ def compare(current: RunSnapshot, history: list[RunSnapshot]) -> RegressionRepor
         flags.append(
             RegressionFlag("regression", f"divergence rate up {diverge_delta:+.0%} vs last run")
         )
-    if duration_pct is not None and duration_pct > DURATION_REGRESSION_THRESHOLD_PCT:
+    duration_delta_s = current.mean_perturbation_duration_s - previous.mean_perturbation_duration_s
+    if (duration_pct is not None and duration_pct > DURATION_REGRESSION_THRESHOLD_PCT
+            and duration_delta_s >= DURATION_REGRESSION_MIN_DELTA_S):
         flags.append(
             RegressionFlag(
                 "regression", f"mean perturbation runtime up {duration_pct:+.0%} vs last run"
