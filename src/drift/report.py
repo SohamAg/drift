@@ -587,10 +587,13 @@ def _render_scenarios(questions: list[dict]) -> str:
                 f' <span class="chip chip-quiet">{_e(p["fault_class"])}</span>'
                 if p.get("fault_class") else ""
             )
-            if p.get("fault_layer") == "tool":
-                fault += (' <span class="chip chip-warning">tool · did not fire</span>'
-                          if p.get("fault_fired") is False else ' <span class="chip chip-quiet">tool</span>')
-            if p.get("chaos_timing") == "mid_run":
+            layer = p.get("fault_layer") or "state"
+            if layer != "state":
+                label = {"tool": "tool", "model": "model", "flow": "control flow"}.get(layer, layer)
+                not_run = "did not fire" if layer == "tool" else "not applied"
+                fault += (f' <span class="chip chip-warning">{_e(label)} · {not_run}</span>'
+                          if p.get("fault_fired") is False else f' <span class="chip chip-quiet">{_e(label)}</span>')
+            if p.get("chaos_timing") == "mid_run" and p.get("fault_fired") is not False:
                 fault += f' <span class="chip chip-quiet">mid-run @ {_e(str(p.get("fork_step")))}</span>'
             pert_rows.append(
                 "<tr>"
@@ -601,7 +604,7 @@ def _render_scenarios(questions: list[dict]) -> str:
             )
         table = (
             '<div class="table-wrap"><table>'
-            "<thead><tr><th>Chaos event (auto-derived from state schema)</th>"
+            "<thead><tr><th>Chaos event (derived from the state schema, tools and nodes)</th>"
             "<th>Outcome</th><th>Findings</th></tr></thead>"
             f'<tbody>{"".join(pert_rows) or "<tr><td colspan=3>baseline only</td></tr>"}</tbody>'
             "</table></div>"
@@ -717,9 +720,10 @@ def render_report(
 <h1>{_e(title)}</h1>
 <p class="subtitle">
   Adversarial simulation report for a multi-agent system. Chaos events are
-  derived automatically from the system's own state schema; failures are
-  detected by a coordination-failure taxonomy judge; counterfactual claims
-  are verified by fork-edit-replay.
+  derived automatically from the system's own state schema, tools and
+  nodes; failures are detected by a deterministic coordination-failure
+  detector library and the team's own rules, plus an LLM judge when one was
+  enabled; counterfactual claims are verified by fork-edit-replay.
 </p>
 
 <dl class="meta-grid">{meta_html}</dl>

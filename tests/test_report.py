@@ -308,3 +308,15 @@ def test_methodology_states_the_timing_actually_used(tmp_path: Path) -> None:
     p.write_text(json.dumps(d), encoding="utf-8")
     text = write_report(p).read_text(encoding="utf-8")
     assert "applied mid-run" in text and "applied to the initial state" not in text
+
+
+def test_report_labels_model_and_flow_layers(tmp_path: Path) -> None:
+    d = json.loads(json.dumps(SHAPED_CRASH))
+    d["perturbations"][0].update(fault_layer="flow", fault_fired=True, chaos_timing="mid_run", fork_step=0)
+    d["perturbations"][1].update(fault_layer="model", fault_fired=False, chaos_timing="mid_run")
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(d), encoding="utf-8")
+    text = write_report(p).read_text(encoding="utf-8")
+    assert ">control flow<" in text and "mid-run @ 0" in text
+    assert "model · not applied" in text
+    assert "taxonomy judge" not in text  # the old subtitle overstated the judge's role
