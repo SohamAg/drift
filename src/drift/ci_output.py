@@ -23,12 +23,14 @@ elsewhere.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape, quoteattr
 
 from drift.gate import GateReport
 
-__all__ = ["to_junit"]
+__all__ = ["to_junit", "to_markdown", "write_github_step_summary"]
 
 def _outcome(p: dict) -> str:
     if p.get("crashed"):
@@ -124,3 +126,78 @@ def to_junit(shaped: dict[str, Any], report: GateReport, *, suite_name: str | No
     lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<testsuites>", "  " + head,
              f"    <properties>{prop_xml}</properties>", *cases, "  </testsuite>", "</testsuites>"]
     return "\n".join(lines) + "\n"
+
+
+def _md_cell(text: Any, limit: int = 140) -> str:
+    s = " ".join(str(text or "").split()).replace("|", "\\|")
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def to_markdown(shaped: dict[str, Any], report: GateReport) -> str:
+    """A GitHub-flavoured Markdown summary of the run and the gate."""
+    perts: list[dict] = list(shaped.get("perturbations") or [])
+    graph = shaped.get("graph_name") or "graph"
+    if not report.rules:
+        verdict = "⚪ no gate rules"
+    elif report.passed:
+        verdict = "✅ PASS"
+    else:
+        verdict = "❌ FAIL"
+    n_crash = sum(1 for p in perts if p.get("crashed"))
+    n_div = sum(1 for p in perts if p.get("diverged") and not p.get("crashed"))
+    n_find = sum(len(p.get("coordination_findings") or []) for p in perts) + len(
+        (shaped.get("baseline") or {}).get("coordination_findings") or []
+    )
+    out = [
+        f"## drift · `{graph}` — {verdict}",
+        "",
+        f"{len(perts)} perturbation(s) · {n_crash} crashed · {n_div} diverged · {n_find} coordination finding(s)"
+        f" · intensity `{shaped.get('intensity')}` · timing `{shaped.get('chaos_timing', 'initial')}`"
+        f" · seed `{shaped.get('seed')}`",
+        "",
+    ]
+    if report.rules:
+        out.append("**Gate rules:** " + ", ".join(f"`{r}`" for r in report.rules))
+        out.append("")
+    if report.violations:
+        out.append("| Violated rule | What happened |")
+        out.append("|---|---|")
+        for v in report.violations:
+            out.append(f"| `{v.rule}` | {_md_cell(v.summary, 200)} |")
+        out.append("")
+    base = shaped.get("baseline") or {}
+    if base.get("crashed") or base.get("coordination_findings"):
+        out.append("**Baseline (no chaos):** " + (
+            f"crashed — {_md_cell(base.get('error_type'))}" if base.get("crashed")
+            else ", ".join(f"`{f.get('failure_type')}`" for f in base["coordination_findings"])
+        ))
+        out.append("")
+    if perts:
+        flagged = {n for v in report.violations for n in v.perturbations}
+        out.append("<details><summary>Every perturbation</summary>\n")
+        out.append("| | Perturbation | Outcome | Findings |")
+        out.append("|---|---|---|---|")
+        order = sorted(perts, key=lambda p: (0 if p.get("event_name") in flagged else 1,
+                                             0 if p.get("crashed") else 1 if p.get("diverged") else 2))
+        for p in order:
+            mark = "❌" if p.get("event_name") in flagged else ("⚠️" if p.get("crashed") or p.get("diverged") else "·")
+            outcome = _outcome(p)
+            if (p.get("n_rollouts") or 1) > 1:
+                outcome += f" ({p.get('outcome_label', '')})"
+            finds = ", ".join(f"`{f.get('failure_type')}`" for f in p.get("coordination_findings") or []) or "—"
+            out.append(f"| {mark} | `{_md_cell(p.get('event_name'), 80)}` | {_md_cell(outcome)} | {finds} |")
+        out.append("\n</details>")
+        out.append("")
+    return "\n".join(out) + "\n"
+
+
+def write_github_step_summary(markdown: str, env: dict[str, str] | None = None) -> Path | None:
+    """Append to ``$GITHUB_STEP_SUMMARY`` when running inside GitHub Actions.
+    Returns the path written, or None when the variable is unset."""
+    target = (env if env is not None else os.environ).get("GITHUB_STEP_SUMMARY")
+    if not target:
+        return None
+    path = Path(target)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(markdown)
+    return path

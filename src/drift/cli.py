@@ -234,7 +234,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def _write_ci_outputs(args: argparse.Namespace, shaped: dict, report) -> None:
-    """--junit: JUnit XML of the run + gate, for CI test-report panes."""
+    """--junit (JUnit XML) and --summary (Markdown) renderings of run + gate.
+    Inside GitHub Actions the Markdown is also appended to
+    $GITHUB_STEP_SUMMARY unless --no-step-summary."""
     junit = getattr(args, "junit", None)
     if junit:
         from drift.ci_output import to_junit
@@ -242,6 +244,18 @@ def _write_ci_outputs(args: argparse.Namespace, shaped: dict, report) -> None:
         out = Path(junit)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(to_junit(shaped, report), encoding="utf-8")
+    summary = getattr(args, "summary", None)
+    no_step_summary = getattr(args, "no_step_summary", False)
+    if summary or (os.environ.get("GITHUB_STEP_SUMMARY") and not no_step_summary):
+        from drift.ci_output import to_markdown, write_github_step_summary
+
+        md = to_markdown(shaped, report)
+        if summary:
+            out = Path(summary)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(md, encoding="utf-8")
+        if not no_step_summary:
+            write_github_step_summary(md)
 
 
 def _print_run(shaped: dict, took: float) -> None:
@@ -488,6 +502,10 @@ def main(argv: list[str] | None = None) -> int:
                        help="gate rule(s), comma-separable and repeatable: crash, recursion_limit, diverge, "
                             "intermittent, finding, finding:<type>, baseline_finding, guideline, judge, "
                             "max_crash_rate=<0..1>, max_diverge_rate=<0..1>")
+    run_p.add_argument("--summary", default=None, metavar="PATH",
+                       help="write a Markdown summary (also appended to $GITHUB_STEP_SUMMARY when set)")
+    run_p.add_argument("--no-step-summary", action="store_true",
+                       help="don't append to $GITHUB_STEP_SUMMARY inside GitHub Actions")
     run_p.add_argument("--junit", default=None, metavar="PATH",
                        help="write JUnit XML (one testcase per perturbation; gate violations are failures)")
     run_p.add_argument("--track-history", action="store_true",
@@ -500,6 +518,10 @@ def main(argv: list[str] | None = None) -> int:
     gate_p.add_argument("--fail-on", action="append", required=True,
                         help="same rules as `drift run --fail-on`")
 
+    gate_p.add_argument("--summary", default=None, metavar="PATH",
+                       help="write a Markdown summary (also appended to $GITHUB_STEP_SUMMARY when set)")
+    gate_p.add_argument("--no-step-summary", action="store_true",
+                       help="don't append to $GITHUB_STEP_SUMMARY inside GitHub Actions")
     gate_p.add_argument("--junit", default=None, metavar="PATH", help="write JUnit XML of the gate verdict")
 
     tgt_p = sub.add_parser("targets", help="list the registry of real third-party MAS for --target")
