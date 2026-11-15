@@ -33,6 +33,14 @@ inputs:
     description: "initial | mid_run — where state chaos lands."
     required: false
     default: "initial"
+  model-chaos:
+    description: "'true' adds model-layer faults: the model's tool calls corrupted, duplicated or dropped at a checkpoint (docs/checkpoint_chaos.md)."
+    required: false
+    default: "false"
+  flow-chaos:
+    description: "'true' adds control-flow faults: a node silently does not run (skip_node)."
+    required: false
+    default: "false"
   seed:
     description: "Chaos seed. Keep it fixed so --against can match perturbations by name."
     required: false
@@ -111,6 +119,8 @@ runs:
         IN_AGAINST: ${{ inputs.against }}
         IN_TIMING: ${{ inputs.timing }}
         IN_SEED: ${{ inputs.seed }}
+        IN_MODEL: ${{ inputs.model-chaos }}
+        IN_FLOW: ${{ inputs.flow-chaos }}
         IN_ARGS: ${{ inputs.args }}
         IN_JSON: ${{ inputs.results-path }}
         IN_JUNIT: ${{ inputs.junit-path }}
@@ -122,6 +132,8 @@ runs:
               --json "$IN_JSON" --junit "$IN_JUNIT")
         [ -n "$IN_FAIL_ON" ] && cmd+=(--fail-on "$IN_FAIL_ON")
         [ -n "$IN_AGAINST" ] && cmd+=(--against "$IN_AGAINST")
+        [ "$IN_MODEL" = "true" ] && cmd+=(--model-chaos)
+        [ "$IN_FLOW" = "true" ] && cmd+=(--flow-chaos)
         # shellcheck disable=SC2206  # word-splitting of free-form args is intended
         [ -n "$IN_ARGS" ] && cmd+=($IN_ARGS)
         echo "::group::${cmd[*]}"

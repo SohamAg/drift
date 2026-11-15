@@ -105,7 +105,7 @@ The repo root is a composite action:
 It runs `drift run`, writes `drift-results.json` and `drift-junit.xml`,
 uploads both as the `drift-results` artifact, puts a summary on the job
 page, and sets `outputs.passed`. Inputs: `graph` or `target`, `preset`,
-`fail-on`, `against`, `timing`, `seed`, `args` (extra `drift run`
+`fail-on`, `against`, `timing`, `model-chaos`, `flow-chaos`, `seed`, `args` (extra `drift run`
 flags), `results-path`, `junit-path`, `python-version` (empty = use the
 runner's), `install` (a pip requirement for drift; default is the
 action's own checkout), `extras`, `upload-artifact`.

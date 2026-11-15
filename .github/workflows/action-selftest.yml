@@ -52,3 +52,29 @@ jobs:
           test "${{ steps.drift.outputs.passed }}" = "false"
           grep -q 'type="drift.gate"' drift-junit.xml
           grep -q 'priority' drift-junit.xml
+
+  flow-chaos-finds-the-unchecked-handoff:
+    # skip_node[triage] leaves `priority` empty and reply() trusts it: a crash
+    # only control-flow chaos can produce (the input is untouched).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: drift
+        continue-on-error: true
+        uses: ./
+        with:
+          graph: examples.ci.demo_app
+          flow-chaos: "true"
+          fail-on: crash
+          args: --intensity exhaustive --max-perturbations 20
+          extras: langgraph
+          upload-artifact: "false"
+      - name: Expect skip_node[triage] among the crashes
+        run: |
+          test "${{ steps.drift.outputs.passed }}" = "false"
+          python - <<'PY'
+          import xml.etree.ElementTree as E
+          s = E.parse("drift-junit.xml").getroot().find("testsuite")
+          failing = [c.get("name") for c in s.findall("testcase") if c.find("failure") is not None]
+          assert "AutoChaos.skip_node[triage]" in failing, failing
+          PY
