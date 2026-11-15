@@ -4,6 +4,30 @@ Dated, one entry per shipped change. Newest first. Each entry says what
 changed and, where a live run informed it, what the run showed — numbers
 are rates over N rollouts, not verdicts.
 
+## Unreleased — 2026-11-15 (after 0.4.0)
+
+### Added
+- **GitHub Action inputs `model-chaos` / `flow-chaos`.** A third self-test job
+  runs flow chaos on `examples/ci/demo_app` and requires
+  `AutoChaos.skip_node[triage]` among the JUnit failures. It is green on GitHub.
+- **Web Gate panel: compare against a saved run.** It picks one of the 60
+  newest saved results and sends it as `previous`, so `new_finding` /
+  `new_crash` / `regression` work in the browser as `drift gate --against`
+  does. The CLI line appends `--against`.
+
+### Fixed
+- The evidence report labels model and control-flow faults ("· not applied"
+  when they never landed, no mid-run step claimed for those). Its subtitle no
+  longer says failures are "detected by a coordination-failure taxonomy judge":
+  detection is the deterministic library plus drift.yml rules, and the judge is
+  optional.
+
+### Known
+- `new_crash` matches perturbations by event name, so a crash on a perturbation
+  that did not exist in the previous run (for example after turning on
+  `--flow-chaos`) is not counted as new. That is by design: it is not a
+  regression of a known input. `new_finding` still catches any new finding type.
+
 ## 0.4.0 — 2026-11-15
 
 ### Added
