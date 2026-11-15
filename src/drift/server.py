@@ -296,6 +296,8 @@ class GateRequest(BaseModel):
     """Evaluate `drift gate` rules against a shaped result dict."""
     result: dict[str, Any]
     rules: list[str] = Field(default_factory=list)
+    # Earlier shaped result for new_finding / new_crash / regression.
+    previous: dict[str, Any] | None = None
 
 
 class SuiteRunRequest(BaseModel):
@@ -954,7 +956,7 @@ def create_app() -> FastAPI:
             rules = parse_rules(req.rules)
         except ValueError as e:
             raise HTTPException(400, str(e))
-        report = evaluate(req.result, rules)
+        report = evaluate(req.result, rules, previous=req.previous)
         return {
             "passed": report.passed,
             "rules": report.rules,
@@ -963,6 +965,7 @@ def create_app() -> FastAPI:
                 {"rule": v.rule, "summary": v.summary, "perturbations": v.perturbations}
                 for v in report.violations
             ],
+            "notes": report.notes,
             "lines": report.lines(),
         }
 

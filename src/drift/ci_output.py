@@ -159,6 +159,9 @@ def to_markdown(shaped: dict[str, Any], report: GateReport) -> str:
     if report.rules:
         out.append("**Gate rules:** " + ", ".join(f"`{r}`" for r in report.rules))
         out.append("")
+    for note in report.notes:
+        out.append(f"> {note}")
+        out.append("")
     if report.violations:
         out.append("| Violated rule | What happened |")
         out.append("|---|---|")

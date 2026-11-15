@@ -20,6 +20,19 @@ express is a gate nobody will trust at 2am:
     max_crash_rate=<0..1> crashed / perturbations above this fraction
     max_diverge_rate=<0..1>
 
+Against a previous result (`--against previous.json`, e.g. main's last run):
+
+    new_finding           a coordination-finding type fires now that did not before
+    new_crash             a perturbation crashes now that ran clean before (matched
+                          by event name, so keep --seed fixed), or the baseline
+                          newly crashes
+    regression            anything drift.regression.compare flags as a regression:
+                          new finding types, crash rate up >5pp, divergence rate up
+                          >10pp, mean runtime up >50%, more intermittent outcomes
+
+With no previous result those three are skipped with a note, not failed:
+the first run on a branch has nothing to regress against.
+
 Thresholds are fractions of scheduled perturbations, not of the schema's
 pattern count, so a run with `max_perturbations=4` is judged on those 4.
 
@@ -58,6 +71,8 @@ SIMPLE_RULES = (
     "crash", "recursion_limit", "diverge", "intermittent", "finding",
     "baseline_finding", "guideline", "judge",
 )
+#: Rules that compare against a previous result (evaluate(previous=...)).
+AGAINST_RULES = ("new_finding", "new_crash", "regression")
 RATE_RULES = ("max_crash_rate", "max_diverge_rate")
 
 
@@ -78,17 +93,21 @@ class GateReport:
     rules: list[str]
     violations: list[Violation]
     n_perturbations: int
+    # Informational lines (e.g. regression rules skipped for want of a
+    # previous result). Never affect pass/fail.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
         return not self.violations
 
     def lines(self) -> list[str]:
+        notes = [f"gate: note — {n}" for n in self.notes]
         if not self.rules:
             return ["gate: no rules given — nothing to fail on (use --fail-on)"]
         if self.passed:
-            return [f"gate: PASS ({len(self.rules)} rule(s), {self.n_perturbations} perturbation(s))"]
-        out = [f"gate: FAIL — {len(self.violations)} rule(s) violated"]
+            return notes + [f"gate: PASS ({len(self.rules)} rule(s), {self.n_perturbations} perturbation(s))"]
+        out = notes + [f"gate: FAIL — {len(self.violations)} rule(s) violated"]
         for v in self.violations:
             out.append(f"  [{v.rule}] {v.summary}")
             for name in v.perturbations[:8]:
@@ -114,7 +133,7 @@ def parse_rules(specs: list[str] | None) -> list[str]:
 
 
 def _validate_rule(tok: str) -> None:
-    if tok in SIMPLE_RULES:
+    if tok in SIMPLE_RULES or tok in AGAINST_RULES:
         return
     if tok.startswith("finding:") and tok[len("finding:"):].strip():
         return
@@ -128,7 +147,7 @@ def _validate_rule(tok: str) -> None:
                 raise ValueError(f"{tok!r}: rate must be between 0 and 1")
             return
     raise ValueError(
-        f"unknown gate rule {tok!r}; valid: {', '.join(SIMPLE_RULES)}, finding:<type>, "
+        f"unknown gate rule {tok!r}; valid: {', '.join(SIMPLE_RULES + AGAINST_RULES)}, finding:<type>, "
         f"{', '.join(r + '=<0..1>' for r in RATE_RULES)}"
     )
 
@@ -137,8 +156,10 @@ def _finding_types(findings: list[dict] | None) -> list[str]:
     return [str(f.get("failure_type", "")) for f in (findings or [])]
 
 
-def evaluate(shaped: dict[str, Any], rules: list[str]) -> GateReport:
-    """Apply `rules` to a shaped result dict (web/CLI JSON shape)."""
+def evaluate(shaped: dict[str, Any], rules: list[str], previous: dict[str, Any] | None = None) -> GateReport:
+    """Apply `rules` to a shaped result dict (web/CLI JSON shape). `previous`
+    is an earlier shaped result for the new_finding / new_crash / regression
+    rules; without it those rules are skipped with a note."""
     perts: list[dict] = list(shaped.get("perturbations") or [])
     baseline: dict = dict(shaped.get("baseline") or {})
     n = len(perts)
@@ -232,7 +253,47 @@ def evaluate(shaped: dict[str, Any], rules: list[str]) -> GateReport:
             rate = len(hit) / n if n else 0.0
             if rate > limit:
                 violations.append(Violation(rule, f"divergence rate {rate:.0%} > {limit:.0%}", hit))
-    return GateReport(rules=list(rules), violations=violations, n_perturbations=n)
+    notes: list[str] = []
+    against = [r for r in rules if r in AGAINST_RULES]
+    if against and previous is None:
+        notes.append(f"{', '.join(against)} skipped — no previous result to compare against (--against)")
+    elif against:
+        violations.extend(_against_violations(shaped, previous, against))
+    return GateReport(rules=list(rules), violations=violations, n_perturbations=n, notes=notes)
 
 
-__all__ = ["PRESETS", "GateReport", "Violation", "evaluate", "parse_rules"]
+def _against_violations(shaped: dict, previous: dict, rules: list[str]) -> list[Violation]:
+    from drift.regression import compare, snapshot_from_shaped
+
+    sig = str(shaped.get("graph_name") or "graph")
+    cur = snapshot_from_shaped(shaped, sig, timestamp=1.0)
+    prev = snapshot_from_shaped(previous, sig, timestamp=0.0)
+    out: list[Violation] = []
+    perts = list(shaped.get("perturbations") or [])
+    if "new_finding" in rules:
+        new = sorted(set(cur.coordination_finding_types) - set(prev.coordination_finding_types))
+        if new:
+            hit = [str(p.get("event_name", "?")) for p in perts
+                   if set(_finding_types(p.get("coordination_findings"))) & set(new)]
+            in_base = bool(set(_finding_types((shaped.get("baseline") or {}).get("coordination_findings"))) & set(new))
+            out.append(Violation("new_finding", f"finding type(s) not in the previous run: {', '.join(new)}",
+                                 hit, baseline=in_base))
+    if "new_crash" in rules:
+        before = {str(p.get("event_name")): bool(p.get("crashed")) for p in previous.get("perturbations") or []}
+        hit = [str(p.get("event_name")) for p in perts
+               if p.get("crashed") and before.get(str(p.get("event_name"))) is False]
+        base_new = bool((shaped.get("baseline") or {}).get("crashed")) and not (previous.get("baseline") or {}).get("crashed")
+        if hit or base_new:
+            what = f"{len(hit)} perturbation(s) crash that ran clean before" if hit else ""
+            if base_new:
+                what = (what + " and " if what else "") + "the baseline now crashes"
+            out.append(Violation("new_crash", what, hit, baseline=base_new))
+    if "regression" in rules:
+        rep = compare(cur, [prev])
+        bad = [f.summary for f in rep.flags if f.severity in ("crash", "regression")]
+        if bad:
+            out.append(Violation("regression", "; ".join(bad), baseline=cur.baseline_crashed and not prev.baseline_crashed))
+    return out
+
+
+__all__ = ["AGAINST_RULES", "PRESETS", "GateReport", "Violation", "evaluate", "parse_rules"]

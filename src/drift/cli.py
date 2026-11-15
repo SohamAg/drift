@@ -219,7 +219,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(shaped, indent=1, default=str), encoding="utf-8")
 
-    report = evaluate(shaped, rules)
+    report = evaluate(shaped, rules, previous=_load_against(args))
     _write_ci_outputs(args, shaped, report)
     if not args.quiet:
         _print_run(shaped, took)
@@ -231,6 +231,27 @@ def cmd_run(args: argparse.Namespace) -> int:
         for line in report.lines():
             print(line)
     return 0 if report.passed else 1
+
+
+def _load_against(args: argparse.Namespace) -> dict | None:
+    """--against PATH: an earlier result for new_finding / new_crash /
+    regression. A missing file is not an error (the first run on a branch has
+    nothing to compare against — the gate notes it); an unreadable one is."""
+    import json
+
+    spec = getattr(args, "against", None)
+    if not spec:
+        return None
+    path = Path(spec)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"--against {path}: {e}")
+    if not isinstance(data, dict) or "perturbations" not in data:
+        raise SystemExit(f"--against {path}: not a drift result (no 'perturbations' key)")
+    return data
 
 
 def _write_ci_outputs(args: argparse.Namespace, shaped: dict, report) -> None:
@@ -347,7 +368,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
         raise SystemExit(f"could not read {path}: {e}")
     if not isinstance(shaped, dict) or "perturbations" not in shaped:
         raise SystemExit(f"{path} is not a drift result (no 'perturbations' key) — pass `drift run --json` output")
-    report = evaluate(shaped, rules)
+    report = evaluate(shaped, rules, previous=_load_against(args))
     _write_ci_outputs(args, shaped, report)
     for line in report.lines():
         print(line)
@@ -502,6 +523,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="gate rule(s), comma-separable and repeatable: crash, recursion_limit, diverge, "
                             "intermittent, finding, finding:<type>, baseline_finding, guideline, judge, "
                             "max_crash_rate=<0..1>, max_diverge_rate=<0..1>")
+    run_p.add_argument("--against", default=None, metavar="PREVIOUS.json",
+                       help="earlier result for the new_finding / new_crash / regression rules")
     run_p.add_argument("--summary", default=None, metavar="PATH",
                        help="write a Markdown summary (also appended to $GITHUB_STEP_SUMMARY when set)")
     run_p.add_argument("--no-step-summary", action="store_true",
@@ -518,6 +541,8 @@ def main(argv: list[str] | None = None) -> int:
     gate_p.add_argument("--fail-on", action="append", required=True,
                         help="same rules as `drift run --fail-on`")
 
+    gate_p.add_argument("--against", default=None, metavar="PREVIOUS.json",
+                        help="earlier result for the new_finding / new_crash / regression rules")
     gate_p.add_argument("--summary", default=None, metavar="PATH",
                        help="write a Markdown summary (also appended to $GITHUB_STEP_SUMMARY when set)")
     gate_p.add_argument("--no-step-summary", action="store_true",

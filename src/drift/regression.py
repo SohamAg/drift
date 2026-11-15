@@ -122,6 +122,44 @@ def snapshot_from_result(result: Any, graph_signature: str) -> RunSnapshot:
     )
 
 
+def snapshot_from_shaped(shaped: dict[str, Any], graph_signature: str | None = None,
+                         timestamp: float | None = None) -> RunSnapshot:
+    """RunSnapshot from a shaped result dict (`drift run --json`, the web UI's
+    saved runs) — what `drift gate --against previous.json` compares. Counts
+    are recomputed from the perturbation list so hand-trimmed or older files
+    still compare on the same footing."""
+    perts = list(shaped.get("perturbations") or [])
+    base = dict(shaped.get("baseline") or {})
+    finding_types: Counter[str] = Counter()
+    for f in base.get("coordination_findings") or []:
+        finding_types[f.get("failure_type", "unknown")] += 1
+    for p in perts:
+        for f in p.get("coordination_findings") or []:
+            finding_types[f.get("failure_type", "unknown")] += 1
+    durations = [float(p.get("duration_s") or 0.0) for p in perts]
+    n_crashed = sum(1 for p in perts if p.get("crashed"))
+    n_diverged = sum(1 for p in perts if p.get("diverged") and not p.get("crashed"))
+    return RunSnapshot(
+        graph_signature=graph_signature or str(shaped.get("graph_name") or "graph"),
+        timestamp=time.time() if timestamp is None else timestamp,
+        intensity=str(shaped.get("intensity") or ""),
+        patterns_total=int(shaped.get("patterns_total") or len(perts)),
+        n_crashed=n_crashed,
+        n_diverged=n_diverged,
+        n_unchanged=len(perts) - n_crashed - n_diverged,
+        n_judge_findings=int(shaped.get("n_judge_findings") or 0),
+        n_coordination_findings=sum(finding_types.values()),
+        coordination_finding_types=dict(finding_types),
+        judge_calls_used=int(shaped.get("judge_calls_used") or 0),
+        baseline_duration_s=float(base.get("duration_s") or 0.0),
+        mean_perturbation_duration_s=(sum(durations) / len(durations)) if durations else 0.0,
+        baseline_crashed=bool(base.get("crashed")),
+        n_perturbations=len(perts),
+        perturbation_rollouts=int(shaped.get("perturbation_rollouts") or 1),
+        n_intermittent=sum(1 for p in perts if p.get("is_intermittent")),
+    )
+
+
 def _history_path(graph_signature: str, history_dir: Path = DEFAULT_HISTORY_DIR) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", graph_signature).strip("_") or "graph"
     return Path(history_dir) / f"{safe}.jsonl"
