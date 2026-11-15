@@ -207,26 +207,6 @@ def evaluate(shaped: dict[str, Any], rules: list[str]) -> GateReport:
                              | {t.split(":", 1)[1] for t in base})
                 where = f"{len(hit)}/{n} perturbation(s)" + (" and the baseline" if base else "")
                 violations.append(Violation(rule, f"guideline rule(s) {', '.join(ids)} violated on {where}", hit))
-        elif rule == "guideline":
-            def _gl(findings: list[dict] | None) -> list[str]:
-                return [t for t in _finding_types(findings) if t.startswith("guideline:")]
-            hit = names(lambda p: _gl(p.get("coordination_findings")))
-            base = _gl(baseline.get("coordination_findings"))
-            if hit or base:
-                ids = sorted({t.split(":", 1)[1] for p in perts for t in _gl(p.get("coordination_findings"))}
-                             | {t.split(":", 1)[1] for t in base})
-                where = f"{len(hit)}/{n} perturbation(s)" + (" and the baseline" if base else "")
-                violations.append(Violation(rule, f"guideline rule(s) {', '.join(ids)} violated on {where}", hit))
-        elif rule == "guideline":
-            def _gl(findings: list[dict] | None) -> list[str]:
-                return [t for t in _finding_types(findings) if t.startswith("guideline:")]
-            hit = names(lambda p: _gl(p.get("coordination_findings")))
-            base = _gl(baseline.get("coordination_findings"))
-            if hit or base:
-                ids = sorted({t.split(":", 1)[1] for p in perts for t in _gl(p.get("coordination_findings"))}
-                             | {t.split(":", 1)[1] for t in base})
-                where = f"{len(hit)}/{n} perturbation(s)" + (" and the baseline" if base else "")
-                violations.append(Violation(rule, f"guideline rule(s) {', '.join(ids)} violated on {where}", hit))
         elif rule == "judge":
             hit = names(lambda p: p.get("judge_findings"))
             base = baseline.get("judge_findings") or []

@@ -433,3 +433,22 @@ def test_server_accepts_rules_yaml_and_rejects_a_bad_one():
     assert r.status_code == 400 and "exactly one of" in r.json()["detail"]
     r = client.post("/api/gate", json={"result": data, "rules": ["guideline"]})
     assert r.status_code == 200 and r.json()["passed"] is False
+
+
+def test_gate_reports_each_rule_at_most_once():
+    """Every rule yields ≤1 violation even when everything fires — guards
+    against copy-pasted rule branches (the guideline branch once existed 3×)."""
+    finding = {"failure_type": "guideline:no-email", "summary": "x"}
+    shaped = {
+        "baseline": {"coordination_findings": [finding], "judge_findings": [{"failure_type": "j"}]},
+        "perturbations": [{
+            "event_name": "p0", "crashed": True, "crash_class": "recursion_limit", "diverged": True,
+            "is_intermittent": True, "coordination_findings": [finding],
+            "judge_findings": [{"failure_type": "j"}],
+        }],
+    }
+    rules = list(gate.SIMPLE_RULES) + ["finding:guideline:no-email", "max_crash_rate=0", "max_diverge_rate=0"]
+    report = gate.evaluate(shaped, rules)
+    got = [v.rule for v in report.violations]
+    assert len(got) == len(set(got))
+    assert "guideline" in got
