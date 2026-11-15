@@ -4,6 +4,7 @@
                                      print the verdicts, optionally write the
                                      JSON the web UI reads and fail the build
     drift gate <results.json>        apply pass/fail rules to a saved result
+    drift init [<module[:build_fn]>] scaffold drift.yml + a GitHub workflow
     drift targets                    list the registry of real third-party MAS
                                      usable with `drift run --target NAME`
     drift serve                      the local web UI
@@ -375,6 +376,28 @@ def cmd_gate(args: argparse.Namespace) -> int:
     return 0 if report.passed else 1
 
 
+def cmd_init(args: argparse.Namespace) -> int:
+    from drift.scaffold import init
+
+    res = init(args.directory, graph=args.graph or "", initial_state_fn=args.initial_state_fn,
+               force=args.force, workflow=not args.no_workflow, rules=not args.no_rules)
+    f = res.facts
+    if args.graph:
+        if f.error:
+            print(f"note: could not import {args.graph} ({f.error}) — wrote the generic templates")
+        else:
+            print(f"inspected {args.graph}: {len(f.nodes)} node(s), {len(f.tools)} tool(s), "
+                  f"{len(f.state_fields)} state field(s)")
+    for p in res.written:
+        print(f"wrote   {p}")
+    for p in res.skipped:
+        print(f"exists  {p}  (left alone; --force to overwrite)")
+    if res.written:
+        print("next:    edit drift.yml, then `drift run "
+              f"{args.graph or 'my_app.graph:build'} --fail-on crash,guideline`")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     try:
         from drift.server import serve
@@ -549,6 +572,15 @@ def main(argv: list[str] | None = None) -> int:
                        help="don't append to $GITHUB_STEP_SUMMARY inside GitHub Actions")
     gate_p.add_argument("--junit", default=None, metavar="PATH", help="write JUnit XML of the gate verdict")
 
+    init_p = sub.add_parser("init", help="scaffold drift.yml and a GitHub workflow into this repo")
+    init_p.add_argument("graph", nargs="?", default=None,
+                        help="module[:build_fn] of your graph — tailors drift.yml to its tools and state")
+    init_p.add_argument("--dir", dest="directory", default=".", help="repo root to write into")
+    init_p.add_argument("--initial-state-fn", default="initial_state")
+    init_p.add_argument("--force", action="store_true", help="overwrite existing files")
+    init_p.add_argument("--no-workflow", action="store_true", help="don't write .github/workflows/drift.yml")
+    init_p.add_argument("--no-rules", action="store_true", help="don't write drift.yml")
+
     tgt_p = sub.add_parser("targets", help="list the registry of real third-party MAS for --target")
     tgt_p.add_argument("--json", action="store_true", help="machine-readable output")
 
@@ -596,6 +628,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_gate(args)
     if args.cmd == "targets":
         return cmd_targets(args)
+    if args.cmd == "init":
+        return cmd_init(args)
     if args.cmd == "serve":
         return cmd_serve(args)
     if args.cmd == "report":
