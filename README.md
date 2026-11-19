@@ -96,6 +96,9 @@ gates on it. Nine rule kinds plus `python: pkg.mod:func` /
 
 ## What drift actually does
 
+Why it is built this way, decision by decision, with the date and commit of
+each: [`docs/decisions/`](docs/decisions/README.md).
+
 Three concentric layers, each cheaper than the last:
 
 ### 1. Chaos engine — schema-walked auto-perturbation
