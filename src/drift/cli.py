@@ -493,15 +493,37 @@ def cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    _load_dotenv()
-    # Verdict lines use "×" and "—"; a cp1252 Windows console would raise on
-    # them. Replace rather than crash — the words are what matter.
-    for stream in (sys.stdout, sys.stderr):
+def _configure_streams(streams=None, env=None) -> None:
+    """Make "×" and "—" in verdict lines arrive intact wherever output goes.
+
+    A real Windows console is written through the console API, so its
+    encoding is irrelevant. A pipe is not: on Windows Python encodes pipe
+    output with the ANSI code page (cp1252), and the readers on the other
+    end — Git Bash / mintty, CI log collectors, ``| tee`` — decode UTF-8, so
+    "—" shows up as "�". For a non-terminal stream that is not already UTF-8,
+    switch to UTF-8. An explicit PYTHONIOENCODING wins. Either way, never
+    crash on an unencodable character.
+    """
+    streams = (sys.stdout, sys.stderr) if streams is None else streams
+    env = os.environ if env is None else env
+    for stream in streams:
         try:
-            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+            is_tty = stream.isatty()
+        except (AttributeError, ValueError):
+            is_tty = False
+        enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        try:
+            if not is_tty and enc != "utf8" and not env.get("PYTHONIOENCODING"):
+                stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+            else:
+                stream.reconfigure(errors="replace")  # type: ignore[union-attr]
         except (AttributeError, ValueError):
             pass
+
+
+def main(argv: list[str] | None = None) -> int:
+    _load_dotenv()
+    _configure_streams()
     parser = argparse.ArgumentParser(
         prog="drift",
         description="Pre-deploy chaos testing for LangGraph multi-agent systems.",
