@@ -2866,6 +2866,8 @@
     const chartHost = $('#overview-chart');
     const findingsCard = $('#overview-findings-card');
     const findingsHost = $('#overview-findings');
+    const layersCard = $('#overview-layers-card');
+    const layersHost = $('#overview-layers');
     totalsHost.classList.remove('empty');
     totalsHost.innerHTML = 'Loading…';
     try {
@@ -2875,6 +2877,7 @@
         totalsHost.classList.add('empty');
         totalsHost.textContent = 'No saved results yet. Run something from the Test tab, or an example script with --save-json.';
         systemsCard.classList.add('hidden');
+        layersCard.classList.add('hidden');
         chartCard.classList.add('hidden');
         findingsCard.classList.add('hidden');
         return;
@@ -2896,6 +2899,26 @@
         ]));
       });
       totalsHost.appendChild(stats);
+
+      const layers = data.layers || [];
+      layersCard.classList.toggle('hidden', layers.length === 0);
+      layersHost.innerHTML = '';
+      if (layers.length) {
+        const LABEL = { state: 'State', tool: 'Tool', model: 'Model', flow: 'Control flow' };
+        const n = (v, cls) => el('span', { class: `pill${v ? ' ' + cls : ''}`, text: String(v) });
+        const rows = layers.map(r => el('tr', {}, [
+          el('td', { text: LABEL[r.layer] || r.layer }),
+          el('td', { text: r.not_applied ? `${r.n - r.not_applied} (+${r.not_applied} not applied)` : String(r.n) }),
+          el('td', {}, [n(r.crashed, 'critical')]),
+          el('td', {}, [n(r.diverged, 'warning')]),
+          el('td', {}, [n(r.with_findings, 'warning')]),
+        ]));
+        layersHost.appendChild(el('div', { class: 'table-wrap' }, [el('table', {}, [
+          el('thead', {}, [el('tr', {}, ['Layer', 'Applied', 'Crashed', 'Diverged', 'With findings']
+            .map(h => el('th', { text: h })))]),
+          el('tbody', {}, rows),
+        ])]));
+      }
 
       const findingTypes = data.finding_types || [];
       chartCard.classList.toggle('hidden', findingTypes.length === 0);

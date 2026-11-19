@@ -120,3 +120,26 @@ def test_overview_finding_source_path_is_openable_in_results_viewer(
     for f in overview["findings"]:
         resp = client.get(f"/api/results/{f['source_path']}")
         assert resp.status_code == 200
+
+
+def test_overview_breaks_perturbations_down_by_fault_layer(client: TestClient) -> None:
+    run = _run_adapter(client, max_perturbations=5)
+    # a saved run that also carries a tool fault and a control-flow fault that did not land
+    run["perturbations"] += [
+        {"event_name": "AutoChaos.tool_error[lookup]", "fault_layer": "tool", "fault_fired": True,
+         "crashed": True, "diverged": False, "coordination_findings": [], "judge_findings": [], "trace": []},
+        {"event_name": "AutoChaos.skip_node[reply]", "fault_layer": "flow", "fault_fired": False,
+         "crashed": False, "diverged": False, "coordination_findings": [], "judge_findings": [], "trace": []},
+    ]
+    _save(client, run, group="sys", name="a.json")
+    _save(client, run, group="sys", name="b.json")
+    layers = {r["layer"]: r for r in client.get("/api/overview").json()["layers"]}
+    assert [*layers] == ["state", "tool", "flow"]
+    assert layers["tool"]["n"] == 2 and layers["tool"]["crashed"] == 2  # summed over both files
+    assert layers["flow"]["not_applied"] == 2 and layers["flow"]["unchanged"] == 0
+    n_state = len(run["perturbations"]) - 2
+    assert layers["state"]["n"] == 2 * n_state
+
+
+def test_overview_layers_empty_without_results(client: TestClient) -> None:
+    assert client.get("/api/overview").json()["layers"] == []

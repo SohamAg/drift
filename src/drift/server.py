@@ -1303,9 +1303,10 @@ def create_app() -> FastAPI:
         Files that don't parse as a drift run (fork proofs, ad-hoc dumps)
         are skipped silently rather than failing the whole view.
         """
-        from drift.report import NotADriftRun, load_run
+        from drift.report import NotADriftRun, layer_summary, load_run
 
         runs: list[dict[str, Any]] = []
+        layers: dict[str, dict[str, Any]] = {}
         findings: list[dict[str, Any]] = []
         totals = {
             "runs": 0, "perturbations": 0, "crashed": 0,
@@ -1351,6 +1352,11 @@ def create_app() -> FastAPI:
                 totals["unchanged"] += s["n_unchanged"]
                 totals["findings"] += n_find
                 agents.update(s["agents"])
+                for row in layer_summary(run["questions"]):
+                    acc = layers.setdefault(row["layer"], {k: 0 for k in row if k != "layer"})
+                    for k, v in row.items():
+                        if k != "layer":
+                            acc[k] += v
 
                 for f in run["judge_findings"] + run["coord_findings"]:
                     findings.append({
@@ -1391,8 +1397,14 @@ def create_app() -> FastAPI:
         for f in findings:
             type_counts[f["failure_type"]] = type_counts.get(f["failure_type"], 0) + 1
 
+        from drift.report import _LAYER_ORDER
+        order = {k: i for i, k in enumerate(_LAYER_ORDER)}
         return {
             "totals": {**totals, "systems": len(systems), "agents": len(agents)},
+            # per fault layer (state / tool / model / flow), summed over every
+            # saved run; not_applied faults are counted apart from outcomes
+            "layers": sorted(({"layer": k, **v} for k, v in layers.items()),
+                             key=lambda r: order.get(r["layer"], len(order))),
             "systems": systems,
             "runs": runs,
             "findings": findings,
