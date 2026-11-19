@@ -398,3 +398,15 @@ def test_cli_and_server_surfaces(tmp_path, monkeypatch, capsys):
     r = client.post("/api/adapter-demo", json={"graph_name": "ticket_triage", "intensity": "off", "judge": "off",
                                                "rules_yaml": "chaos:\n  - tool: nope\n    fault: tool_error\n"})
     assert r.status_code == 400 and "not reachable" in r.json()["detail"]
+
+
+def test_tool_fault_that_did_not_fire_still_counts_as_a_graph_run():
+    from drift.adapters.langgraph import AdapterResult, BaselineResult, PerturbationResult
+
+    def pert(layer, fired):
+        return PerturbationResult(event_name=f"x[{layer}]", event_summary="", perturbed_field="f", pattern_type="p",
+                                  perturbed_initial_state={}, fault_layer=layer, fault_fired=fired)
+
+    res = AdapterResult(baseline=BaselineResult(initial_state={}, final_state={}), perturbations=[
+        pert("tool", False), pert("flow", False), pert("model", True)], intensity="off", patterns_total=3)
+    assert res.n_graph_runs == 1 + 2  # baseline + the tool run + the model run; the flow fault never ran

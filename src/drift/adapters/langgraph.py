@@ -427,10 +427,12 @@ class AdapterResult:
     @property
     def n_graph_runs(self) -> int:
         """Total graph invocations this call made (baseline incl. noise
-        rollouts + every perturbation rollout). Cost telemetry. A fault
-        reported not applied never invoked the graph and is not counted."""
+        rollouts + every perturbation rollout). Cost telemetry. A model /
+        control-flow fault reported not applied never invoked the graph and
+        is not counted; a tool fault that did not fire still ran the graph
+        (the tool was just never called) and is."""
         base = self.baseline_rollouts if self.baseline_rollouts > 1 else 0
-        return base + 1 + sum(p.n_rollouts for p in self.perturbations if p.fault_fired is not False)
+        return base + 1 + sum(p.n_rollouts for p in self.perturbations if not _never_ran(p))
 
     @property
     def n_judge_findings(self) -> int:
@@ -2671,6 +2673,12 @@ async def _run_one_fork_branch(
             execution_mode=mode,
             thread_id=tid,
         )
+
+
+def _never_ran(p: Any) -> bool:
+    """A checkpoint-layer fault with nowhere to land: _not_fired() returned
+    it without invoking the graph."""
+    return getattr(p, "fault_fired", None) is False and getattr(p, "fault_layer", "") in ("model", "flow")
 
 
 def _layer_of(event: Any) -> str:
