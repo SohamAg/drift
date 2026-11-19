@@ -33,6 +33,8 @@ from drift.gate import GateReport
 __all__ = ["to_junit", "to_markdown", "write_github_step_summary"]
 
 def _outcome(p: dict) -> str:
+    if p.get("fault_fired") is False:
+        return "not applied"
     if p.get("crashed"):
         return "crash" + (f" ({p['crash_class']})" if p.get("crash_class") else "")
     if p.get("diverged"):

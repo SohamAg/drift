@@ -163,3 +163,12 @@ def test_unapplied_fault_is_skipped_not_passed_and_layers_group_by_classname():
     assert cases["AutoChaos.tool_error[web]"].get("classname").endswith(".tool")
     assert cases["AutoChaos.flip_bool[x]"].get("classname").endswith(".state")
     assert cases["baseline (unperturbed)"].get("classname") == "drift.app.build"  # no layer suffix
+
+
+def test_markdown_says_not_applied_rather_than_unchanged():
+    from drift.ci_output import to_markdown
+
+    shaped = _shaped([_p("AutoChaos.skip_node[math]", fault_layer="flow", fault_fired=False), _p("b")])
+    md = to_markdown(shaped, gate.evaluate(shaped, ["crash"]))
+    row = next(line for line in md.splitlines() if "skip_node[math]" in line)
+    assert "not applied" in row and "unchanged" not in row
