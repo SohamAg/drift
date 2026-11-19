@@ -22,6 +22,11 @@ are rates over N rollouts, not verdicts.
 - **`new_event_crash`** gate rule: a perturbation that did not exist in the
   previous result crashes. `new_crash` alone now notes the crashes it could
   not judge.
+- JUnit test cases are classed `drift.<graph>.<layer>`, so CI panels group
+  them by fault layer.
+- `drift init` ends drift.yml with a commented `chaos:` block for the graph's
+  own tools and nodes (tool_error, model_wrong_tool_args, handoff_misroute,
+  skip_node).
 - **"By fault layer"** table in the evidence report, and the same rollup on the
   web Overview tab (`/api/overview` → `layers`). On this repo's saved runs:
   model faults diverged 8/8, tool 8/9 with 1 crash, control flow 2 applied
@@ -30,6 +35,30 @@ are rates over N rollouts, not verdicts.
 ### Fixed
 - CLI output piped on Windows (Git Bash, CI logs, `| tee`) is UTF-8, so "—"
   and "×" no longer arrive as "�". `PYTHONIOENCODING` still wins.
+- **Faults that never landed are no longer counted as runs the graph coped
+  with.** A model or control-flow fault the baseline gave no place to land
+  was never run, yet it counted as "unchanged" and sat in the denominator of
+  every rate. Three such faults turned a 50% crash rate into 20% and passed a
+  `max_crash_rate=0.3` gate. Fixed everywhere it showed up:
+  - the gate (left out of rates, with a note; a run where nothing landed now
+    fails as `no_perturbations`);
+  - regression snapshots (`drift history`, `--against regression`), where their
+    ~0s runtimes also dragged the mean runtime down;
+  - `AdapterResult.n_unchanged` (new `n_not_applied`), the saved JSON, the
+    console summary and the Test tab;
+  - the evidence report's headline tiles;
+  - JUnit (`<skipped>`, not a pass) and the Markdown summary ("not applied").
+  `n_graph_runs` drops them too, but still counts a tool fault that did not
+  fire: that graph did run.
+- **Installed drift serves its dashboard.** The web UI lived outside the
+  package, so `drift serve` from a wheel answered "web/ directory not found".
+  It now ships as package data, results go under the working directory when
+  drift is not a checkout, and a CI job checks the built wheel from outside the
+  repo.
+- `drift init` no longer suggests forbidding a supervisor's own `transfer_to_*`
+  handoffs as side effects.
+- Install docs said `pip install drift`. That name on PyPI belongs to an
+  unrelated package; the docs now install from GitHub.
 
 ### Changed
 - Tests build agents with LangGraph v1's `langchain.agents.create_agent` and
