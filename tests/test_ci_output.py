@@ -146,3 +146,20 @@ def test_cli_gate_appends_to_github_step_summary(tmp_path, monkeypatch):
     step.unlink()
     assert main(["gate", str(res), "--fail-on", "crash", "--no-step-summary"]) == 0
     assert not step.exists()
+
+
+def test_unapplied_fault_is_skipped_not_passed_and_layers_group_by_classname():
+    shaped = _shaped([
+        _p("AutoChaos.flip_bool[x]"),
+        _p("AutoChaos.tool_error[web]", fault_layer="tool", fault_fired=True),
+        _p("AutoChaos.skip_node[math]", fault_layer="flow", fault_fired=False,
+           event_summary="flow-layer fault skip_node on 'math' — not applied: the baseline never ran 'math'"),
+    ])
+    suite, cases = _parse(to_junit(shaped, gate.evaluate(shaped, ["crash"])))
+    assert suite.get("skipped") == "1" and suite.get("failures") == "0"
+    sk = cases["AutoChaos.skip_node[math]"].find("skipped")
+    assert sk is not None and sk.get("message") == "flow fault not applied: the baseline never ran 'math'"
+    assert cases["AutoChaos.tool_error[web]"].find("skipped") is None
+    assert cases["AutoChaos.tool_error[web]"].get("classname").endswith(".tool")
+    assert cases["AutoChaos.flip_bool[x]"].get("classname").endswith(".state")
+    assert cases["baseline (unperturbed)"].get("classname") == "drift.app.build"  # no layer suffix

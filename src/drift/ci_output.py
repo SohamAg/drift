@@ -63,10 +63,14 @@ def to_junit(shaped: dict[str, Any], report: GateReport, *, suite_name: str | No
     by_pert = _violations_by_perturbation(report)
     cases: list[str] = []
     failures = 0
+    skipped = 0
 
-    def case(name: str, time_s: float | None, failure: str | None, out_lines: list[str]) -> None:
-        nonlocal failures
-        attrs = f'classname={quoteattr("drift." + graph)} name={quoteattr(name)}'
+    def case(name: str, time_s: float | None, failure: str | None, out_lines: list[str],
+             layer: str = "", skip: str | None = None) -> None:
+        nonlocal failures, skipped
+        # drift.<graph>.<layer> groups perturbations by fault layer in CI test panels
+        cls = f"drift.{graph}" + (f".{layer}" if layer else "")
+        attrs = f'classname={quoteattr(cls)} name={quoteattr(name)}'
         if time_s is not None:
             attrs += f' time="{float(time_s):.3f}"'
         body = ""
@@ -74,6 +78,11 @@ def to_junit(shaped: dict[str, Any], report: GateReport, *, suite_name: str | No
             failures += 1
             first = failure.splitlines()[0] if failure else "gate rule violated"
             body += f"<failure message={quoteattr(first[:300])} type=\"drift.gate\">{escape(failure)}</failure>"
+        elif skip is not None:
+            # a fault the baseline gave no place to land: nothing was tested,
+            # so it must not read as a pass
+            skipped += 1
+            body += f"<skipped message={quoteattr(skip[:300])}/>"
         if out_lines:
             body += f"<system-out>{escape(chr(10).join(out_lines))}</system-out>"
         cases.append(f"    <testcase {attrs}>{body}</testcase>" if body else f"    <testcase {attrs}/>")
@@ -103,7 +112,11 @@ def to_junit(shaped: dict[str, Any], report: GateReport, *, suite_name: str | No
             out.append(f"divergence: {p['divergence_summary']}")
         out += _findings_text(p)
         fails = by_pert.get(name)
-        case(name, p.get("duration_s"), "\n".join(fails) if fails else None, out)
+        skip = None
+        if p.get("fault_fired") is False:
+            why = str(p.get("event_summary") or "").split("not applied:", 1)[-1].strip()
+            skip = f"{layer} fault not applied: {why}" if why else f"{layer} fault not applied"
+        case(name, p.get("duration_s"), "\n".join(fails) if fails else None, out, layer=layer, skip=skip)
 
     for v in report.violations:
         if v.rule == "no_perturbations":
@@ -111,7 +124,7 @@ def to_junit(shaped: dict[str, Any], report: GateReport, *, suite_name: str | No
 
     total = len(cases)
     head = (
-        f'<testsuite name={quoteattr(suite)} tests="{total}" failures="{failures}" errors="0" skipped="0">'
+        f'<testsuite name={quoteattr(suite)} tests="{total}" failures="{failures}" errors="0" skipped="{skipped}">'
     )
     props = [
         ("drift.graph", graph),

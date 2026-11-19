@@ -127,7 +127,7 @@ cascade (any preset above quick) or a `max_diverge_rate`.
 
 | Flag | Writes | Shows up as |
 |---|---|---|
-| `--junit drift.xml` | JUnit XML: a test case for the baseline and each perturbation; a case fails only when a `--fail-on` rule named it | the test-report pane of GitHub (via a JUnit reporter action), GitLab, Jenkins, CircleCI, Azure |
+| `--junit drift.xml` | JUnit XML: a test case for the baseline and each perturbation, class `drift.<graph>.<layer>` (state / tool / model / flow) so CI panels group them; a case fails only when a `--fail-on` rule named it, and a fault the baseline gave no place to land is **skipped**, not passed | the test-report pane of GitHub (via a JUnit reporter action), GitLab, Jenkins, CircleCI, Azure |
 | `--summary drift.md` | Markdown: verdict, violated rules, baseline findings, every perturbation | anywhere you post Markdown (PR comment bots) |
 | *(automatic)* | the same Markdown appended to `$GITHUB_STEP_SUMMARY` | the job's summary page in GitHub Actions; `--no-step-summary` turns it off |
 
