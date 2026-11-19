@@ -50,10 +50,38 @@ class _ScriptedModel(GenericFakeChatModel):
         return ChatResult(generations=[ChatGeneration(message=msg)])
 
 
+try:  # LangGraph v1's agent lives in langchain >= 1.0
+    from langchain.agents import create_agent as _create_agent
+except ImportError:  # pragma: no cover - older stacks
+    _create_agent = None
+AGENT_NODE = "model" if _create_agent else "agent"
+needs_create_agent = pytest.mark.skipif(_create_agent is None, reason="langchain>=1.0 not installed")
+
+
 def _react():
+    """The LangGraph v1 agent (langchain.agents.create_agent: nodes model +
+    tools); the legacy prebuilt where langchain 1.x is not installed."""
+    if _create_agent is None:
+        return _react_legacy()
+    return _create_agent(_ScriptedModel(messages=iter([])), [web_search])
+
+
+def _legacy_prebuilt():
+    import warnings
+
     from langgraph.prebuilt import create_react_agent
 
-    return create_react_agent(_ScriptedModel(messages=iter([])), [web_search])
+    def build(*a, **kw):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return create_react_agent(*a, **kw)
+    return build
+
+
+def _react_legacy():
+    """The pre-v1 prebuilt (nodes agent + tools). Deprecated, still what
+    langgraph-supervisor builds its workers with, so drift keeps supporting it."""
+    return _legacy_prebuilt()(_ScriptedModel(messages=iter([])), [web_search])
 
 
 def _react_state():
@@ -94,7 +122,8 @@ def test_catalogue_names_and_skippable_nodes():
     assert sorted(sp.pattern_name for sp in discover_model_patterns(g)) == sorted(
         f"{f}[web_search]" for f in MODEL_FAULTS)
     # the ToolNode is never a skip target
-    assert skippable_nodes(g) == ["agent"]
+    assert skippable_nodes(g) == [AGENT_NODE]
+    assert skippable_nodes(_react_legacy()) == ["agent"]
     assert [sp.pattern_name for sp in discover_flow_patterns(_pipeline())] == ["skip_node[triage]", "skip_node[reply]"]
 
 
@@ -192,9 +221,7 @@ def test_fault_with_nowhere_to_land_is_reported_not_run():
             from langchain_core.outputs import ChatGeneration, ChatResult
             return ChatResult(generations=[ChatGeneration(message=AIMessage(content="Paris."))])
 
-    from langgraph.prebuilt import create_react_agent
-
-    g = create_react_agent(_Direct(messages=iter([])), [web_search])
+    g = (_create_agent or _legacy_prebuilt())(_Direct(messages=iter([])), [web_search])
     res = drift_test(graph=g, initial_state=_react_state(), intensity="off",
                      rules=_spec([{"tool": "web_search", "fault": "model_bad_tool_args"}]))
     (p,) = res.perturbations
@@ -225,3 +252,13 @@ def test_server_and_cli_expose_model_and_flow_chaos(capsys):
     assert r.status_code == 200, r.text
     layers = {p["fault_layer"] for p in r.json()["perturbations"]}
     assert "flow" in layers
+
+
+@pytest.mark.parametrize("build", [pytest.param(_react, marks=needs_create_agent), _react_legacy],
+                         ids=["create_agent", "create_react_agent"])
+@pytest.mark.parametrize("fault", sorted(MODEL_FAULTS))
+def test_every_model_fault_fires_on_both_agent_apis(build, fault):
+    res = drift_test(graph=build(), initial_state=_react_state(), intensity="off",
+                     rules=_spec([{"tool": "web_search", "fault": fault}]))
+    (p,) = res.perturbations
+    assert p.fault_fired is True and not p.crashed, p.event_summary

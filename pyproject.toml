@@ -22,7 +22,7 @@ langgraph = ["langgraph>=0.2"]
 # Pulls in real langgraph multi-agent libraries we run drift against for
 # empirical validation. Optional; only needed to reproduce the
 # examples/adapters/run_drift_on_*.py scripts.
-validation = ["langgraph>=0.2", "langgraph-supervisor>=0.0.20", "langchain-openai>=0.2"]
+validation = ["langgraph>=0.2", "langgraph-supervisor>=0.0.20", "langchain-openai>=0.2", "langchain>=1.0"]
 dev       = ["pytest>=7", "pytest-asyncio>=0.23"]
 
 [project.scripts]
