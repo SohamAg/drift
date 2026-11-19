@@ -306,3 +306,21 @@ def test_every_model_fault_fires_on_both_agent_apis(build, fault):
                      rules=_spec([{"tool": "web_search", "fault": fault}]))
     (p,) = res.perturbations
     assert p.fault_fired is True and not p.crashed, p.event_summary
+
+
+def test_unapplied_fault_is_not_counted_as_unchanged():
+    class _Direct(_ScriptedModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kw):
+            from langchain_core.outputs import ChatGeneration, ChatResult
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="Paris."))])
+
+    g = (_create_agent or _legacy_prebuilt())(_Direct(messages=iter([])), [web_search])
+    res = drift_test(graph=g, initial_state=_react_state(), intensity="off",
+                     rules=_spec([{"tool": "web_search", "fault": "model_dropped_tool_call"}]))
+    assert (res.n_unchanged, res.n_not_applied) == (0, 1)
+    assert any("not applied     : 1" in line for line in res.summary_lines())
+    from drift.adapters.serialize import shape_adapter_result
+
+    shaped = shape_adapter_result(res, graph_meta={"name": "g", "description": "", "agents": []}, seed=0,
+                                  judge="off", judge_model=None, user_guidelines=None)
+    assert shaped["n_not_applied"] == 1 and shaped["n_unchanged"] == 0

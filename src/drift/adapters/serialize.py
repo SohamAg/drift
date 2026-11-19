@@ -151,6 +151,7 @@ def shape_adapter_result(
         "n_crashed": result.n_crashed,
         "n_diverged": result.n_diverged,
         "n_unchanged": result.n_unchanged,
+        "n_not_applied": getattr(result, "n_not_applied", 0),
         "n_judge_findings": result.n_judge_findings,
         "n_coordination_findings": result.n_coordination_findings,
         "n_filtered_divergences": result.n_filtered_divergences,

@@ -957,6 +957,7 @@
       ['Diverged',       data.n_diverged],
       ['Unchanged',      data.n_unchanged],
     );
+    if (data.n_not_applied) kvs.push(['Not applied', `${data.n_not_applied} (nowhere to land; not run)`]);
     if (data.perturbation_rollouts > 1) {
       kvs.push(['Rollouts / perturbation', `${data.perturbation_rollouts} (${data.n_graph_runs} graph runs)`]);
       kvs.push(['Intermittent', data.n_intermittent]);

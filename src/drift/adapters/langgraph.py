@@ -404,11 +404,18 @@ class AdapterResult:
 
     @property
     def n_unchanged(self) -> int:
+        """Perturbations that ran and changed nothing. A fault reported not
+        applied did not run, so it is not here (see n_not_applied)."""
         return sum(
             1
             for p in self.perturbations
-            if not p.crashed and not p.diverged
+            if not p.crashed and not p.diverged and p.fault_fired is not False
         )
+
+    @property
+    def n_not_applied(self) -> int:
+        """Model / control-flow faults the baseline gave no place to land."""
+        return sum(1 for p in self.perturbations if p.fault_fired is False)
 
     @property
     def n_intermittent(self) -> int:
@@ -463,6 +470,8 @@ class AdapterResult:
             f"  diverged        : {self.n_diverged}",
             f"  unchanged       : {self.n_unchanged}",
         ]
+        if self.n_not_applied:
+            out.append(f"  not applied     : {self.n_not_applied} (nowhere to land in the baseline; not run)")
         if self.perturbation_rollouts > 1:
             out.append(
                 f"  rollouts        : {self.perturbation_rollouts} per perturbation "
