@@ -1104,13 +1104,13 @@
     const box = el('div', { class: 'gate-box' });
     const verdict = el('span', { class: 'pill', text: 'evaluating…' });
     const input = el('input', { type: 'text', class: 'gate-rules', value: gateRules(), spellcheck: 'false',
-      'aria-label': 'gate rules', title: 'Comma-separated: crash, recursion_limit, diverge, intermittent, finding, finding:<type>, baseline_finding, guideline, judge, max_crash_rate=0.2, max_diverge_rate=0.5 — and, against a saved run, new_finding, new_crash, regression' });
+      'aria-label': 'gate rules', title: 'Comma-separated: crash, recursion_limit, diverge, intermittent, finding, finding:<type>, baseline_finding, guideline, judge, max_crash_rate=0.2, max_diverge_rate=0.5 — and, against a saved run, new_finding, new_crash, new_event_crash, regression' });
     const details = el('div', { class: 'gate-details' });
     const cli = el('div', { class: 'gate-cli' });
-    // new_finding / new_crash / regression compare against an earlier run:
+    // new_finding / new_crash / new_event_crash / regression compare against an earlier run:
     // pick one from Results (filled lazily; the server reads the file).
     const against = el('select', { class: 'gate-against', 'aria-label': 'compare against a saved run',
-      title: 'Earlier result for the new_finding / new_crash / regression rules (drift gate --against)' },
+      title: 'Earlier result for the new_finding / new_crash / new_event_crash / regression rules (drift gate --against)' },
       [el('option', { value: '', text: 'compare against: none' })]);
     let previous = null;
     fetchResultsIndex().then(groups => {

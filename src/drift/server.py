@@ -307,7 +307,7 @@ class GateRequest(BaseModel):
     """Evaluate `drift gate` rules against a shaped result dict."""
     result: dict[str, Any]
     rules: list[str] = Field(default_factory=list)
-    # Earlier shaped result for new_finding / new_crash / regression.
+    # Earlier shaped result for new_finding / new_crash / new_event_crash / regression.
     previous: dict[str, Any] | None = None
 
 

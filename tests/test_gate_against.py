@@ -119,3 +119,26 @@ def test_server_gate_accepts_previous():
     assert r.status_code == 200 and r.json()["passed"] is False
     r = client.post("/api/gate", json={"result": cur, "rules": ["new_crash"]})
     assert r.json()["passed"] is True and r.json()["notes"]
+
+
+def test_new_event_crash_catches_crashes_new_crash_cannot_match():
+    cur = _run([_p("a", crashed=True), _p("c", crashed=True), _p("zz_new", crashed=True), _p("yy_new")])
+    rep = gate.evaluate(cur, ["new_event_crash"], previous=PREV)
+    (v,) = rep.violations
+    assert v.rule == "new_event_crash" and v.perturbations == ["zz_new"]  # a and c existed before
+    assert gate.evaluate(_run([_p("zz_new")]), ["new_event_crash"], previous=PREV).passed
+
+
+def test_new_crash_alone_notes_the_crashes_it_could_not_judge():
+    cur = _run([_p("zz_new", crashed=True)])
+    rep = gate.evaluate(cur, ["new_crash"], previous=PREV)
+    assert rep.passed
+    assert any("new_event_crash" in n and "zz_new" in n for n in rep.notes)
+    # with both rules there is nothing left unjudged, so no note
+    both = gate.evaluate(cur, ["new_crash", "new_event_crash"], previous=PREV)
+    assert not both.passed and not any("could not judge" in n for n in both.notes)
+
+
+def test_new_event_crash_is_skipped_without_previous():
+    rep = gate.evaluate(_run([_p("zz", crashed=True)]), ["new_event_crash"])
+    assert rep.passed and "new_event_crash" in rep.notes[0]

@@ -26,7 +26,7 @@ inputs:
     required: false
     default: "crash,recursion_limit"
   against:
-    description: "Path to an earlier drift result JSON for the new_finding / new_crash / regression rules. A missing file is skipped with a note."
+    description: "Path to an earlier drift result JSON for the new_finding / new_crash / new_event_crash / regression rules. A missing file is skipped with a note."
     required: false
     default: ""
   timing:

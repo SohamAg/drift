@@ -54,7 +54,7 @@ or render a self-contained HTML evidence report with
 | `judge` | any LLM-judge finding |
 | `max_crash_rate=0.2` | crashed ÷ perturbations above the fraction |
 | `max_diverge_rate=0.5` | diverged ÷ perturbations above the fraction |
-| `new_finding`, `new_crash`, `regression` | compared with an earlier result — see [`--against`](#fail-on-what-got-worse---against) |
+| `new_finding`, `new_crash`, `new_event_crash`, `regression` | compared with an earlier result — see [`--against`](#fail-on-what-got-worse---against) |
 
 Rules are comma-separable and `--fail-on` is repeatable. Rates are over the
 perturbations actually scheduled, so `--max-perturbations 4` is judged on
@@ -139,13 +139,14 @@ main's result as an artifact or in the repo, then:
 
 ```bash
 drift run my_app.graph --seed 7 --json pr.json \
-  --against main-drift.json --fail-on new_finding,new_crash,regression
+  --against main-drift.json --fail-on new_finding,new_crash,new_event_crash,regression
 ```
 
 | Rule | Fails when |
 |---|---|
 | `new_finding` | a finding type fires now that did not in the previous result |
 | `new_crash` | a perturbation crashes now that ran clean before (matched by event name, so keep `--seed` fixed), or the baseline newly crashes |
+| `new_event_crash` | a perturbation that did not exist in the previous result crashes — a fault layer you just turned on, a new tool, a changed schema. `new_crash` cannot judge these (nothing to match), and says so in a note |
 | `regression` | crash rate up >5 points, divergence rate up >10 points, mean runtime up >50%, new finding types, or more intermittent outcomes — the same thresholds `drift history` uses |
 
 With no previous result (a missing `--against` file, or none given) these

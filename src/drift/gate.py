@@ -26,6 +26,10 @@ Against a previous result (`--against previous.json`, e.g. main's last run):
     new_crash             a perturbation crashes now that ran clean before (matched
                           by event name, so keep --seed fixed), or the baseline
                           newly crashes
+    new_event_crash       a perturbation that did not exist in the previous result
+                          crashes (a new fault layer, a new tool, a schema change);
+                          new_crash cannot see these because it has nothing to
+                          match them against
     regression            anything drift.regression.compare flags as a regression:
                           new finding types, crash rate up >5pp, divergence rate up
                           >10pp, mean runtime up >50%, more intermittent outcomes
@@ -72,7 +76,7 @@ SIMPLE_RULES = (
     "baseline_finding", "guideline", "judge",
 )
 #: Rules that compare against a previous result (evaluate(previous=...)).
-AGAINST_RULES = ("new_finding", "new_crash", "regression")
+AGAINST_RULES = ("new_finding", "new_crash", "new_event_crash", "regression")
 RATE_RULES = ("max_crash_rate", "max_diverge_rate")
 
 
@@ -259,7 +263,19 @@ def evaluate(shaped: dict[str, Any], rules: list[str], previous: dict[str, Any] 
         notes.append(f"{', '.join(against)} skipped — no previous result to compare against (--against)")
     elif against:
         violations.extend(_against_violations(shaped, previous, against))
+        unseen = _unseen_crashes(shaped, previous)
+        if unseen and "new_crash" in against and "new_event_crash" not in against:
+            notes.append(f"{len(unseen)} crashing perturbation(s) did not exist in the previous result, so new_crash "
+                         f"could not judge them ({', '.join(unseen[:3])}{', …' if len(unseen) > 3 else ''}); "
+                         "add new_event_crash to fail on them")
     return GateReport(rules=list(rules), violations=violations, n_perturbations=n, notes=notes)
+
+
+def _unseen_crashes(shaped: dict, previous: dict) -> list[str]:
+    """Crashing perturbations whose event name the previous result never ran."""
+    before = {str(p.get("event_name")) for p in previous.get("perturbations") or []}
+    return [str(p.get("event_name")) for p in shaped.get("perturbations") or []
+            if p.get("crashed") and str(p.get("event_name")) not in before]
 
 
 def _against_violations(shaped: dict, previous: dict, rules: list[str]) -> list[Violation]:
@@ -288,6 +304,11 @@ def _against_violations(shaped: dict, previous: dict, rules: list[str]) -> list[
             if base_new:
                 what = (what + " and " if what else "") + "the baseline now crashes"
             out.append(Violation("new_crash", what, hit, baseline=base_new))
+    if "new_event_crash" in rules:
+        hit = _unseen_crashes(shaped, previous)
+        if hit:
+            out.append(Violation("new_event_crash",
+                                 f"{len(hit)} perturbation(s) not in the previous result crash", hit))
     if "regression" in rules:
         rep = compare(cur, [prev])
         bad = [f.summary for f in rep.flags if f.severity in ("crash", "regression")]

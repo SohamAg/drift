@@ -581,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
                             "intermittent, finding, finding:<type>, baseline_finding, guideline, judge, "
                             "max_crash_rate=<0..1>, max_diverge_rate=<0..1>")
     run_p.add_argument("--against", default=None, metavar="PREVIOUS.json",
-                       help="earlier result for the new_finding / new_crash / regression rules")
+                       help="earlier result for the new_finding / new_crash / new_event_crash / regression rules")
     run_p.add_argument("--summary", default=None, metavar="PATH",
                        help="write a Markdown summary (also appended to $GITHUB_STEP_SUMMARY when set)")
     run_p.add_argument("--no-step-summary", action="store_true",
@@ -599,7 +599,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="same rules as `drift run --fail-on`")
 
     gate_p.add_argument("--against", default=None, metavar="PREVIOUS.json",
-                        help="earlier result for the new_finding / new_crash / regression rules")
+                        help="earlier result for the new_finding / new_crash / new_event_crash / regression rules")
     gate_p.add_argument("--summary", default=None, metavar="PATH",
                        help="write a Markdown summary (also appended to $GITHUB_STEP_SUMMARY when set)")
     gate_p.add_argument("--no-step-summary", action="store_true",
@@ -641,7 +641,7 @@ def main(argv: list[str] | None = None) -> int:
     rep_p.add_argument("--fail-on", action="append", default=None,
                        help="drift gate rules — the report shows the PASS/FAIL verdict and each violation")
     rep_p.add_argument("--against", default=None, metavar="PREVIOUS.json",
-                       help="earlier result for the new_finding / new_crash / regression rules")
+                       help="earlier result for the new_finding / new_crash / new_event_crash / regression rules")
 
     hist_p = sub.add_parser(
         "history",
