@@ -28,3 +28,31 @@ jobs:
 
       - name: Run test suite
         run: pytest -q
+
+  # The suite above runs an editable checkout. This proves what a user gets
+  # from the built wheel, outside the repo: the CLI runs and `drift serve`
+  # serves its own dashboard (the web assets are package data).
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the wheel
+        run: pip install build && python -m build --wheel --outdir dist
+
+      - name: Install it into a clean venv and smoke-test from outside the repo
+        run: |
+          python -m venv /tmp/v
+          /tmp/v/bin/pip install -q "$(ls dist/*.whl)[web]"
+          cd /tmp
+          /tmp/v/bin/drift --help > /dev/null
+          /tmp/v/bin/drift serve --port 8765 --no-browser &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8765/ > /tmp/index.html && break; sleep 1; done
+          grep -q "<html" /tmp/index.html
+          curl -sf http://127.0.0.1:8765/web/app.js > /dev/null
+          curl -sf http://127.0.0.1:8765/api/targets | grep -q '"note"'
+          echo "installed drift serves its dashboard"

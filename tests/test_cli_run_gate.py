@@ -185,10 +185,10 @@ def test_evaluate_passes_cleanly_and_reports():
 
 
 def test_presets_match_the_web_ui():
-    """web/app.js ADAPTER_PRESETS and drift.gate.PRESETS must agree."""
+    """src/drift/web/app.js ADAPTER_PRESETS and drift.gate.PRESETS must agree."""
     import re
 
-    js = (Path(__file__).resolve().parents[1] / "web" / "app.js").read_text(encoding="utf-8")
+    js = (Path(__file__).resolve().parents[1] / "src" / "drift" / "web" / "app.js").read_text(encoding="utf-8")
     block = js[js.index("const ADAPTER_PRESETS = {"): js.index("};", js.index("const ADAPTER_PRESETS = {"))]
     for name, knobs in gate.PRESETS.items():
         m = re.search(name + r":\s*\{(.*?)\}", block, re.S)

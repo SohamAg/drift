@@ -65,8 +65,14 @@ _EXAMPLES_DIR = str(PROJECT_ROOT / "examples")
 if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
 
-WEB_DIR: Path = PROJECT_ROOT / "web"
-RESULTS_DIR: Path = PROJECT_ROOT / "results"
+# Shipped inside the package (package-data), so an installed drift serves
+# its own dashboard, not just a checkout.
+WEB_DIR: Path = Path(__file__).resolve().parent / "web"
+# In a checkout, results live in the repo (as they always have). Installed
+# from a wheel, parents[2] is site-packages' parent: write under the
+# directory drift was started from instead.
+IS_CHECKOUT: bool = (PROJECT_ROOT / "pyproject.toml").is_file() and (PROJECT_ROOT / "src" / "drift").is_dir()
+RESULTS_DIR: Path = (PROJECT_ROOT if IS_CHECKOUT else Path.cwd()) / "results"
 # Per-graph regression history (see drift.regression). A module-level
 # constant rather than relying on drift.regression's own default so tests
 # can monkeypatch `drift.server.HISTORY_DIR` — regression.track()'s default
@@ -953,9 +959,17 @@ def create_app() -> FastAPI:
     def list_targets() -> dict[str, Any]:
         """List the examples/targets/ registry — real third-party
         multi-agent systems drift can run against, with live
-        dependency/availability status. Backs the Test Suite tab."""
-        from targets import registry as target_registry
+        dependency/availability status. Backs the Test Suite tab.
 
+        The registry lives in the repo's examples/, which an installed
+        drift does not ship: then the list is empty with a note saying so,
+        not a 500."""
+        try:
+            from targets import registry as target_registry
+        except ImportError:
+            return {"targets": [], "note": "The target registry ships with a drift checkout "
+                                          "(examples/targets/), not with an installed package. "
+                                          "Clone github.com/SohamAg/drift to run the third-party systems."}
         return {"targets": target_registry()}
 
     @app.post("/api/gate")

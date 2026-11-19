@@ -143,3 +143,29 @@ def test_overview_breaks_perturbations_down_by_fault_layer(client: TestClient) -
 
 def test_overview_layers_empty_without_results(client: TestClient) -> None:
     assert client.get("/api/overview").json()["layers"] == []
+
+
+def test_installed_layout_targets_is_empty_with_a_note(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_targets(name, *a, **k):
+        if name == "targets":
+            raise ImportError("no examples/ in an installed drift")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_targets)
+    r = client.get("/api/targets")
+    assert r.status_code == 200
+    assert r.json()["targets"] == [] and "checkout" in r.json()["note"]
+
+
+def test_web_assets_ship_inside_the_package() -> None:
+    assert (server_module.WEB_DIR / "index.html").is_file()
+    assert server_module.WEB_DIR.parent == Path(server_module.__file__).resolve().parent
+    tomllib = pytest.importorskip("tomllib")  # 3.11+
+
+    pyproject = Path(server_module.__file__).resolve().parents[2] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    assert "web/*.js" in data["tool"]["setuptools"]["package-data"]["drift"]

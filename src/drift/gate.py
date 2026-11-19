@@ -52,7 +52,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-#: Presets mirror web/app.js ADAPTER_PRESETS — keep both in step.
+#: Presets mirror src/drift/web/app.js ADAPTER_PRESETS — keep both in step.
 PRESETS: dict[str, dict[str, Any]] = {
     # quick is "moderate", not "light": light's 8% per-step draw yields ~2
     # perturbations on a 30-step horizon and the planner's floor is 1 — too

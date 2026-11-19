@@ -2195,6 +2195,7 @@
 
   let _suiteWired = false;
   let _suiteTargets = [];  // cached rows from GET /api/targets
+  let _suiteNote = '';     // why the list is empty, when the server says
 
   function initSuite() {
     if (_suiteWired) return;
@@ -2213,6 +2214,7 @@
     try {
       const data = await api('/api/targets');
       _suiteTargets = data.targets || [];
+      _suiteNote = data.note || '';
       renderSuiteTargetList();
     } catch (e) {
       host.classList.add('empty');
@@ -2225,7 +2227,7 @@
     host.innerHTML = '';
     if (!_suiteTargets.length) {
       host.classList.add('empty');
-      host.textContent = 'No targets registered under examples/targets/.';
+      host.textContent = _suiteNote || 'No targets registered under examples/targets/.';
       return;
     }
     host.classList.remove('empty');

@@ -162,7 +162,7 @@ Not on the v1 path: managed SaaS, runtime guardrails, framework-native productio
 - `src/drift/fork.py` — counterfactual fork-and-replay
 - `src/drift/analyze.py` — trace ingester
 - `src/drift/server.py` — FastAPI backend (Detect tab endpoints live here)
-- `web/app.js`, `web/index.html` — frontend
+- `src/drift/web/app.js`, `src/drift/web/index.html` — frontend (package data, ships in the wheel)
 - `TRACE_SCHEMA.md` — trace format
 - `CASE_STUDY.md` — MAESTRO empirical results (honest zero-fires writeup)
 - `CASE_STUDY_MAST.md` — MAST empirical results (F1 = 0.16 baseline)
