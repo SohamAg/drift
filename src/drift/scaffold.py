@@ -25,6 +25,8 @@ RULES_PATH = Path("drift.yml")
 class GraphFacts:
     spec: str = ""
     tools: list[str] = field(default_factory=list)
+    handoff_tools: list[str] = field(default_factory=list)   # misroutable handoffs (transfer_to_*)
+    skippable: list[str] = field(default_factory=list)       # nodes skip_node can target
     state_fields: list[str] = field(default_factory=list)
     nodes: list[str] = field(default_factory=list)
     error: str = ""
@@ -52,11 +54,18 @@ def inspect_graph(spec: str, initial_state_fn: str = "initial_state") -> GraphFa
         facts.error = f"{type(e).__name__}: {e}"
         return facts
     try:
-        from drift.chaos.tools import tool_names
+        from drift.chaos.tools import applies_to, tool_names
 
         facts.tools = list(tool_names(graph))
+        facts.handoff_tools = [t for t in facts.tools if applies_to(graph, t, "handoff_misroute")]
     except Exception:  # noqa: BLE001
         facts.tools = []
+    try:
+        from drift.chaos.checkpoint import skippable_nodes
+
+        facts.skippable = skippable_nodes(graph)
+    except Exception:  # noqa: BLE001
+        facts.skippable = []
     nodes = getattr(getattr(graph, "bound", graph), "nodes", None)
     if isinstance(nodes, dict):
         facts.nodes = [str(n) for n in nodes if n not in ("__start__", "__end__")]
@@ -90,7 +99,9 @@ def render_drift_yml(facts: GraphFacts | None = None) -> str:
         "    severity: medium",
         "    why: a run that needs more super-steps than this is probably looping",
     ]
-    tools = facts.tools
+    # handoff tools route between agents; they are not side effects to forbid
+    handoffs = set(facts.handoff_tools) | {t for t in facts.tools if t.startswith("transfer_to_")}
+    tools = [t for t in facts.tools if t not in handoffs]
     if tools:
         first = tools[0]
         lines += [
@@ -136,6 +147,17 @@ def render_drift_yml(facts: GraphFacts | None = None) -> str:
         "# Declared chaos: faults that always run, before the sampled plan.",
         "chaos: []",
     ]
+    examples = []
+    if tools:
+        examples += [f"#   - {{tool: {tools[0]}, fault: tool_error}}            # the tool returns an API error",
+                     f"#   - {{tool: {tools[0]}, fault: model_wrong_tool_args}}  # right tool, plausible wrong argument"]
+    if facts.handoff_tools:
+        examples.append(f"#   - {{tool: {facts.handoff_tools[0]}, fault: handoff_misroute}}  "
+                        "# the handoff reaches a different agent")
+    if facts.skippable:
+        examples.append(f"#   - {{skip_node: {facts.skippable[-1]}}}               # that node silently does not run")
+    if examples:
+        lines += ["# For example (replace `chaos: []` with):", "# chaos:", *examples]
     return "\n".join(lines) + "\n"
 
 

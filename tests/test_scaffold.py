@@ -107,3 +107,33 @@ def test_unimportable_graph_falls_back_to_generic(tmp_path: Path, monkeypatch: p
 def test_facts_without_tools_say_so():
     text = render_drift_yml(GraphFacts(spec="m", nodes=["a"], state_fields=["x"]))
     assert "no ToolNode found" in text and 'state: "bool(x)"' in text
+
+
+def _with_chaos_examples(text: str) -> str:
+    """drift.yml with its commented `chaos:` example block switched on."""
+    lines = text.splitlines()
+    i = lines.index("# chaos:")
+    examples = [ln[1:] for ln in lines[i + 1:] if ln.startswith("#   - ")]
+    body = [ln for ln in lines[:i] if ln != "chaos: []" and not ln.startswith("# For example")]
+    return "\n".join(body + ["chaos:", *examples]) + "\n"
+
+
+def test_chaos_examples_name_real_targets_and_parse(tool_module: str, tmp_path: Path):
+    res = init(tmp_path, graph=tool_module)
+    text = (tmp_path / "drift.yml").read_text(encoding="utf-8")
+    assert "fault: model_wrong_tool_args" in text and "handoff_misroute" not in text
+    spec = guidelines.parse_yaml(_with_chaos_examples(text))
+    assert {c.get("fault") for c in spec.chaos} >= {"tool_error", "model_wrong_tool_args"}
+    assert res.facts.handoff_tools == []
+
+
+def test_supervisor_handoffs_are_suggested_for_misroute_not_forbidden():
+    facts = GraphFacts(spec="app:build", tools=["lookup", "transfer_to_math", "transfer_to_research"],
+                       handoff_tools=["transfer_to_math", "transfer_to_research"], nodes=["supervisor"],
+                       skippable=["supervisor", "math", "research"])
+    text = render_drift_yml(facts)
+    assert "forbid_tool: transfer_to" not in text  # a handoff is routing, not a side effect
+    assert "{tool: transfer_to_math, fault: handoff_misroute}" in text
+    assert "{skip_node: research}" in text
+    spec = guidelines.parse_yaml(_with_chaos_examples(text))
+    assert {"tool": "transfer_to_math", "fault": "handoff_misroute"} in spec.chaos
