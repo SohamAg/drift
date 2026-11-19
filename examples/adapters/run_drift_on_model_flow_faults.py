@@ -6,6 +6,9 @@ where the agent's web_search call is pending, and the run resumes N times:
 
   model_bad_tool_args        the call loses its arguments → does the agent
                              read the validation error and retry correctly?
+  model_wrong_tool_args      one argument gets a plausible wrong value → the
+                             tool succeeds on the wrong input; does the agent
+                             notice?
   model_unknown_tool         the call names a tool that doesn't exist →
                              does it recover, or answer from nothing?
   model_duplicate_tool_call  the tool executes twice → does anything notice?
@@ -18,10 +21,15 @@ research_expert / math_expert). Every skippable root node is skipped at
 the point the baseline ran it next: does the supervisor notice that the
 expert it handed off to produced nothing?
 
+Part `handoff`: the same supervisor system. Each handoff the supervisor can
+make is misrouted (handoff_misroute): asked for research_expert, it gets
+math_expert, and the reverse. Does it notice it got the wrong specialist?
+
 Saves the UI-shaped JSON under results/model_flow_faults/ before printing.
 
     PYTHONPATH=src python examples/adapters/run_drift_on_model_flow_faults.py --part model --rollouts 3 --save-json
     PYTHONPATH=src python examples/adapters/run_drift_on_model_flow_faults.py --part flow --rollouts 2 --save-json
+    PYTHONPATH=src python examples/adapters/run_drift_on_model_flow_faults.py --part handoff --rollouts 2 --save-json
 """
 from __future__ import annotations
 
@@ -80,6 +88,13 @@ async def _main(args) -> None:
         state = {"messages": [{"role": "user", "content": REACT_Q}]}
         chaos = [{"tool": "_web_search", "fault": f} for f in (args.faults or MODEL_FAULTS)]
         name, desc = "react_model_faults", "create_react_agent + mocked web_search, model-layer faults"
+    elif args.part == "handoff":
+        from drift.chaos.tools import applies_to, tool_names
+
+        graph, state = _supervisor(args.model)
+        targets = [t for t in tool_names(graph) if applies_to(graph, t, "handoff_misroute")]
+        chaos = [{"tool": t, "fault": "handoff_misroute"} for t in targets]
+        name, desc = "supervisor_handoff_misroute", "langgraph-supervisor 2-agent, handoff_misroute faults"
     else:
         graph, state = _supervisor(args.model)
         nodes = args.nodes or skippable_nodes(graph)
@@ -129,7 +144,7 @@ def _final(state) -> str:
 if __name__ == "__main__":
     sys.stdout.reconfigure(errors="replace")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--part", choices=("model", "flow"), default="model")
+    ap.add_argument("--part", choices=("model", "flow", "handoff"), default="model")
     ap.add_argument("--model", default="gpt-4o-mini")
     ap.add_argument("--rollouts", type=int, default=3)
     ap.add_argument("--faults", nargs="*", default=None, help=f"subset of: {', '.join(MODEL_FAULTS)}")

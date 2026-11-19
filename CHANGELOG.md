@@ -4,6 +4,39 @@ Dated, one entry per shipped change. Newest first. Each entry says what
 changed and, where a live run informed it, what the run showed — numbers
 are rates over N rollouts, not verdicts.
 
+## Unreleased — 2026-11-19
+
+### Added
+- **`model_wrong_tool_args`** (model layer): the right tool, a schema-valid
+  call, one argument with a plausible wrong value: off by one, a bumped id or
+  date, a query missing its last word, a flag flipped, a one-word name swapped
+  for another named entity from the user's messages. Live (gpt-4o-mini, 3/3):
+  the react agent searched "capital of", got nothing useful and answered
+  "Paris" from its own knowledge. Right, and ungrounded.
+- **`handoff_misroute`** (tool layer, handoff tools only): a supervisor's
+  handoff to X runs agent Y. Model-layer faults cannot reach a supervisor's
+  call (it happens inside its own subgraph); the subgraph's ToolNode can.
+  In the default auto plan. Live, 2-agent supervisor: misrouted from research
+  to math 2/2, it passed on math_expert's made-up populations although the
+  handoff message said where control went. `empty_handoff` 2/2.
+- **`new_event_crash`** gate rule: a perturbation that did not exist in the
+  previous result crashes. `new_crash` alone now notes the crashes it could
+  not judge.
+- **"By fault layer"** table in the evidence report, and the same rollup on the
+  web Overview tab (`/api/overview` → `layers`). On this repo's saved runs:
+  model faults diverged 8/8, tool 8/9 with 1 crash, control flow 2 applied
+  (+1 not applied).
+
+### Fixed
+- CLI output piped on Windows (Git Bash, CI logs, `| tee`) is UTF-8, so "—"
+  and "×" no longer arrive as "�". `PYTHONIOENCODING` still wins.
+
+### Changed
+- Tests build agents with LangGraph v1's `langchain.agents.create_agent` and
+  check every model fault on it and on the legacy `create_react_agent` (which
+  langgraph-supervisor still uses). The 12 deprecation warnings are gone. The
+  `validation` extra adds `langchain>=1.0`.
+
 ## Unreleased — 2026-11-15 (after 0.4.0)
 
 ### Added
@@ -27,6 +60,7 @@ are rates over N rollouts, not verdicts.
   that did not exist in the previous run (for example after turning on
   `--flow-chaos`) is not counted as new. That is by design: it is not a
   regression of a known input. `new_finding` still catches any new finding type.
+  (Closed 2026-11-19 by `new_event_crash`.)
 
 ## 0.4.0 — 2026-11-15
 

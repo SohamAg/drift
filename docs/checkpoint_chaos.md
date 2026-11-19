@@ -98,6 +98,7 @@ again, and the fault is not counted as one the graph coped with.
 | `model_unknown_tool` | 3/3 | read "try one of [_web_search]", called the real tool, answered correctly | none after the fix below (3/3 `silent_tool_failure` before it) |
 | `model_duplicate_tool_call` | 3/3 | the tool ran twice, and the answer was correct and unremarkable | `duplicate_tool_call` 3/3 (a new detector; before it, nothing fired) |
 | `model_dropped_tool_call` | 3/3 | the run ended with an empty answer | divergence only. There is no next model turn to recover in |
+| `model_wrong_tool_args` (2026-11-19) | 3/3 | searched for "capital of" instead of "capital of France", got a useless result, and answered "The capital of France is Paris." anyway, from its own knowledge | divergence only. The final answer is right and **ungrounded**: nothing in it shows the search was wrong. On a fact the model already knows, this fault is invisible in the output. It matters where the answer depends on what the tool returns (private data, today's numbers), which the mocked search cannot show |
 
 **Control-flow layer**: the 2-agent langgraph-supervisor system
 (supervisor → research_expert / math_expert), "look up the populations of
@@ -108,6 +109,15 @@ Tokyo and Paris, then sum them", 2 rollouts each.
 | `skip_node[supervisor]` | 2/2 | the run ended at once with an empty answer |
 | `skip_node[research_expert]` | 2/2 | the supervisor did not notice its research handoff came back empty. It routed to `math_expert`, which supplied precise-looking populations from its own knowledge (13,929,286 / 2,140,526) and summed them. The answer reads as sourced and is not. `novel_tool_call` 2/2 (math tools the baseline never needed), and `empty_handoff` (added for this, see below) names the root cause |
 | `skip_node[math_expert]` | 0/1 | not applied: in the baseline the supervisor summed the numbers itself and never ran `math_expert` |
+
+**Handoff misroute** (tool layer, [`handoff_misroute`](tool_chaos.md); model-layer
+faults cannot reach a supervisor's call, which happens inside its own
+subgraph): same system and question, 2 rollouts each, 2026-11-19.
+
+| Fault | Fired | What happened |
+|---|---|---|
+| `handoff_misroute[transfer_to_research_expert]` | 2/2 | asked for research, the supervisor got `math_expert`, and the handoff's own message said "Successfully transferred to math_expert". It still passed on math_expert's made-up populations (13,929,286 / 2,140,526) as the answer. Same failure as skipping research, with the misroute in plain sight. `empty_handoff` 2/2, `novel_tool_call` 2/2 |
+| `handoff_misroute[transfer_to_math_expert]` | 1/2 | where it fired, the summing was sent to research_expert. One rollout never handed off to math at all (the supervisor summed itself), so the fault had nowhere to land. Populations varied across rollouts (Tokyo 14M vs 37M: city vs metro area) |
 
 The two runs found three real bugs in drift itself, all fixed with tests:
 `silent_tool_failure` did not count a corrected tool name as a retry;
