@@ -61,7 +61,7 @@ to decide from the artifact on a box without the graph or the API key.
 Exit code 1 on a violated rule. Rules: `crash`, `recursion_limit`,
 `diverge`, `intermittent`, `finding`, `finding:<type>`, `baseline_finding`,
 `guideline`, `judge`, `max_crash_rate=`, `max_diverge_rate=`, and — with
-`--against main-drift.json` — `new_finding`, `new_crash`, `regression`, so a
+`--against main-drift.json` — `new_finding`, `new_crash`, `new_event_crash`, `regression`, so a
 PR fails on what it made worse, not on what main already had. `--junit` and
 `--summary` write JUnit XML and Markdown; inside GitHub Actions the summary
 lands on the job page automatically.
@@ -130,9 +130,11 @@ fault one call to one tool *while the graph runs*. drift finds every
 LangGraph's own `wrap_tool_call` interceptor for the duration of one run,
 so the second `web_search` call times out, or comes back empty,
 truncated, stale, or carrying an injected instruction — and the model has
-to cope mid-task. Nine faults (`tool_error`, `tool_timeout`,
+to cope mid-task. Ten faults (`tool_error`, `tool_timeout`,
 `tool_rate_limit`, `tool_exception`, `tool_empty`, `tool_truncated`,
-`tool_stale`, `tool_inject_instruction`, `tool_hijack`), named
+`tool_stale`, `tool_inject_instruction`, `tool_hijack`, and, on a
+supervisor's handoff tools, `handoff_misroute`: the handoff to one agent
+runs another), named
 `tool_timeout[web_search]`, scheduled alongside the state patterns, or
 asked for by name in `drift.yml`:
 
@@ -170,13 +172,17 @@ per fuzzable pattern.
 **Model-layer and control-flow patterns** (opt-in: `--model-chaos`,
 `--flow-chaos`) reach what neither the input nor a tool result can: the
 model's own tool call is rewritten at the baseline checkpoint where it is
-pending — arguments dropped, a non-existent tool name, the call
-duplicated, the call dropped — and the graph resumes so the ToolNode runs
+pending — arguments dropped, one argument given a plausible wrong value
+(`model_wrong_tool_args`: the tool succeeds on the wrong input), a
+non-existent tool name, the call duplicated, the call dropped — and the graph resumes so the ToolNode runs
 the corrupted call for real; or a node is recorded as having run with no
 output (`skip_node[N]`) and execution continues along its edges. Live on a
 langgraph-supervisor system, skipping the research expert showed the
 supervisor never noticed the empty handoff and the math expert supplied
-the "researched" numbers itself. [docs/checkpoint_chaos.md](docs/checkpoint_chaos.md)
+the "researched" numbers itself. Misrouting its research handoff to the
+math expert did the same, even though the handoff message said where
+control went. Results are grouped by layer (state / tool / model / control
+flow) in the evidence report and the Overview tab. [docs/checkpoint_chaos.md](docs/checkpoint_chaos.md)
 
 ### 2. Tiered divergence cascade
 LLM outputs are non-deterministic — naive `baseline ≠ perturbed` produces
