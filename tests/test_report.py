@@ -320,3 +320,32 @@ def test_report_labels_model_and_flow_layers(tmp_path: Path) -> None:
     assert ">control flow<" in text and "mid-run @ 0" in text
     assert "model · not applied" in text
     assert "taxonomy judge" not in text  # the old subtitle overstated the judge's role
+
+
+def test_layer_table_counts_each_layer_and_keeps_unapplied_faults_apart(tmp_path: Path) -> None:
+    from drift.report import layer_summary, load_run
+
+    d = json.loads(json.dumps(SHAPED_CRASH))  # 1 state crash, 1 state unchanged
+    d["perturbations"] += [
+        {"event_name": "AutoChaos.tool_error[web_search]", "fault_layer": "tool", "fault_fired": True,
+         "crashed": False, "diverged": True, "coordination_findings": [{"type": "silent_tool_failure"}],
+         "judge_findings": [], "trace": []},
+        {"event_name": "AutoChaos.skip_node[math]", "fault_layer": "flow", "fault_fired": False,
+         "crashed": False, "diverged": False, "coordination_findings": [], "judge_findings": [], "trace": []},
+    ]
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(d), encoding="utf-8")
+    rows = {r["layer"]: r for r in layer_summary(load_run(p)["questions"])}
+    assert [*rows] == ["state", "tool", "flow"]
+    assert rows["state"] == {"layer": "state", "n": 2, "not_applied": 0, "crashed": 1, "diverged": 0,
+                                  "unchanged": 1, "with_findings": 0}
+    assert rows["tool"]["diverged"] == 1 and rows["tool"]["with_findings"] == 1
+    assert rows["flow"]["not_applied"] == 1 and rows["flow"]["unchanged"] == 0  # not counted as coping
+    text = write_report(p).read_text(encoding="utf-8")
+    assert "By fault layer" in text and "Control flow" in text and "+1 not applied" in text
+
+
+def test_single_layer_run_has_no_layer_table(tmp_path: Path) -> None:
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(SHAPED_CRASH), encoding="utf-8")
+    assert "By fault layer" not in write_report(p).read_text(encoding="utf-8")

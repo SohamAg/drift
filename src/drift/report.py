@@ -558,6 +558,67 @@ def _render_guideline_rules(run: dict) -> str:
 """
 
 
+_LAYER_ORDER = ("state", "tool", "model", "flow")
+_LAYER_LABEL = {
+    "state": ("State", "the input state the graph starts from (or a mid-run checkpoint)"),
+    "tool": ("Tool", "a tool's result, raised inside the graph's own tool node"),
+    "model": ("Model", "the model's tool call: wrong arguments, a missing tool, duplicated or dropped"),
+    "flow": ("Control flow", "a node that silently does not run"),
+}
+
+
+def layer_summary(questions: list[dict]) -> list[dict]:
+    """Per fault layer: how many perturbations ran, how many actually landed,
+    and what they did. A fault that was not applied (no pending call, a node
+    the baseline never reached) is counted apart, never as a graph that coped."""
+    rows: dict[str, dict] = {}
+    for q in questions:
+        for p in q["perturbations"]:
+            layer = p.get("fault_layer") or "state"
+            r = rows.setdefault(layer, {"layer": layer, "n": 0, "not_applied": 0, "crashed": 0,
+                                        "diverged": 0, "unchanged": 0, "with_findings": 0})
+            r["n"] += 1
+            if p.get("fault_fired") is False:
+                r["not_applied"] += 1
+                continue
+            r[{"CRASH": "crashed", "DIVERGE": "diverged"}.get(p["outcome"], "unchanged")] += 1
+            if p["judge_findings"] or p["coord_findings"]:
+                r["with_findings"] += 1
+    order = {k: i for i, k in enumerate(_LAYER_ORDER)}
+    return sorted(rows.values(), key=lambda r: order.get(r["layer"], len(order)))
+
+
+def _count_chip(n: int, cls: str) -> str:
+    return f'<span class="chip {cls if n else "chip-quiet"}">{n}</span>'
+
+
+def _render_layers(questions: list[dict]) -> str:
+    rows = layer_summary(questions)
+    if len(rows) < 2:
+        return ""  # one layer: the summary row above already says it all
+    body = []
+    for r in rows:
+        name, what = _LAYER_LABEL.get(r["layer"], (r["layer"], ""))
+        landed = r["n"] - r["not_applied"]
+        skipped = (f' <span class="div-excerpt">+{r["not_applied"]} not applied</span>'
+                   if r["not_applied"] else "")
+        body.append(
+            "<tr>"
+            f'<td><strong>{_e(name)}</strong><span class="div-excerpt">{_e(what)}</span></td>'
+            f"<td>{landed}{skipped}</td>"
+            f"<td>{_count_chip(r['crashed'], 'chip-critical')}</td>"
+            f"<td>{_count_chip(r['diverged'], 'chip-warning')}</td>"
+            f"<td>{_count_chip(r['with_findings'], 'chip-critical')}</td>"
+            "</tr>"
+        )
+    return (
+        '<section><div class="eyebrow">By fault layer</div>'
+        '<div class="table-wrap"><table><thead><tr><th>Where the fault was injected</th>'
+        "<th>Applied</th><th>Crashed</th><th>Diverged</th><th>With findings</th></tr></thead>"
+        f'<tbody>{"".join(body)}</tbody></table></div></section>'
+    )
+
+
 def _render_scenarios(questions: list[dict]) -> str:
     out = []
     for i, q in enumerate(questions, 1):
@@ -736,6 +797,7 @@ def render_report(
   </p>
 </section>
 
+{_render_layers(run["questions"])}
 {_render_gate(gate)}
 <section>
   <div class="eyebrow">Findings</div>
@@ -756,7 +818,11 @@ def render_report(
   hand-written fault list. {_e(_timing_sentence(run))} Tool-layer faults
   (errors, timeouts, rate limits, empty, truncated or stale results,
   injected instructions) are raised inside the graph's own tool node at
-  run time.</p>
+  run time. Model-layer faults corrupt the model's own tool call (bad
+  arguments, a tool that does not exist, a duplicated or dropped call) and
+  control-flow faults make a node silently not run; both are written into
+  a real baseline checkpoint and resumed, and a fault the baseline gave no
+  place to land is reported as not applied.</p>
   <p><strong>Tiered divergence detection.</strong> Perturbed runs are compared
   to baseline in escalating tiers: structural diff, exact match, semantic
   noise band, and finally an LLM judge — so expensive judgment is spent only
