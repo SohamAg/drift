@@ -24,6 +24,7 @@ like `model_bad_tool_args[web_search]`.
 | Pattern | Fault class | What drift writes | What runs next |
 |---|---|---|---|
 | `model_bad_tool_args` | crash | the pending call to the tool, with **all arguments removed** | the ToolNode executes it, and the tool's schema validation error reaches the model |
+| `model_wrong_tool_args` | value | the same call with **one argument changed to a plausible wrong value of the same type**: a number off by one, the last number in an id or date bumped (`ORD-4411` → `ORD-4412`), a multi-word query losing its last word, a one-word name swapped for another named entity from the user's messages (`Paris` → `Berlin`), a flag flipped, a list's last item dropped | the tool **succeeds on the wrong input**. Nothing errors; the question is whether the agent notices. Reported as not applied when no argument can be changed this way |
 | `model_unknown_tool` | crash | the call renamed to `<tool>_v2`, a tool that does not exist | the ToolNode answers "`<tool>_v2` is not a valid tool, try one of [...]" |
 | `model_duplicate_tool_call` | duplication | the call twice, same arguments, two ids | the tool **executes twice** |
 | `model_dropped_tool_call` | loss | the AI message with its tool call removed and no text | the graph routes as if the model answered, with nothing |

@@ -171,6 +171,50 @@ def test_duplicate_tool_call_executes_the_tool_twice():
     assert len(tool_msgs) == 2
 
 
+def test_wrong_tool_args_runs_the_tool_successfully_on_the_wrong_value():
+    (p,) = _run_model_fault("model_wrong_tool_args").perturbations
+    # baseline queried "capital of france"; the fork re-runs the call with one word lost
+    assert [c["query"] for c in CALLS] == ["capital of france", "capital of"], CALLS
+    assert not p.crashed and p.diverged  # the tool succeeded; the answer quietly changed
+    assert "still schema-valid" in p.event_summary
+
+
+def test_wrong_value_args_keeps_types_and_changes_one_field():
+    from drift.chaos.checkpoint import wrong_value_args
+
+    assert wrong_value_args({"order_id": "ORD-4411", "n": 2})[0] == {"order_id": "ORD-4412", "n": 2}
+    assert wrong_value_args({"n": 3})[0] == {"n": 4}
+    assert wrong_value_args({"amount": 12.5})[0] == {"amount": 125.0}
+    assert wrong_value_args({"urgent": True})[0] == {"urgent": False}
+    assert wrong_value_args({"date": "2026-09"})[0] == {"date": "2026-10"}
+    assert wrong_value_args({"city": "Paris"}, ("Paris", "Berlin"))[0] == {"city": "Berlin"}
+    assert wrong_value_args({"city": "Paris"}) is None  # no plausible swap without another entity
+    assert wrong_value_args({"x": None, "y": ""}) is None
+
+
+def test_decoys_are_named_entities_not_sentence_starts():
+    from drift.chaos.checkpoint import _decoy_words
+
+    msgs = [HumanMessage("Compare the weather in Paris and Berlin. What about Tokyo?")]
+    assert _decoy_words(msgs) == ("Paris", "Berlin", "Tokyo")
+
+
+def test_wrong_tool_args_without_a_changeable_value_is_not_applied():
+    class _NoArgs(_ScriptedModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kw):
+            from langchain_core.outputs import ChatGeneration, ChatResult
+            if any(m.type == "tool" for m in messages):
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(content="done"))])
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(
+                content="", tool_calls=[{"name": "web_search", "args": {"query": "Paris"}, "id": "c1"}]))])
+
+    g = (_create_agent or _legacy_prebuilt())(_NoArgs(messages=iter([])), [web_search])
+    res = drift_test(graph=g, initial_state={"messages": [HumanMessage("weather?")]}, intensity="off",
+                     rules=_spec([{"tool": "web_search", "fault": "model_wrong_tool_args"}]))
+    (p,) = res.perturbations
+    assert p.fault_fired is False and "schema-valid" in p.event_summary
+
+
 def test_dropped_tool_call_ends_the_run_with_nothing():
     (p,) = _run_model_fault("model_dropped_tool_call").perturbations
     assert p.diverged

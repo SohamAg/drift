@@ -6,8 +6,9 @@ editing the input:
 
 * **The model emits a bad tool call** (`model` layer). The agent node's own
   output is wrong: arguments that fail the tool's schema, a tool name that
-  does not exist, the same call twice, or no call at all where the baseline
-  made one. drift runs the baseline on a checkpointer, finds the checkpoint
+  does not exist, arguments that fit the schema but carry the wrong value
+  (the hardest to notice: the tool succeeds), the same call twice, or no
+  call at all where the baseline made one. drift runs the baseline on a checkpointer, finds the checkpoint
   where the AI message carrying a call to the target tool is pending (the
   ToolNode is about to run), rewrites that message in place (same id, so
   `add_messages` replaces it), writes it back *as the node that produced it*
@@ -45,6 +46,10 @@ MODEL_FAULTS: dict[str, dict[str, str]] = {
     "model_bad_tool_args": {
         "fault_class": "crash",
         "models": "the model called the tool with arguments that do not match its schema (all arguments dropped)",
+    },
+    "model_wrong_tool_args": {
+        "fault_class": "value",
+        "models": "the model called the right tool with arguments that fit the schema but carry the wrong value",
     },
     "model_unknown_tool": {
         "fault_class": "crash",
@@ -144,14 +149,18 @@ class CheckpointChaosEvent(AutoChaosEvent):
                 if _m.message_role(last) != "ai" or not any(c.get("name") == self.target for c in calls):
                     continue
                 as_node = root_nodes[rank - 1] if 0 < rank <= len(root_nodes) else ""
-                new_msg, detail = self._corrupt(last, calls)
+                corrupted = self._corrupt(last, calls, decoys=_decoy_words(msgs))
+                if corrupted is None:
+                    return (f"the call to {self.target!r} had no argument value drift could change "
+                            "while keeping it schema-valid")
+                new_msg, detail = corrupted
                 return CheckpointEdit(rank=rank, snap=snap, values={key: [new_msg]}, as_node=as_node,
                                       detail=f"{detail} (the call the baseline's {as_node or 'model'} node "
                                              f"made at root step {rank})")
         return (f"the baseline never had a pending call to {self.target!r}, so there was no model output "
                 "to corrupt")
 
-    def _corrupt(self, msg: Any, calls: list[dict]) -> tuple[Any, str]:
+    def _corrupt(self, msg: Any, calls: list[dict], decoys: tuple[str, ...] = ()) -> tuple[Any, str] | None:
         idx = next(i for i, c in enumerate(calls) if c.get("name") == self.target)
         call = dict(calls[idx])
         new_calls = [dict(c) for c in calls]
@@ -159,6 +168,15 @@ class CheckpointChaosEvent(AutoChaosEvent):
         if f == "model_bad_tool_args":
             detail = f"dropped all arguments of the call to {self.target!r} (was {_preview(call.get('args'))})"
             new_calls[idx] = {**call, "args": {}}
+        elif f == "model_wrong_tool_args":
+            args = call.get("args") if isinstance(call.get("args"), dict) else {}
+            changed = wrong_value_args(args, decoys)
+            if changed is None:
+                return None
+            new_args, key, old, new = changed
+            detail = (f"changed argument {key!r} of the call to {self.target!r} from {_preview(old, 40)} "
+                      f"to {_preview(new, 40)} (same type, still schema-valid)")
+            new_calls[idx] = {**call, "args": new_args}
         elif f == "model_unknown_tool":
             bogus = f"{self.target}_v2"
             detail = f"renamed the call to {self.target!r} to the non-existent tool {bogus!r}"
@@ -171,6 +189,69 @@ class CheckpointChaosEvent(AutoChaosEvent):
             detail = f"removed the call to {self.target!r} and left the message empty"
             new_calls = []
         return _with_tool_calls(msg, new_calls, drop_text=(f == "model_dropped_tool_call")), detail
+
+
+def _wrong_value(v: Any, decoys: tuple[str, ...] = ()) -> Any:
+    """A value of the same type as `v` that is plausibly, not absurdly, wrong.
+    `decoys` are other words from the conversation: a one-word string is
+    swapped for one (the model confused two entities). Returns `v` itself
+    when there is no such change."""
+    import re
+
+    if isinstance(v, bool):
+        return not v
+    if isinstance(v, int):
+        return v + 1  # off by one
+    if isinstance(v, float):
+        return v * 10 if v else 1.0  # a unit / magnitude slip
+    if isinstance(v, str):
+        if re.search(r"\d", v):  # an id, a date, an amount: change the last number
+            m = list(re.finditer(r"\d+", v))[-1]
+            return v[:m.start()] + str(int(m.group()) + 1).zfill(len(m.group())) + v[m.end():]
+        words = v.split()
+        if len(words) > 1:  # a query or a name: lose its last word
+            return " ".join(words[:-1])
+        other = next((d for d in decoys if d.lower() != v.lower()), None)
+        return other if (v and other) else v
+    if isinstance(v, list) and v:
+        return v[:-1] if len(v) > 1 else [_wrong_value(v[0], decoys)]
+    if isinstance(v, dict):
+        changed = wrong_value_args(v, decoys)
+        return changed[0] if changed else v
+    return v
+
+
+def wrong_value_args(args: dict, decoys: tuple[str, ...] = ()) -> tuple[dict, str, Any, Any] | None:
+    """Change ONE argument (the first that can be changed) to a wrong value of
+    the same type: off-by-one numbers, a bumped id, a truncated query, a
+    flipped flag. One wrong field, like a real model mistake, rather than
+    everything at once. None when no argument can be changed."""
+    for key, old in args.items():
+        new = _wrong_value(old, decoys)
+        if new != old:
+            return {**args, key: new}, key, old, new
+    return None
+
+
+def _decoy_words(msgs: list) -> tuple[str, ...]:
+    """Capitalised words from the conversation's human messages, newest first:
+    the entities a model could plausibly mix up. A sentence's first word is
+    skipped (capitalised by grammar, not because it names something)."""
+    import re
+
+    from drift.chaos import messages as _m
+
+    seen: list[str] = []
+    for m in reversed(msgs):
+        if _m.message_role(m) != "human":
+            continue
+        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+        for sentence in re.split(r"[.!?\n]+", str(content)):
+            words = re.findall(r"\b[A-Za-z][a-zA-Z]{2,}\b", sentence)
+            for w in words[1:]:
+                if w[0].isupper() and w not in seen:
+                    seen.append(w)
+    return tuple(seen)
 
 
 def _with_tool_calls(msg: Any, calls: list[dict], *, drop_text: bool = False) -> Any:
@@ -259,5 +340,5 @@ def is_checkpoint_event(event: Any) -> bool:
 __all__ = [
     "FAULT_LAYER_FLOW", "FAULT_LAYER_MODEL", "FLOW_FAULTS", "MODEL_FAULTS", "CheckpointChaosEvent",
     "CheckpointEdit", "discover_flow_patterns", "discover_model_patterns", "is_checkpoint_event",
-    "skippable_nodes",
+    "skippable_nodes", "wrong_value_args",
 ]
