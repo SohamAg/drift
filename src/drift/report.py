@@ -201,6 +201,7 @@ def load_run(path: str | Path) -> dict:
     agents: set[str] = set()
     for q in questions:
         agents.update(a for a in q["agents"] if a)
+    ran = [p for p in all_perts if p.get("fault_fired") is not False]
 
     return {
         "config": config,
@@ -214,11 +215,14 @@ def load_run(path: str | Path) -> dict:
             # Graph invocations. A shaped single run knows its own count
             # (baseline + noise rollouts + every perturbation rollout);
             # runner files are one invocation per scenario + perturbation.
-            "n_runs": int(data.get("n_graph_runs") or 0) or (len(questions) + len(all_perts)),
-            "n_perturbations": len(all_perts),
-            "n_crashed": sum(1 for p in all_perts if p["outcome"] == "CRASH"),
-            "n_diverged": sum(1 for p in all_perts if p["outcome"] == "DIVERGE"),
-            "n_unchanged": sum(1 for p in all_perts if p["outcome"] == "UNCHANGED"),
+            "n_runs": int(data.get("n_graph_runs") or 0) or (len(questions) + len(ran)),
+            # perturbations that ran; a fault reported not applied is
+            # counted apart, never as an unchanged (coping) run
+            "n_perturbations": len(ran),
+            "n_not_applied": len(all_perts) - len(ran),
+            "n_crashed": sum(1 for p in ran if p["outcome"] == "CRASH"),
+            "n_diverged": sum(1 for p in ran if p["outcome"] == "DIVERGE"),
+            "n_unchanged": sum(1 for p in ran if p["outcome"] == "UNCHANGED"),
             "n_judge_findings": len(judge_findings),
             "n_coord_findings": len(coord_findings),
             "agents": sorted(agents),
@@ -749,7 +753,8 @@ def render_report(
     n_findings = s["n_judge_findings"] + s["n_coord_findings"]
     stats = [
         (s["n_runs"], "total runs", ""),
-        (s["n_perturbations"], "chaos perturbations", ""),
+        (s["n_perturbations"], "chaos perturbations"
+         + (f" (+{s['n_not_applied']} not applied)" if s.get("n_not_applied") else ""), ""),
         (s["n_diverged"], "diverged", "warn" if s["n_diverged"] else ""),
         (s["n_crashed"], "crashed", "crit" if s["n_crashed"] else "ok"),
         (n_findings, "coordination findings", "crit" if n_findings else "ok"),

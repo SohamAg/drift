@@ -349,3 +349,30 @@ def test_single_layer_run_has_no_layer_table(tmp_path: Path) -> None:
     p = tmp_path / "r.json"
     p.write_text(json.dumps(SHAPED_CRASH), encoding="utf-8")
     assert "By fault layer" not in write_report(p).read_text(encoding="utf-8")
+
+
+def test_summary_counts_only_perturbations_that_ran(tmp_path: Path) -> None:
+    from drift.report import load_run
+
+    d = json.loads(json.dumps(SHAPED_CRASH))  # 1 crash, 1 unchanged
+    d["perturbations"].append({"event_name": "AutoChaos.skip_node[x]", "fault_layer": "flow", "fault_fired": False,
+                               "crashed": False, "diverged": False, "coordination_findings": [],
+                               "judge_findings": [], "trace": []})
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(d), encoding="utf-8")
+    s = load_run(p)["summary"]
+    assert (s["n_perturbations"], s["n_not_applied"], s["n_unchanged"], s["n_runs"]) == (2, 1, 1, 3)
+    assert "chaos perturbations (+1 not applied)" in write_report(p).read_text(encoding="utf-8")
+
+
+def test_graph_run_count_skips_faults_that_never_ran() -> None:
+    from drift.adapters.langgraph import drift_test
+    from tests.test_chaos_checkpoint import _pipeline, _spec
+
+    # skip_node[triage] lands; a model fault on a pipeline with no tool call cannot
+    res = drift_test(graph=_pipeline(), initial_state={"ticket": "hi", "priority": "", "reply": ""},
+                     intensity="off", rules=_spec([{"skip_node": "triage"}]))
+    assert [p.fault_fired for p in res.perturbations] == [True]
+    assert res.n_graph_runs == 2
+    res.perturbations[0].fault_fired = False  # as if it had nowhere to land
+    assert res.n_graph_runs == 1

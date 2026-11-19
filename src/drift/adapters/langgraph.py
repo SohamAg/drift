@@ -420,9 +420,10 @@ class AdapterResult:
     @property
     def n_graph_runs(self) -> int:
         """Total graph invocations this call made (baseline incl. noise
-        rollouts + every perturbation rollout). Cost telemetry."""
+        rollouts + every perturbation rollout). Cost telemetry. A fault
+        reported not applied never invoked the graph and is not counted."""
         base = self.baseline_rollouts if self.baseline_rollouts > 1 else 0
-        return base + 1 + sum(p.n_rollouts for p in self.perturbations)
+        return base + 1 + sum(p.n_rollouts for p in self.perturbations if p.fault_fired is not False)
 
     @property
     def n_judge_findings(self) -> int:
