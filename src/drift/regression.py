@@ -93,6 +93,14 @@ class RunSnapshot:
         return cls(**{k: v for k, v in d.items() if k in known})
 
 
+def _ran(fault_fired: Any) -> bool:
+    """A model / control-flow fault reported not applied (fault_fired False)
+    never ran: it is neither a crash, a divergence nor a graph that coped,
+    and its ~0s duration would drag the mean runtime down. Snapshots count
+    only perturbations that ran."""
+    return fault_fired is not False
+
+
 def snapshot_from_result(result: Any, graph_signature: str) -> RunSnapshot:
     """Build a RunSnapshot from an AdapterResult (duck-typed — any object
     exposing the same attributes/properties works, so tests don't need the
@@ -100,12 +108,16 @@ def snapshot_from_result(result: Any, graph_signature: str) -> RunSnapshot:
     finding_types: Counter[str] = Counter()
     for f in result.baseline.coordination_findings:
         finding_types[f.get("failure_type", "unknown")] += 1
-    for p in result.perturbations:
+    ran = [p for p in result.perturbations if _ran(getattr(p, "fault_fired", None))]
+    for p in ran:
         for f in p.coordination_findings:
             finding_types[f.get("failure_type", "unknown")] += 1
 
-    durations = [p.duration_s for p in result.perturbations]
+    durations = [p.duration_s for p in ran]
     mean_duration = sum(durations) / len(durations) if durations else 0.0
+    # a fault that was not applied never crashed or diverged: it sits in
+    # result.n_unchanged, so take it out of there
+    n_not_applied = len(result.perturbations) - len(ran)
 
     return RunSnapshot(
         graph_signature=graph_signature,
@@ -114,7 +126,7 @@ def snapshot_from_result(result: Any, graph_signature: str) -> RunSnapshot:
         patterns_total=result.patterns_total,
         n_crashed=result.n_crashed,
         n_diverged=result.n_diverged,
-        n_unchanged=result.n_unchanged,
+        n_unchanged=max(0, result.n_unchanged - n_not_applied),
         n_judge_findings=result.n_judge_findings,
         n_coordination_findings=result.n_coordination_findings,
         coordination_finding_types=dict(finding_types),
@@ -122,7 +134,7 @@ def snapshot_from_result(result: Any, graph_signature: str) -> RunSnapshot:
         baseline_duration_s=result.baseline.duration_s,
         mean_perturbation_duration_s=mean_duration,
         baseline_crashed=result.baseline.crashed,
-        n_perturbations=len(result.perturbations),
+        n_perturbations=len(ran),
         perturbation_rollouts=int(getattr(result, "perturbation_rollouts", 1) or 1),
         n_intermittent=int(getattr(result, "n_intermittent", 0) or 0),
     )
@@ -134,7 +146,7 @@ def snapshot_from_shaped(shaped: dict[str, Any], graph_signature: str | None = N
     saved runs) — what `drift gate --against previous.json` compares. Counts
     are recomputed from the perturbation list so hand-trimmed or older files
     still compare on the same footing."""
-    perts = list(shaped.get("perturbations") or [])
+    perts = [p for p in shaped.get("perturbations") or [] if _ran(p.get("fault_fired"))]
     base = dict(shaped.get("baseline") or {})
     finding_types: Counter[str] = Counter()
     for f in base.get("coordination_findings") or []:

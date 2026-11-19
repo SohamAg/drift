@@ -160,3 +160,17 @@ def test_a_run_where_nothing_landed_does_not_pass():
     assert not rep.passed
     v = next(v for v in rep.violations if v.rule == "no_perturbations")
     assert "none of the 1 scheduled fault(s) could be applied" in v.summary
+
+
+def test_regression_snapshots_ignore_faults_that_never_ran():
+    ran = [_p("a", crashed=True, duration=2.0), _p("b", duration=2.0)]
+    unapplied = [{**_p(f"skip{i}", duration=0.0), "fault_fired": False} for i in range(6)]
+    snap = snapshot_from_shaped(_run(ran + unapplied), "g", timestamp=2.0)
+    assert snap.n_perturbations == 2 and snap.n_crashed == 1 and snap.n_unchanged == 1
+    assert snap.mean_perturbation_duration_s == 2.0  # not 0.5 from six 0s non-runs
+    # so turning on a fault layer whose faults mostly cannot land is not a "runtime improvement"
+    # and does not hide a crash-rate regression
+    prev = snapshot_from_shaped(_run([_p("a"), _p("b")]), "g", timestamp=1.0)
+    from drift.regression import compare
+
+    assert any(f.severity in ("crash", "regression") for f in compare(snap, [prev]).flags)
