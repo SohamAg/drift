@@ -7,9 +7,11 @@ the rules you choose.
 ## One command
 
 ```bash
-pip install drift[langgraph]        # + drift[openai] for the judge / tiered cascade
+pip install "drift[langgraph] @ git+https://github.com/SohamAg/drift"   # [langgraph,openai] for the judge / tiered cascade
 drift run my_app.graph:build --preset quick --fail-on crash,finding:injected_instruction_followed
 ```
+
+(Not `pip install drift`: that name on PyPI belongs to an unrelated package.)
 
 `my_app.graph` must expose `build()` (returns the compiled graph) and
 `initial_state()` (returns the dict your graph is invoked with). Name a

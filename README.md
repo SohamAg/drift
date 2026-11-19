@@ -45,9 +45,13 @@ Same flow wired into the web UI under the **Adapter** tab.
 ### From the command line — and as a CI gate
 
 ```bash
-pip install drift[langgraph]
+pip install "drift[langgraph] @ git+https://github.com/SohamAg/drift"
 drift run my_app.graph:build --preset quick --fail-on crash,finding:injected_instruction_followed
 ```
+
+drift is not on PyPI yet, and **`pip install drift` installs an unrelated
+package** that already holds that name. Install from GitHub as above until
+drift is published under its own name.
 
 `my_app.graph` exposes `build()` → compiled graph and `initial_state()` →
 the dict you invoke it with. Add `--json drift-results.json` to write the

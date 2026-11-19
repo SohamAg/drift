@@ -28,7 +28,7 @@ jobs:
       - name: Install
         run: |
           pip install -e ".[langgraph,openai]"
-          # pip install drift[langgraph,openai]   # when drift is a dependency rather than this repo
+          # pip install "drift[langgraph,openai] @ git+https://github.com/SohamAg/drift"   # when drift is a dependency rather than this repo (NOT `pip install drift`: an unrelated PyPI package)
       - name: Run drift
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
