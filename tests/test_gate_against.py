@@ -142,3 +142,21 @@ def test_new_crash_alone_notes_the_crashes_it_could_not_judge():
 def test_new_event_crash_is_skipped_without_previous():
     rep = gate.evaluate(_run([_p("zz", crashed=True)]), ["new_event_crash"])
     assert rep.passed and "new_event_crash" in rep.notes[0]
+
+
+def test_faults_that_never_landed_are_left_out_of_rates_and_counts():
+    unapplied = [{**_p(f"AutoChaos.skip_node[n{i}]"), "fault_fired": False} for i in range(3)]
+    cur = _run([_p("a", crashed=True), _p("b"), *unapplied])
+    rep = gate.evaluate(cur, ["max_crash_rate=0.3"])
+    # 1 crash of the 2 perturbations that ran = 50%, not 1 of 5 = 20%
+    assert not rep.passed and "50%" in rep.violations[0].summary
+    assert rep.n_perturbations == 2
+    assert any("3 scheduled fault(s) could not be applied" in n for n in rep.notes)
+
+
+def test_a_run_where_nothing_landed_does_not_pass():
+    cur = _run([{**_p("AutoChaos.model_unknown_tool[x]"), "fault_fired": False}])
+    rep = gate.evaluate(cur, ["crash"])
+    assert not rep.passed
+    v = next(v for v in rep.violations if v.rule == "no_perturbations")
+    assert "none of the 1 scheduled fault(s) could be applied" in v.summary

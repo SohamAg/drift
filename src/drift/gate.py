@@ -37,8 +37,9 @@ Against a previous result (`--against previous.json`, e.g. main's last run):
 With no previous result those three are skipped with a note, not failed:
 the first run on a branch has nothing to regress against.
 
-Thresholds are fractions of scheduled perturbations, not of the schema's
-pattern count, so a run with `max_perturbations=4` is judged on those 4.
+Thresholds are fractions of the perturbations that ran, not of the schema's
+pattern count, so a run with `max_perturbations=4` is judged on those 4. A
+fault reported "not applied" (fault_fired False) never ran and is excluded.
 
 A gate never passes vacuously: when rules are given and the run scheduled
 ZERO perturbations (a light intensity on a one-field schema can do that),
@@ -164,16 +165,24 @@ def evaluate(shaped: dict[str, Any], rules: list[str], previous: dict[str, Any] 
     """Apply `rules` to a shaped result dict (web/CLI JSON shape). `previous`
     is an earlier shaped result for the new_finding / new_crash / regression
     rules; without it those rules are skipped with a note."""
-    perts: list[dict] = list(shaped.get("perturbations") or [])
+    every: list[dict] = list(shaped.get("perturbations") or [])
+    # A model / control-flow fault the baseline gave no place to land was
+    # never run. It is not a perturbation the graph survived: leave it out
+    # of every count and rate (it would dilute max_crash_rate), and do not
+    # let a run where nothing landed pass.
+    perts = [p for p in every if p.get("fault_fired") is not False]
+    not_applied = len(every) - len(perts)
     baseline: dict = dict(shaped.get("baseline") or {})
     n = len(perts)
     violations: list[Violation] = []
     if rules and n == 0:
         violations.append(Violation(
             "no_perturbations",
-            "the run scheduled no perturbations, so nothing was tested — raise the intensity "
-            "(the quick preset is 'light', which can sample zero patterns on a one-field schema) "
-            "or pass --max-perturbations",
+            (f"none of the {not_applied} scheduled fault(s) could be applied to this run, so nothing was tested"
+             if not_applied else
+             "the run scheduled no perturbations, so nothing was tested — raise the intensity "
+             "(the quick preset is 'light', which can sample zero patterns on a one-field schema) "
+             "or pass --max-perturbations"),
         ))
     if rules and baseline.get("crashed"):
         violations.append(Violation(
@@ -258,6 +267,9 @@ def evaluate(shaped: dict[str, Any], rules: list[str], previous: dict[str, Any] 
             if rate > limit:
                 violations.append(Violation(rule, f"divergence rate {rate:.0%} > {limit:.0%}", hit))
     notes: list[str] = []
+    if not_applied and rules:
+        notes.append(f"{not_applied} scheduled fault(s) could not be applied to this run (nowhere to land) "
+                     f"and are left out of every count and rate; {n} were tested")
     against = [r for r in rules if r in AGAINST_RULES]
     if against and previous is None:
         notes.append(f"{', '.join(against)} skipped — no previous result to compare against (--against)")

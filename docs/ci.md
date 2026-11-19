@@ -59,8 +59,11 @@ or render a self-contained HTML evidence report with
 | `new_finding`, `new_crash`, `new_event_crash`, `regression` | compared with an earlier result — see [`--against`](#fail-on-what-got-worse---against) |
 
 Rules are comma-separable and `--fail-on` is repeatable. Rates are over the
-perturbations actually scheduled, so `--max-perturbations 4` is judged on
-those four.
+perturbations actually run, so `--max-perturbations 4` is judged on those
+four. A model or control-flow fault the baseline gave no place to land
+(reported "not applied") was never run: it is left out of every count and
+rate, with a note, and a run where nothing landed fails as
+`no_perturbations` rather than passing.
 
 ## Presets
 
