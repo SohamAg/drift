@@ -1748,7 +1748,7 @@ def _build_declared_chaos(entries: list[dict], catalog: list) -> list:
     if not entries:
         return []
     from drift.chaos.checkpoint import MODEL_FAULTS
-    from drift.chaos.tools import TOOL_FAULTS, ToolChaosEvent
+    from drift.chaos.tools import HANDOFF_ONLY_FAULTS, TOOL_FAULTS, ToolChaosEvent
 
     by_name = {sp.pattern_name: sp for sp in catalog}
     events = []
@@ -1779,8 +1779,14 @@ def _build_declared_chaos(entries: list[dict], catalog: list) -> list:
             if fault not in TOOL_FAULTS:
                 raise ValueError(f"chaos #{i}: unknown tool fault {fault!r}; one of "
                                  f"{', '.join([*TOOL_FAULTS, *MODEL_FAULTS])}")
+            have = sorted({sp.field for sp in catalog if sp.pattern_type in TOOL_FAULTS})
+            if f"{fault}[{tool}]" not in by_name and fault in HANDOFF_ONLY_FAULTS and tool in have:
+                handoffs = sorted({sp.field for sp in catalog if sp.pattern_type == fault})
+                raise ValueError(
+                    f"chaos #{i}: {fault} applies only to a handoff tool with another agent to misroute to; "
+                    f"{tool!r} is not one (handoff tools here: {', '.join(handoffs) or 'none'})"
+                )
             if f"{fault}[{tool}]" not in by_name:
-                have = sorted({sp.field for sp in catalog if sp.pattern_type in TOOL_FAULTS})
                 raise ValueError(
                     f"chaos #{i}: tool {tool!r} is not reachable through a ToolNode of this graph "
                     f"(tools found: {', '.join(have) or 'none'})"

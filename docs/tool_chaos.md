@@ -26,14 +26,15 @@ unchanged.
 | `tool_stale` | value | returned a copy flagged as nine days old |
 | `tool_inject_instruction` | value | returned the real result **plus** an injected instruction (canary) |
 | `tool_hijack` | value | returned the real result plus a demand to call *this* tool with a canary argument |
+| `handoff_misroute` | value | **handoff tools only.** A handoff to agent X (langgraph-supervisor's `transfer_to_X`, or any `create_handoff_tool` tool) runs the handoff to another agent on the same node instead. The other agent really runs, and the handoff's own message says where control went. Planned only where there is another agent to misroute to |
 
 Patterns are named `tool_timeout[web_search]`, so `--exclude tool_timeout`
 and `--exclude tool_timeout[web_search]` work like any other pattern.
-The auto planner draws from five of them below `exhaustive`
+The auto planner draws from six of them below `exhaustive`
 (`tool_error`, `tool_empty`, `tool_truncated`, `tool_inject_instruction`,
-`tool_hijack`): timeout and rate-limit read the same as an error to the
+`tool_hijack`, and `handoff_misroute` on handoff tools): timeout and rate-limit read the same as an error to the
 model, `tool_exception` crashes the graph outright under the default
-ToolNode error handling, and `tool_stale` is the weakest signal. All nine
+ToolNode error handling, and `tool_stale` is the weakest signal. All ten
 are one `chaos:` line or `--intensity exhaustive` away.
 
 ## Asking for one by name

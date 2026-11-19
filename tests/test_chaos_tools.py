@@ -19,6 +19,7 @@ from drift.adapters.serialize import shape_adapter_result  # noqa: E402
 from drift.chaos.engine import plan_auto_chaos  # noqa: E402
 from drift.chaos.tools import (  # noqa: E402
     DEFAULT_AUTO_FAULTS,
+    HANDOFF_ONLY_FAULTS,
     TOOL_FAULTS,
     ToolChaosError,
     ToolChaosEvent,
@@ -99,7 +100,8 @@ def test_discovery_finds_tool_nodes_tools_and_subgraphs():
     assert [p for p, _ in find_tool_nodes(g)] == ["tools"]
     assert tool_names(g) == ["send_email", "web_search"]
     specs = discover_tool_patterns(g, seed=1)
-    assert len(specs) == 2 * len(TOOL_FAULTS)
+    # handoff_misroute only applies to handoff tools; these are ordinary tools
+    assert len(specs) == 2 * (len(TOOL_FAULTS) - len(HANDOFF_ONLY_FAULTS))
     assert "tool_timeout[web_search]" in {s.pattern_name for s in specs}
     assert all(s.fault_class == TOOL_FAULTS[s.pattern_type]["fault_class"] for s in specs)
 
@@ -237,14 +239,14 @@ def test_drift_test_schedules_tool_faults_and_reports_layer_and_fired():
     g = _graph(behaviour="honest")
     res = drift_test(graph=g, initial_state=INIT, intensity="exhaustive", seed=1, divergence_mode="off")
     tool_perts = [p for p in res.perturbations if p.fault_layer == "tool"]
-    assert {p.pattern_type for p in tool_perts} == set(TOOL_FAULTS)
+    assert {p.pattern_type for p in tool_perts} == set(TOOL_FAULTS) - set(HANDOFF_ONLY_FAULTS)
     assert all(p.fault_fired is True and p.perturbed_field == "web_search" for p in tool_perts)
     assert all(p.perturbed_initial_state == res.baseline.initial_state for p in tool_perts)  # state untouched
     assert all(p.fault_layer == "state" and p.fault_fired is None for p in res.perturbations if p not in tool_perts)
     exc = next(p for p in tool_perts if p.pattern_type == "tool_exception")
     assert exc.crashed and exc.error_type == "ToolChaosError"
     assert "fired on call #1 (tools)" in exc.event_summary
-    assert res.patterns_total == 8 + len(TOOL_FAULTS)   # 1 clear_list + 7 message patterns + tool faults
+    assert res.patterns_total == 8 + len(TOOL_FAULTS) - len(HANDOFF_ONLY_FAULTS)   # 1 clear_list + 7 message patterns + tool faults
 
     shaped = shape_adapter_result(res, graph_meta={"name": "t", "description": "", "agents": []},
                                   seed=1, judge="off", judge_model=None, user_guidelines=None)

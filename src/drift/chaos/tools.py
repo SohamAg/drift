@@ -34,6 +34,9 @@ Faults, with the AgentChaos fault class each models:
     tool_stale             value     the result is flagged as a days-old cached copy
     tool_inject_instruction value    the real result + an injected instruction (canary)
     tool_hijack            value     the real result + a demand to call a tool with a canary
+    handoff_misroute       value     a handoff to agent X is delivered to agent Y instead
+                                     (handoff tools only: langgraph-supervisor's
+                                     transfer_to_* and anything made by create_handoff_tool)
 
 The injection faults differ from `inject_tool_result_instruction` /
 `inject_tool_result_tool_hijack` in one way that matters: the poisoned
@@ -66,7 +69,11 @@ TOOL_FAULTS: dict[str, dict[str, str]] = {
                                 "models": "the real result plus an injected instruction (canary-verified)"},
     "tool_hijack": {"fault_class": "value",
                     "models": "the real result plus a demand to call a tool with a canary argument"},
+    "handoff_misroute": {"fault_class": "value",
+                         "models": "the handoff was delivered to a different agent than the one asked for"},
 }
+#: Faults that only make sense on some tools (see `applies_to`).
+HANDOFF_ONLY_FAULTS = ("handoff_misroute",)
 FAULT_LAYER_TOOL = "tool"
 FAULT_LAYER_STATE = "state"
 #: The faults the auto planner draws from below `exhaustive`. Timeout and
@@ -76,6 +83,7 @@ FAULT_LAYER_STATE = "state"
 #: `chaos:` line or `--intensity exhaustive` away.
 DEFAULT_AUTO_FAULTS: tuple[str, ...] = (
     "tool_error", "tool_empty", "tool_truncated", "tool_inject_instruction", "tool_hijack",
+    "handoff_misroute",  # only ever planned on a handoff tool that has another destination
 )
 
 
@@ -144,6 +152,33 @@ def find_tool_nodes(graph: Any, *, _depth: int = 0, _seen: set[int] | None = Non
     return out
 
 
+def is_handoff_tool(tool: Any) -> bool:
+    """A tool that hands control to another agent: langgraph's
+    create_handoff_tool marks it with `__handoff_destination` metadata;
+    langgraph-supervisor names them transfer_to_<agent>."""
+    meta = getattr(tool, "metadata", None) or {}
+    return "__handoff_destination" in meta or str(getattr(tool, "name", "")).startswith("transfer_to_")
+
+
+def misroute_target(node: Any, name: str) -> tuple[str, Any] | None:
+    """Another handoff tool on the same ToolNode as `name` (the first in name
+    order), or None when the node offers no other destination."""
+    tools = node._tools_by_name
+    if name not in tools or not is_handoff_tool(tools[name]):
+        return None
+    for other in sorted(tools):
+        if other != name and is_handoff_tool(tools[other]):
+            return other, tools[other]
+    return None
+
+
+def applies_to(graph: Any, tool: str, fault: str) -> bool:
+    """Whether `fault` can ever fire on `tool` in this graph."""
+    if fault not in HANDOFF_ONLY_FAULTS:
+        return True
+    return any(misroute_target(n, tool) for _, n in find_tool_nodes(graph))
+
+
 def tool_names(graph: Any) -> list[str]:
     """Every tool name reachable through a ToolNode, sorted, deduplicated."""
     names: set[str] = set()
@@ -206,6 +241,7 @@ class ToolChaosEvent(AutoChaosEvent):
                        if fault in ("tool_inject_instruction", "tool_hijack") else "")
         self.hits: list[ToolFaultHit] = []
         self.installed_on: list[str] = []
+        self.misrouted_to = ""
 
     # -- what drift_test records for the perturbation -------------------------
 
@@ -232,6 +268,9 @@ class ToolChaosEvent(AutoChaosEvent):
             return (f" — the graph never made call #{self.on_call} to {self.tool!r} on this run, "
                     "so the fault did not fire")
         h = self.hits[0]
+        if self.misrouted_to:
+            return (f" — fired on call #{h.call_index} ({h.node_path}): the handoff asked for by "
+                    f"{self.tool!r} ran {self.misrouted_to!r} instead")
         return f" — fired on call #{h.call_index} ({h.node_path}) with args {_preview(h.args)}"
 
     # -- the fault itself --------------------------------------------------------
@@ -274,6 +313,15 @@ class ToolChaosEvent(AutoChaosEvent):
             return ToolMessage(content=body, tool_call_id=call_id, name=name)
         raise AssertionError(f)  # pragma: no cover
 
+    def _misrouted(self, request: Any, node: Any) -> Any:
+        """The same request, re-pointed at another handoff tool on this node.
+        That handoff tool then runs for real: its Command routes to the other
+        agent and its ToolMessage says so, exactly as if the caller had asked
+        for that agent."""
+        alt_name, alt_tool = misroute_target(node, self.tool)  # install() checked it exists
+        self.misrouted_to = alt_name
+        return request.override(tool_call={**request.tool_call, "name": alt_name}, tool=alt_tool)
+
     def _needs_real_result(self) -> bool:
         return self.fault in ("tool_truncated", "tool_stale", "tool_inject_instruction", "tool_hijack")
 
@@ -283,8 +331,11 @@ class ToolChaosEvent(AutoChaosEvent):
         tool, for the duration of the block. Call counting is shared across
         nodes (the Nth call to the tool anywhere in the graph)."""
         nodes = [(path, n) for path, n in find_tool_nodes(graph) if self.tool in n._tools_by_name]
+        if self.fault in HANDOFF_ONLY_FAULTS:
+            nodes = [(path, n) for path, n in nodes if misroute_target(n, self.tool)]
         self.installed_on = [path for path, _ in nodes]
         self.hits = []
+        self.misrouted_to = ""
         counter = {"n": 0}
         saved: list[tuple[Any, Any, Any]] = []
 
@@ -307,10 +358,13 @@ class ToolChaosEvent(AutoChaosEvent):
             prev_sync, prev_async = node._wrap_tool_call, node._awrap_tool_call
             saved.append((node, prev_sync, prev_async))
 
-            def sync_wrapper(request, execute, _path=path, _prev=prev_sync):
+            def sync_wrapper(request, execute, _path=path, _prev=prev_sync, _node=node):
                 fire, idx = _should_fire(request)
                 if not fire:
                     return _prev(request, execute) if _prev is not None else execute(request)
+                if self.fault == "handoff_misroute":
+                    _record(request, _path, idx, None)
+                    return execute(self._misrouted(request, _node))
                 if self.fault == "tool_exception":
                     _record(request, _path, idx, None)
                     raise ToolChaosError(f"drift chaos: {self.tool} raised (tool_exception fault)")
@@ -318,7 +372,8 @@ class ToolChaosEvent(AutoChaosEvent):
                 _record(request, _path, idx, real)
                 return self._faulted_message(request, real)
 
-            async def async_wrapper(request, execute, _path=path, _prev_a=prev_async, _prev_s=prev_sync):
+            async def async_wrapper(request, execute, _path=path, _prev_a=prev_async, _prev_s=prev_sync,
+                                    _node=node):
                 fire, idx = _should_fire(request)
                 if not fire:
                     if _prev_a is not None:
@@ -330,6 +385,9 @@ class ToolChaosEvent(AutoChaosEvent):
                         result = _prev_s(request, lambda req: execute(req))
                         return await result if inspect.isawaitable(result) else result
                     return await execute(request)
+                if self.fault == "handoff_misroute":
+                    _record(request, _path, idx, None)
+                    return await execute(self._misrouted(request, _node))
                 if self.fault == "tool_exception":
                     _record(request, _path, idx, None)
                     raise ToolChaosError(f"drift chaos: {self.tool} raised (tool_exception fault)")
@@ -381,6 +439,8 @@ def discover_tool_patterns(graph: Any, *, seed: int = 0, faults: list[str] | Non
         for fault in chosen:
             if fault not in TOOL_FAULTS:
                 raise ValueError(f"unknown tool fault {fault!r}; one of {', '.join(TOOL_FAULTS)}")
+            if not applies_to(graph, name, fault):
+                continue
             specs.append(ChaosSpec(
                 pattern_name=f"{fault}[{name}]",
                 field=name,
@@ -396,6 +456,7 @@ def is_tool_event(event: Any) -> bool:
 
 
 __all__ = [
-    "DEFAULT_AUTO_FAULTS", "FAULT_LAYER_STATE", "FAULT_LAYER_TOOL", "TOOL_FAULTS", "ToolChaosError", "ToolChaosEvent",
-    "ToolFaultHit", "discover_tool_patterns", "find_tool_nodes", "is_tool_event", "tool_names",
+    "DEFAULT_AUTO_FAULTS", "FAULT_LAYER_STATE", "FAULT_LAYER_TOOL", "HANDOFF_ONLY_FAULTS", "TOOL_FAULTS",
+    "ToolChaosError", "ToolChaosEvent", "ToolFaultHit", "applies_to", "discover_tool_patterns", "find_tool_nodes",
+    "is_handoff_tool", "is_tool_event", "misroute_target", "tool_names",
 ]
