@@ -119,6 +119,20 @@ subgraph): same system and question, 2 rollouts each, 2026-11-19.
 | `handoff_misroute[transfer_to_research_expert]` | 2/2 | asked for research, the supervisor got `math_expert`, and the handoff's own message said "Successfully transferred to math_expert". It still passed on math_expert's made-up populations (13,929,286 / 2,140,526) as the answer. Same failure as skipping research, with the misroute in plain sight. `empty_handoff` 2/2, `novel_tool_call` 2/2 |
 | `handoff_misroute[transfer_to_math_expert]` | 1/2 | where it fired, the summing was sent to research_expert. One rollout never handed off to math at all (the supervisor summed itself), so the fault had nowhere to land. Populations varied across rollouts (Tokyo 14M vs 37M: city vs metro area) |
 
+**Re-run 2026-11-21** with the [`ungrounded_number`](detectors/ungrounded_number.md)
+detector (`--part handoff --rollouts 2`). Misrouting research fired 2/2 again,
+with final answers of "approximately 16,077,613" and "16,090,286". Each
+rollout invented different populations, and `ungrounded_number` fired 2/2:
+
+```
+math_expert called _add with 13929286, 2161000 (and 2 more calls), which nothing in
+the run supplied; supervisor's final answer states 16,090,286, …
+```
+
+It did not fire on the baseline, which answered "approximately 25 million".
+That figure is wrong but not specific, so it is outside this detector's
+scope.
+
 The two runs found three real bugs in drift itself, all fixed with tests:
 `silent_tool_failure` did not count a corrected tool name as a retry;
 `conversation()` dropped all but one result of a parallel tool
@@ -130,6 +144,10 @@ was blocking a skip of a graph's first node.
 - ~~Empty handoff~~: shipped as the [`empty_handoff`](detectors/empty_handoff.md)
   detector. On the 92 saved runs under `results/`, it fires only on this
   `skip_node[research_expert]` run.
+- ~~Fabricated figures~~: shipped as the
+  [`ungrounded_number`](detectors/ungrounded_number.md) detector
+  (ADR-0010). It covers the consequence of an empty or misrouted
+  handoff: numbers in the answer that no tool supplied.
 - Model faults on tools called outside a ToolNode are unreachable (same
   boundary as tool chaos).
 - `skip_node` inside subgraphs: only root nodes are skippable. LangGraph
