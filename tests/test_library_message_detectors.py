@@ -626,3 +626,84 @@ def test_empty_handoff_ignores_transfer_back_and_trailing_handoffs():
                         _tool("Successfully transferred", "h2")]),
     ])
     assert empty_handoff.detect(_ctx(trace)) == []
+
+
+# ---- ungrounded_number ------------------------------------------------------------------
+
+from drift.failures.library import ungrounded_number  # noqa: E402
+from drift.failures.library.ungrounded_number import ungrounded_in  # noqa: E402
+
+POP_Q = {"messages": [_human("Look up the population of Tokyo and of Paris, then compute their sum.")]}
+
+
+def _research_trace(search_result, final_text, math=None):
+    steps = [
+        ("research_expert", [_ai(calls=[("web_search", {"query": "population of Tokyo"}, "s1")], name="research_expert"),
+                             _tool(search_result, "s1")]),
+    ]
+    if math:
+        name, args, result = math
+        steps.append(("math_expert", [_ai(calls=[(name, args, "m1")], name="math_expert"), _tool(result, "m1")]))
+    steps.append(("supervisor", [_ai(final_text, name="supervisor")]))
+    return _trace(steps, initial=POP_Q)
+
+
+def test_ungrounded_number_fires_on_a_figure_no_tool_supplied():
+    trace = _research_trace("(no results)", "Tokyo has a population of 13,929,286.")
+    (f,) = ungrounded_number.detect(_ctx(trace, initial=POP_Q))
+    assert f.failure_type == "ungrounded_number"
+    assert "13,929,286" in f.summary and "supervisor" in f.summary
+
+
+def test_ungrounded_number_matches_at_the_precision_the_answer_states():
+    trace = _research_trace("Tokyo population (2024): 13929286 residents.",
+                            "Tokyo has about 13.93 million people (13,929,286).")
+    assert ungrounded_number.detect(_ctx(trace, initial=POP_Q)) == []
+
+
+def test_ungrounded_number_accepts_simple_computations_over_grounded_numbers():
+    trace = _research_trace("Tokyo: 13,929,286. Paris: 2,140,526.",
+                            "Sum 16,069,812; difference 11,788,760; Tokyo is 650.7% of Paris.")
+    assert ungrounded_number.detect(_ctx(trace, initial=POP_Q)) == []
+
+
+def test_ungrounded_number_ignores_constants_years_short_numbers_and_identifiers():
+    final = ("Light travels at 299,792,458 m/s (about 299,792 km/s); pi is 3.14159. "
+             "In 2026 the answer was 42, per run 2026-11-21 on gpt-4o and v1.2.3, order #A1234.")
+    trace = _research_trace("nothing useful", final)
+    assert ungrounded_number.detect(_ctx(trace, initial=POP_Q)) == []
+
+
+def test_ungrounded_number_needs_a_tool_result_to_have_been_available():
+    trace = _trace([("agent", [_ai("Tokyo has 13,929,286 people.")])], initial=POP_Q)
+    assert ungrounded_number.detect(_ctx(trace, initial=POP_Q)) == []
+
+
+def test_ungrounded_number_flags_fabricated_tool_arguments_and_distrusts_their_results():
+    # Swarm baseline shape: the search returned nothing; math_expert multiplied a
+    # population it made up. 13,929,286 = 6,964,643 / 0.5, so without tracking
+    # the arguments the answer would be "explained" backwards by the result.
+    trace = _research_trace(
+        "(mock web result for query: 'population of Tokyo')",
+        "Tokyo has 13,929,286 people; half is 6,964,643.",
+        math=("multiply", {"a": 13929286, "b": 0.5}, "6964643.0"),
+    )
+    (f,) = ungrounded_number.detect(_ctx(trace, initial=POP_Q))
+    assert "math_expert called multiply with 13929286" in f.summary
+    assert "13,929,286" in f.summary and "6,964,643" in f.summary
+    assert sorted(f.agents_involved) == ["math_expert", "supervisor"]
+
+
+def test_ungrounded_number_trusts_tool_arguments_taken_from_earlier_results():
+    trace = _research_trace(
+        "Tokyo: 13,929,286.",
+        "Tokyo has 13,929,286 people; half is 6,964,643.",
+        math=("multiply", {"a": 13929286, "b": 0.5}, "6964643.0"),
+    )
+    assert ungrounded_number.detect(_ctx(trace, initial=POP_Q)) == []
+
+
+def test_ungrounded_in_reports_numbers_as_written():
+    assert ungrounded_in("It is 1,234.5 or 98,765.", [1234.5]) == ["98,765"]
+    assert ungrounded_in("roughly 13.93 million", [13929286.0]) == []
+    assert ungrounded_in("roughly 13.95 million", [13929286.0]) == ["13.95 million"]

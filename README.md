@@ -214,7 +214,7 @@ UI presets use 2 and 3.
 
 ### 3. Coordination-failure detector library
 Curated, source-cited detectors for documented multi-agent failure modes.
-Currently shipped (21):
+Currently shipped (22):
 
 | Detector | Source |
 |---|---|
@@ -239,6 +239,7 @@ Currently shipped (21):
 | `tainted_side_effect_call`² | CaMeL taint tracking (arXiv:2503.18813) + AgentDojo exfiltration; tool-result text lifted verbatim into a side-effect tool's arguments, no canary needed |
 | `duplicate_tool_call`² | One turn requested the same call twice and both executed; side-effect tools flagged (parallel function calling, no de-dup in ToolNode) |
 | `empty_handoff`² | MAST 2.4 / 3.2 — a `transfer_to_X` succeeded but X never spoke before control moved on |
+| `ungrounded_number`² | MAST 3.3 — the answer states a precise figure no tool result, user message or computation over them supplied; tracks fabricated tool arguments |
 
 ¹ requires a small config hint (`required_followups=` / `policy_field=`
 on `drift_test`, or the matching fields in the Test/Import tabs) —
@@ -510,7 +511,7 @@ e:\drift\
 │   ├── chaos/             — schema-walked auto-chaos: patterns, message-aware patterns, planner,
 │   │                        tools.py (runtime tool faults via ToolNode wrap_tool_call)
 │   ├── failures/
-│   │   ├── library/       — coordination-failure detector library (21 detectors)
+│   │   ├── library/       — coordination-failure detector library (22 detectors)
 │   │   └── judge.py       — LLM judge over traces
 │   ├── gate.py            — pass/fail rules for `drift run --fail-on` / `drift gate`
 │   ├── guidelines.py      — drift.yml rule language (+ @drift.guideline) — docs/guidelines.md
@@ -564,11 +565,11 @@ top-vs-bottom compare).
   The noise floor measurement helps, but the threshold itself is one
   number applied across all fields — a per-field comparator override
   would be more correct.
-- **21 coordination detectors is a starting kit, not a complete library.**
-  Twelve read node-level state writes; nine read the chat messages (tool
+- **22 coordination detectors is a starting kit, not a complete library.**
+  Twelve read node-level state writes; ten read the chat messages (tool
   calls, tool results, final answers, work and tools used vs the baseline,
   data flowing from tool results into privileged tool arguments, duplicate
-  executions, handoffs whose target never spoke). Domain-specific failures
+  executions, handoffs whose target never spoke, figures no tool supplied). Domain-specific failures
   belong in the team's own `drift.yml` rules (nine deterministic rule kinds
   plus `@drift.guideline` Python rules — [docs/guidelines.md](docs/guidelines.md)).
 - **Drift now streams real LangGraph graphs with `subgraphs=True`**, so

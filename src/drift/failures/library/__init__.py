@@ -47,6 +47,7 @@ from drift.failures.library import (
     tainted_side_effect_call,
     tool_call_loop,
     unacknowledged_error,
+    ungrounded_number,
     verifier_always_approves,
 )
 from drift.failures.library.base import (
@@ -83,6 +84,7 @@ ALL_DETECTORS = [
     tainted_side_effect_call,
     duplicate_tool_call,
     empty_handoff,
+    ungrounded_number,
 ]
 
 

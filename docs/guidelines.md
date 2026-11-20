@@ -1,6 +1,6 @@
 # Guideline rules — `drift.yml`
 
-The detector library ships twenty-one generic coordination failures. The
+The detector library ships twenty-two generic coordination failures. The
 things your team actually cares about are specific to your graph: *the
 researcher must never send email*, *refunds only after approval*, *the
 answer must cite a ticket*, *the budget must not go negative*. Each is
