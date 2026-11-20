@@ -4,6 +4,22 @@ Dated, one entry per shipped change. Newest first. Each entry says what
 changed and, where a live run informed it, what the run showed — numbers
 are rates over N rollouts, not verdicts.
 
+## Unreleased — 2026-11-21
+
+### Added
+- **`ungrounded_number`** detector (library: 22). The final answer states a
+  figure with 4+ significant digits that no human, system or tool message
+  supplied, at the precision stated. It is not a computation over them, and
+  not a well-known constant. It also fires when a tool call's arguments
+  carry such a figure, and that call's result then stops counting as
+  grounding. Measured over 110 saved runs: 3 fires, all real fabrications
+  (the bare heuristic deferred in ADR-0008 fired 9 times, 3 real). Live,
+  supervisor with research misrouted to math: 2/2. Curated corpus test in
+  `tests/test_ungrounded_corpus.py`.
+- Design decision records **ADR-0010** (ship `ungrounded_number`,
+  superseding ADR-0008) and **ADR-0011** (a detector ships with its fire
+  rate measured on saved runs, every fire read by hand).
+
 ## Unreleased — 2026-11-19
 
 ### Added

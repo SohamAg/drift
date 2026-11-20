@@ -51,3 +51,5 @@ Before a library detector ships on by default:
 - `results/` is git-ignored, so the corpus lives on the owner's machine.
   The counts are reproducible from the saved JSON, but not by anyone else
   until a curated subset is committed. That is a follow-up.
+  *(Note, 2026-11-21: done for `ungrounded_number` in `076fb2e`, a 10-run
+  corpus in `tests/fixtures/`. Other detectors still to follow.)*
