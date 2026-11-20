@@ -96,6 +96,11 @@ Of the 2 the computation guard cleared, one was a fabricated figure
 recovered backwards from its own tool result. Tool-argument tracking now
 catches that case.
 
+A curated subset of 10 runs is committed as a regression test:
+4 fabrications and 6 runs whose specific numbers the guards must clear
+(`tests/test_ungrounded_corpus.py`, built by
+`scripts/build_ungrounded_corpus.py`).
+
 ## How to fix — architecture, not runtime
 
 - **Make empty retrieval explicit.** A search tool that finds nothing
