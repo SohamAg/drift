@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Deferred |
+| Status | Superseded by [ADR-0010](0010-ungrounded-number-detector.md) on 2026-11-21 (deferred on 2026-11-19) |
 | Decided | 2026-11-19, about 16:45 IST. Nothing was committed: the decision was *not* to ship |
 | Recorded | 2026-11-19, the same day |
 | Owner | Soham Agarwal |
