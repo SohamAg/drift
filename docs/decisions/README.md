@@ -13,6 +13,7 @@ Each record has two dates, and they are kept apart on purpose:
 - **Recorded**: when this file was written. Its own git commit is the
   timestamp. Records 0001–0009 were all written on 2026-11-19, some of them
   after the fact, for decisions made between June and November 2026.
+  Records from 0010 on are written on the day of the decision.
 
 A record is never edited to change what was decided. When a decision is
 replaced, a new record says so and the old one's status becomes
@@ -32,8 +33,10 @@ the owner directed. The commits show which.
 | [0005](0005-ci-gate-compares-by-event-name.md) | The CI gate compares runs by event name; a missing baseline skips rather than fails | Accepted | 2026-11-15, extended 2026-11-19 |
 | [0006](0006-handoff-misroute-at-tool-layer.md) | A supervisor's misrouted handoff is injected at the tool layer | Accepted | 2026-11-19 |
 | [0007](0007-unapplied-faults-are-not-results.md) | A fault that never landed is not a result: excluded from every count and rate | Accepted | 2026-11-19 |
-| [0008](0008-no-ungrounded-number-detector-yet.md) | No "ungrounded numbers" detector until it can tell fabrication from arithmetic | Deferred | 2026-11-19 |
+| [0008](0008-no-ungrounded-number-detector-yet.md) | No "ungrounded numbers" detector until it can tell fabrication from arithmetic | Superseded by 0010 | 2026-11-19 |
 | [0009](0009-distribution-and-license.md) | Ship the dashboard inside the package; install from GitHub until a PyPI name and license are chosen | Accepted in part; license open | 2026-11-19 |
+| [0010](0010-ungrounded-number-detector.md) | Ship `ungrounded_number`, on by default, with three guards and tool-argument tracking | Accepted | 2026-11-21 |
+| [0011](0011-detectors-ship-with-a-measured-fire-rate.md) | A new detector ships with its fire rate measured on the saved runs, every fire read by hand | Accepted | 2026-11-21 |
 
 New record: copy the header block of any record, take the next number, and
 commit it on the day the decision is made.
